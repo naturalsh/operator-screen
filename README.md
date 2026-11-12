@@ -14,6 +14,14 @@ and the **fire front** (Fire modelling) on the same map and the same clock.
 
 Without internet the packaged basemap is used: [docs/04_offline_basemap.png](docs/04_offline_basemap.png).
 
+| Dispatch: fastest crew, route avoiding blocked streets | No access by road |
+|---|---|
+| ![Dispatch](docs/05_dispatch_route.png) | ![No access](docs/06_no_access.png) |
+
+| Route cut later: warning and a new route | Decision log |
+|---|---|
+| ![Route cut](docs/07_route_cut_reroute.png) | ![Decision log](docs/08_decision_log.png) |
+
 ## What is real and what is synthetic
 
 | Layer | File | Status |
