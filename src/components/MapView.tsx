@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map as MLMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, fmtTime, statusAt, streetLabel, visibleCallers } from '../data';
+import {
+  STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL, URGENCY_ORDER,
+  fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
+} from '../data';
 import { resolveBasemap } from '../basemap';
-import type { CallerReport, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
+import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
 
 export type LayerKey = 'forecast' | 'observed' | 'streets' | 'callers' | 'crews';
 
@@ -18,20 +21,20 @@ const LAYER_GROUPS: Record<LayerKey, string[]> = {
 const HORIZON_COLOUR = ['match', ['get', 'horizon_hours'], 8, '#fde047', 20, '#fb923c', '#f97316'] as unknown as string;
 const INSTRUMENT_COLOUR = ['match', ['get', 'instrument'], 'MODIS', '#a855f7', 'SLSTR', '#14b8a6', '#ef4444'] as unknown as string;
 
-function callersFc(callers: CallerReport[], synthetic: boolean, stages: Record<string, Stage>,
+function callersFc(callers: CallerReport[], stages: Record<string, Stage>,
   urgencyOf: (c: CallerReport) => Urgency): GeoJSON.FeatureCollection {
   return {
     type: 'FeatureCollection',
     features: callers.map((c) => {
       const stage = stages[c.id] ?? 'new';
       const urgency = urgencyOf(c);
-      // Short map label (the list carries the place): the operator's stage once it is not new, people at risk.
+      // Short map label: people at risk only. The place, the stage and the synthetic flag are on the card
+      // and in the popup; on the marker the stage is the ring colour.
       return {
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [c.place.lon, c.place.lat] },
         properties: { id: c.id, urgency, colour: URGENCY_COLOUR[urgency], stage, ring: STAGE_COLOUR[stage],
-          label: [stage === 'new' ? '' : STAGE_LABEL[stage], c.people_at_risk > 0 ? `${c.people_at_risk} at risk` : '',
-            synthetic ? '(synthetic)' : ''].filter(Boolean).join(' · ') },
+          rank: URGENCY_ORDER[urgency], label: c.people_at_risk > 0 ? `${c.people_at_risk} at risk` : '' },
       };
     }),
   };
@@ -53,6 +56,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
+  const popupRef = useRef<maplibregl.Popup | null>(null);
   const [offline, setOffline] = useState(false);
   const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf });
   latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf };
@@ -77,7 +81,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       'open', STATUS_COLOUR.open, 'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked]);
     map.setFilter('callers-selected', ['==', ['get', 'id'], sel ?? '']);
     (map.getSource('callers') as GeoJSONSource).setData(
-      callersFc(visibleCallers(d.callers, t), d.callersMeta.synthetic === true, st, uo));
+      callersFc(visibleCallers(d.callers, t), st, uo));
     const ok = rts.filter((r) => !r.cut).flatMap((r) => r.edgeIds);
     const cut = rts.filter((r) => r.cut).flatMap((r) => r.edgeIds);
     map.setFilter('routes-casing', ['in', ['get', 'id'], ['literal', [...ok, ...cut]]]);
@@ -110,7 +114,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.on('load', () => {
       map.addSource('fire', { type: 'geojson', data: data.fire });
       map.addSource('streets', { type: 'geojson', data: data.streets });
-      map.addSource('callers', { type: 'geojson', data: callersFc([], false, {}, (c) => c.urgency) });
+      map.addSource('callers', { type: 'geojson', data: callersFc([], {}, (c) => c.urgency) });
       map.addSource('responders', { type: 'geojson', data: {
         type: 'FeatureCollection',
         features: data.responders.map((r) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.place.lon, r.place.lat] },
@@ -157,7 +161,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         paint: { 'circle-radius': 8, 'circle-color': '#0e7490', 'circle-stroke-color': '#a5f3fc', 'circle-stroke-width': 2.5 } });
       map.addLayer({ id: 'responders-label', type: 'symbol', source: 'responders',
         layout: { 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Regular'], 'text-size': 11,
-          'text-offset': [0, -1.4], 'text-anchor': 'bottom', 'text-allow-overlap': true },
+          'text-offset': [0, -1.4], 'text-anchor': 'bottom', 'text-allow-overlap': false, 'text-padding': 4 },
         paint: { 'text-color': '#a5f3fc', 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
 
       map.addLayer({ id: 'callers-selected', type: 'circle', source: 'callers',
@@ -168,8 +172,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           'circle-stroke-color': ['match', ['get', 'stage'], 'new', '#07090d', ['get', 'ring']],
           'circle-stroke-width': ['match', ['get', 'stage'], 'new', 2, 'taken', 2.5, 3.5] } });
       map.addLayer({ id: 'callers-label', type: 'symbol', source: 'callers',
+        // Labels that would collide are hidden (most urgent kept); they appear when zooming in.
         layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Regular'], 'text-size': 11,
-          'text-offset': [0, 1.3], 'text-anchor': 'top', 'text-optional': true },
+          'text-offset': [0, 1.2], 'text-anchor': 'top', 'text-allow-overlap': false, 'text-ignore-placement': false,
+          'text-padding': 4, 'symbol-sort-key': ['get', 'rank'] },
         paint: { 'text-color': '#f2f6fb', 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
 
       const ign = data.fireMeta.ignition;
@@ -181,35 +187,81 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         new maplibregl.Marker({ element: el }).setLngLat([ign.lon, ign.lat]).addTo(map);
       }
 
-      map.on('click', 'callers', (e) => onSelect(String(e.features?.[0]?.properties?.id ?? '') || null));
-      map.on('click', 'streets', (e) => {
-        if (map.queryRenderedFeatures(e.point, { layers: ['callers'] }).length) return;
-        const p = e.features?.[0]?.properties as StreetAccess | undefined;
-        if (!p) return;
-        const { now: t, data: d } = latest.current;
-        const st = statusAt(p, t);
+      // One click handler, most specific feature first: caller, response point, street, fire front.
+      const CLICKABLE = ['callers', 'responders', 'streets', 'flame-front', 'forecast-reached', 'forecast-pending', 'hotspots', 'burned-area'];
+      const muted = (text: string) => `<div class="ns-muted">${text}</div>`;
+      const tag = (p: { synthetic?: boolean; basis?: string }) => (p.synthetic ? '<span class="synthetic-tag">SYNTHETIC</span>'
+        : p.basis === 'fire_model' ? '<span class="model-tag">MODEL OUTPUT</span>' : '');
+      map.on('click', (e) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: CLICKABLE.filter((id) => map.getLayer(id)) })
+          .sort((a, b) => CLICKABLE.indexOf(a.layer.id) - CLICKABLE.indexOf(b.layer.id))[0];
+        if (!hit) return;
+        const { now: t, data: d, stages: st, urgencyOf: uo } = latest.current;
         const tz = d.entry.timezone ?? 'UTC';
-        const pending = (p.t ?? 0) > t ? `<br>Model: ${p.status.replace('_', ' ')} from ${fmtTime(p.t!, tz)}` : '';
-        new maplibregl.Popup({ closeButton: false, maxWidth: '300px' }).setLngLat(e.lngLat).setHTML(
-          `<b>${streetLabel(p)}</b><br><span style="color:#8a9bb3">${p.highway ?? 'road'} · OSM way ${p.osm_way_id}</span><br>`
-          + `<span style="color:${STATUS_COLOUR[st]}">■</span> ${STATUS_SHORT[st]}`
-          + (p.free_width_m != null ? `, free width ${p.free_width_m} m` : '')
-          + ((p.t ?? 0) > 0 && (p.t ?? 0) <= t ? ` since ${fmtTime(p.t!, tz)}` : '') + pending
-          + (p.reason ? `<br><span style="color:#8a9bb3">${p.reason}</span>` : '')
-          + (p.imagery_date ? `<br>Imagery: ${p.imagery_date}` : '')
-          + `<br>${p.confirmed_by_operator ? 'Confirmed by operator' : 'Not confirmed by an operator'} `
-          + (p.synthetic ? '<span class="synthetic-tag">SYNTHETIC</span>'
-            : p.basis === 'fire_model' ? '<span class="model-tag">MODEL OUTPUT</span>' : '')).addTo(map);
+        let html = '';
+        let at: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+        if (hit.layer.id === 'callers') {
+          const c = d.callers.find((x) => x.id === hit.properties.id);
+          if (!c) return;
+          onSelect(c.id);
+          at = [c.place.lon, c.place.lat];
+          const u = uo(c);
+          html = `<b>${c.place.label ?? 'Caller'}</b>`
+            + `<div><span style="color:${URGENCY_COLOUR[u]}">●</span> ${URGENCY_LABEL[u]} · ${STAGE_LABEL[st[c.id] ?? 'new']}`
+            + `${c.people_at_risk > 0 ? ` · ${c.people_at_risk} at risk` : ''}</div>`
+            + `<div>${c.summary_en ?? c.summary}</div>`
+            + muted(`${fmtTime(Date.parse(c.reported_at), tz)} · ${c.language.toUpperCase()}${c.channel ? ` · ${c.channel}` : ''}`)
+            + tag(c);
+        } else if (hit.layer.id === 'responders') {
+          const r = d.responders.find((x) => x.id === hit.properties.id);
+          if (!r) return;
+          at = [r.place.lon, r.place.lat];
+          html = `<b>${r.name}</b><div>${r.kind.replace('_', ' ')} · response point</div>`
+            + muted(`Location: ${r.source} (${r.place.lat.toFixed(4)}° N, ${r.place.lon.toFixed(4)}° E)`)
+            + muted('Crew availability here is an assumption of the demo.');
+        } else if (hit.layer.id === 'streets') {
+          // Rendered features carry nested values (label_point) as JSON text, so read the street from the data.
+          const p = d.streets.features.find((f) => f.properties.id === hit.properties.id)?.properties
+            ?? (hit.properties as StreetAccess);
+          const now = statusAt(p, t);
+          html = `<b>${streetLabel(p)}</b>` + muted(`${p.highway ?? 'road'} · OSM way ${p.osm_way_id}`)
+            + `<div><span style="color:${STATUS_COLOUR[now]}">■</span> ${STATUS_SHORT[now]}`
+            + (p.free_width_m != null ? `, free width ${p.free_width_m} m` : '')
+            + ((p.t ?? 0) > 0 && (p.t ?? 0) <= t && p.status !== p.before ? ` since ${fmtTime(p.t!, tz)}` : '') + '</div>'
+            + ((p.t ?? 0) > t ? `<div>Model: ${p.status.replace('_', ' ')} from ${fmtTime(p.t!, tz)}</div>` : '')
+            + (p.reason ? muted(p.reason) : '')
+            + (p.imagery_date ? muted(`Imagery: ${p.imagery_date}`) : '')
+            + muted(p.confirmed_by_operator ? 'Confirmed by operator' : 'Not confirmed by an operator') + tag(p);
+        } else {
+          const p = hit.properties as FireFront & { t: number };
+          const when = `${fmtTime(p.t, tz)} local`;
+          if (p.kind === 'forecast') {
+            html = `<b>Forecast +${p.horizon_hours} h</b><div>Modelled fire extent, P ≥ ${Math.round((p.probability ?? 0.5) * 100)} %`
+              + `${p.area_km2 != null ? ` · ${Number(p.area_km2).toFixed(1)} km²` : ''}</div>`
+              + `<div>${p.t <= t ? 'Valid since' : 'Valid from'} ${when}</div>` + muted(p.source);
+          } else {
+            const what = { hotspots: 'Satellite hotspots', flame_front: 'Active flame front', burned_area: 'Burned area' }[p.observation_type ?? 'hotspots'];
+            html = `<b>${what}</b><div>${p.instrument ?? ''} ${p.satellite ?? ''} · ${when}</div>`
+              + (p.detections ? `<div>${p.detections} hotspot pixel${p.detections > 1 ? 's' : ''} · FRP ${Number(p.frp_mw ?? 0).toFixed(0)} MW</div>` : '')
+              + (p.area_km2 != null ? `<div>Pixel footprint ${Number(p.area_km2).toFixed(1)} km²</div>` : '')
+              + muted(`${p.source} · observed, ${fmtAge(t - p.t)} before the time shown`);
+          }
+        }
+        popupRef.current?.remove();
+        popupRef.current = new maplibregl.Popup({ className: 'ns-popup', closeButton: true, maxWidth: '320px' })
+          .setLngLat(at).setHTML(html).addTo(map);
       });
-      for (const id of ['callers', 'streets']) {
+      for (const id of CLICKABLE) {
         map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
         map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; });
       }
+      // Hook for rehearsal and screenshot scripts (map.project, map.fire).
+      (window as unknown as { __nsMap?: MLMap }).__nsMap = map;
       ready.current = true;
       sync();
     });
     });
-    return () => { cancelled = true; ready.current = false; created?.remove(); mapRef.current = null; };
+    return () => { cancelled = true; ready.current = false; popupRef.current?.remove(); created?.remove(); mapRef.current = null; };
     // The map is rebuilt only when another scenario is loaded.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);

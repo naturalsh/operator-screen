@@ -21,5 +21,21 @@ body { background: #07090d; color: #f2f6fb; font-size: 14px; }
 
 .maplibregl-ctrl-attrib { background: rgba(13,17,23,0.8) !important; color: #8a9bb3 !important; }
 .maplibregl-ctrl-attrib a { color: #c9d4e3 !important; }
-.maplibregl-popup-content { background: #0d1117; color: #f2f6fb; border: 1px solid #33435a; font-size: 12px; }
-.maplibregl-popup-tip { border-top-color: #0d1117 !important; border-bottom-color: #0d1117 !important; }
+/* Popups in the screen's dark theme. MapLibre's own stylesheet loads after this file and sets a white
+   background, so these rules are scoped to .ns-popup and marked !important. */
+.ns-popup .maplibregl-popup-content {
+  background: #0d1117 !important; color: #f2f6fb !important; border: 1px solid #33435a; border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6); font-size: 13px; line-height: 1.45; padding: 10px 28px 10px 12px;
+}
+.ns-popup .maplibregl-popup-content b { color: #ffffff; font-size: 13.5px; }
+.ns-popup .ns-muted { color: #c9d4e3; font-size: 12px; }
+.ns-popup .maplibregl-popup-close-button { color: #c9d4e3; font-size: 18px; padding: 2px 8px; }
+.ns-popup .maplibregl-popup-close-button:hover { background: #243042; color: #ffffff; }
+.ns-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.ns-popup.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.ns-popup.maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: #33435a !important; }
+.ns-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.ns-popup.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.ns-popup.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: #33435a !important; }
+.ns-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #33435a !important; }
+.ns-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #33435a !important; }
