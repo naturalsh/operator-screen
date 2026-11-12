@@ -12,6 +12,8 @@ and the **fire front** (Fire modelling) on the same map and the same clock.
 |---|---|
 | ![Caller selected](docs/02_caller_selected.png) | ![Time advanced](docs/03_time_advanced_40h.png) |
 
+Without internet the packaged basemap is used: [docs/04_offline_basemap.png](docs/04_offline_basemap.png).
+
 ## What is real and what is synthetic
 
 | Layer | File | Status |
