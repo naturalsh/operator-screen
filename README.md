@@ -44,7 +44,17 @@ npm run preview      # serve dist/ on http://localhost:4173
 Deep link to a moment, for rehearsals: `?t=2022-06-23T09:02:00Z&call=synthetic-call-005`
 (`t` = UTC time, `call` = id of the report to select, `scenario` = scenario id).
 
-The basemap is the OpenFreeMap dark style and is loaded from the network; the three data layers are local files.
+### Basemap, online and offline
+
+The basemap is the OpenFreeMap dark style. If it cannot be reached within 3 seconds when the page loads,
+the app switches to the copy packaged in `public/basemap/` (10 MB: vector tiles for zoom 0–14 over
+27.85–28.45° E, 36.65–37.05° N, fonts, sprites, style) and shows "Offline basemap" on the map. Outside that
+box the offline map is empty. The three data layers are always local files.
+
+- Rehearse without unplugging the network: add `?basemap=offline` to the address.
+- Rebuild or change the area: edit `BBOX` / `MAX_ZOOM` in `tools/fetch_basemap.mjs`, then
+  `node tools/fetch_basemap.mjs` (it refuses to exceed 100 MB).
+- Map data © OpenStreetMap contributors (ODbL), schema © OpenMapTiles, tiles by OpenFreeMap.
 
 ## Using the screen
 
@@ -97,7 +107,9 @@ public/scenarios/index.json           scenario list (title, map view, time windo
 public/scenarios/<id>/                the three data files of a scenario
 schemas/                              JSON Schema (draft 2020-12) of the three records
 scripts/validate.mjs                  data files vs. schemas
-tools/build_marmaris_scenario.py      how the sample scenario was built (needs the fire repo's environment)
+tools/build_marmaris_scenario.py      builds the scenario from the fire repository (needs its environment)
+tools/fetch_basemap.mjs               packages the offline basemap into public/basemap/
+src/basemap.ts                        online style with offline fallback
 src/data.ts                           loading, sorting, "streets near a caller"
 src/components/                       MapView (MapLibre), CallerList, SidePanel, TimeBar
 ```

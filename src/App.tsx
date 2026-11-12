@@ -90,7 +90,7 @@ export function App() {
             MODEL OUTPUT street access (fire model, not a road survey)
           </span>
         )}
-        <span className="ml-auto whitespace-nowrap text-xs text-ink-400">Decision-support prototype · a human confirms every decision</span>
+        <span className="ml-auto truncate text-xs text-ink-400" title="Decision-support prototype. A human confirms every decision.">Prototype · a human confirms every decision</span>
       </header>
 
       {error && <p className="p-4 text-rose-400">Could not load the scenario: {error}</p>}

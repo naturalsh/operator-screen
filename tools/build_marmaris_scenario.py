@@ -201,7 +201,7 @@ def build_caller_reports(status_gdf: gpd.GeoDataFrame, t0: datetime) -> dict:
             else:
                 kind, lead_min = "approach_far", 70 + 80 * _unit(key + "lead")        # 70..150 min before
             reported = max(arrival - timedelta(minutes=lead_min), t0 + timedelta(minutes=6))
-            people = 0 if kind == "approach_far" else 1 + int(5 * _unit(key + "n"))
+            people = 0 if kind == "approach_far" else 2 + int(4 * _unit(key + "n"))
             options = TEMPLATES[kind]
             lang, text, text_en, reasons = options[int(len(options) * _unit(key + "tpl"))]
             urgency = ("life_threat" if kind == "approach_near" and (people >= 3 or "elderly" in reasons)

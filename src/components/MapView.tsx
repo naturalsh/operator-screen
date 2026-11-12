@@ -1,13 +1,11 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map as MLMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, fmtTime, statusAt, visibleCallers } from '../data';
+import { resolveBasemap } from '../basemap';
 import type { CallerReport, ScenarioData, StreetAccess } from '../types';
 
 export type LayerKey = 'forecast' | 'observed' | 'streets' | 'callers';
-
-/** Basemap: OpenFreeMap dark vector style (OSM data, no API key). */
-const BASE_STYLE = 'https://tiles.openfreemap.org/styles/dark';
 
 const LAYER_GROUPS: Record<LayerKey, string[]> = {
   forecast: ['forecast-pending', 'forecast-reached', 'forecast-label'],
@@ -44,6 +42,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
+  const [offline, setOffline] = useState(false);
   const latest = useRef({ now, layers, selectedId, nearIds, data });
   latest.current = { now, layers, selectedId, nearIds, data };
 
@@ -74,15 +73,21 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
   };
 
   useEffect(() => {
+    let cancelled = false;
+    let created: MLMap | null = null;
+    resolveBasemap().then((basemap) => {
+    if (cancelled) return;
+    setOffline(basemap.offline);
     const map = new maplibregl.Map({
       container: container.current!,
-      style: BASE_STYLE,
+      style: basemap.style,
       center: data.entry.center,
       zoom: data.entry.zoom,
       attributionControl: { compact: true },
       preserveDrawingBuffer: true, // lets the canvas be captured (screenshots)
     });
     mapRef.current = map;
+    created = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right');
 
@@ -163,7 +168,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
       ready.current = true;
       sync();
     });
-    return () => { ready.current = false; map.remove(); };
+    });
+    return () => { cancelled = true; ready.current = false; created?.remove(); mapRef.current = null; };
     // The map is rebuilt only when another scenario is loaded.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
@@ -176,5 +182,14 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
     if (c && mapRef.current) mapRef.current.easeTo({ center: [c.place.lon, c.place.lat], zoom: Math.max(mapRef.current.getZoom(), 13.2) });
   }, [selectedId, data]);
 
-  return <div ref={container} className="h-full w-full" />;
+  return (
+    <>
+      <div ref={container} className="h-full w-full" />
+      {offline && (
+        <span className="absolute left-2 top-2 rounded bg-ink-800/90 px-2 py-1 text-[11px] text-ink-200">
+          Offline basemap (packaged copy, demo area only)
+        </span>
+      )}
+    </>
+  );
 }
