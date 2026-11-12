@@ -1,7 +1,15 @@
 # Nature Shield · Operator screen
 
+**Live demo: https://naturalsh.github.io/operator-screen/**
+
 One screen for the response operator: **caller reports** (Voice intake), **street access** (Road Check)
 and the **fire front** (Fire modelling) on the same map and the same clock.
+
+Nature Shield is a Greece – Türkiye Hackathon 2026 project with three tools: a voice agent that takes callers'
+reports, Road Check, which reads aerial photos to say which streets a rescue vehicle can use, and a wildfire
+spread model. This repository is the shared screen that puts their outputs together. It is a static web app
+(Vite, React, MapLibre GL) that reads three data files per scenario; there is no server and nothing is sent anywhere.
+The sample scenario replays the Marmaris wildfire of 21–24 June 2022.
 
 > Decision-support prototype. A human confirms every decision. It is not an evacuation order;
 > follow official instructions (112 / AFAD / ΓΓΠΠ).
@@ -28,6 +36,14 @@ Popups (click a street, a caller, a response point, a satellite detection or a f
 Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_overview.png),
 [zoomed](docs/14_labels_zoomed.png).
 
+## What the labels mean
+
+| Label on screen | Meaning |
+|---|---|
+| **REAL DATA** | Measured or observed: satellite detections, OpenStreetMap geometry and station locations. |
+| **MODEL OUTPUT** | Computed by the fire model from real inputs. It is an estimate, not an observation: the forecast contours, and in the sample scenario the street access (which streets the modelled fire has reached). |
+| **SYNTHETIC** | Invented sample data written for the demo so that a layer can be shown before the real tool's export exists. In the sample scenario every caller report is synthetic. No real caller data is in this repository. |
+
 ## What is real and what is synthetic
 
 | Layer | File | Status |
@@ -39,6 +55,22 @@ Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_over
 Every synthetic record carries `"synthetic": true`, and each synthetic file has `"metadata": {"synthetic": true}`.
 A file derived from the fire model has `"metadata": {"basis": "fire_model"}`. The screen takes its
 SYNTHETIC and MODEL OUTPUT labels from those flags, so they disappear by themselves when real files replace the samples.
+
+## Data sources and licences
+
+| Data | Source | Licence / terms |
+|---|---|---|
+| Hotspots (VIIRS 375 m, MODIS 1 km) in `firefront.geojson` | NASA FIRMS (LANCE / EOSDIS) standard-processing archive | NASA EOSDIS open data policy: free and open, no restrictions; acknowledgement requested. *We acknowledge the use of data from NASA's Fire Information for Resource Management System (FIRMS) (https://earthdata.nasa.gov/firms), part of NASA's Earth Science Data and Information System (ESDIS).* |
+| Hotspots (SLSTR 1 km), flame front and burned area in `firefront.geojson` | Copernicus Sentinel-3 SLSTR and Sentinel-2 L2A, via Microsoft Planetary Computer | Copernicus Sentinel data: free, full and open access. Contains modified Copernicus Sentinel data (2022). |
+| Forecast contours in `firefront.geojson`; street status in `street_access.geojson` | Nature Shield fire model (Rothermel, minimum travel time, Monte Carlo) | Model output of the project's fire tool. |
+| Street geometry, station locations, place names (`street_access.geojson`, `responders.json`, `tools/osm/`) | OpenStreetMap, via the Overpass API | © OpenStreetMap contributors, Open Database Licence (ODbL) 1.0. Files derived from it stay under the ODbL. |
+| Basemap (online, and the packaged copy in `public/basemap/`) | OpenFreeMap tiles, OpenMapTiles schema, OpenStreetMap data | © OpenStreetMap contributors (ODbL); © OpenMapTiles; tiles by OpenFreeMap. |
+| Caller reports (`caller_reports.json`) | Written for this demo | Synthetic, CC0-1.0. |
+
+Each record also carries its own `source`, `source_url`, `license` and `fetched_at`. Some `source_url` values
+point at the fire tool's repository, which is private.
+
+No licence has been chosen yet for the code in this repository.
 
 ## Run
 

@@ -2,3 +2,6 @@ node_modules
 dist
 .dev-server.log
 tools/.cache/
+vite.config.ts.timestamp-*
+.env
+.env.*
