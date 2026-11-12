@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { URGENCY_LABEL, fileKind, loadIndex, loadScenario, modelLabel, streetsNear, visibleCallers } from './data';
 import { buildGraph, cutStreets, planRoute, type RoutePlan } from './routing';
 import type { CallerReport, Decision, ScenarioData, ScenarioEntry, StreetFeature, Urgency } from './types';
@@ -7,6 +7,7 @@ import { DecisionLog } from './components/DecisionLog';
 import { MapView, type LayerKey } from './components/MapView';
 import { SidePanel } from './components/SidePanel';
 import { TimeBar } from './components/TimeBar';
+import { useMediaQuery } from './useMediaQuery';
 
 const TICK_MS = 100;
 
@@ -31,6 +32,10 @@ export function App() {
   const [cases, setCases] = useState<Record<string, CaseState>>({});
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [tab, setTab] = useState<'overview' | 'log'>('overview');
+  // Phone layout (below 768 px): full-screen map, a bottom drawer with three tabs, a fixed time bar.
+  const phone = useMediaQuery('(max-width: 767px)');
+  const [drawer, setDrawer] = useState<'reports' | 'layers' | 'log' | null>(null);
+  const mainRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     loadIndex().then((list) => {
@@ -157,16 +162,89 @@ export function App() {
   const timeZone = data?.entry.timezone ?? 'UTC';
   const labelOf = (id: string) => data?.callers.find((c) => c.id === id)?.place.label ?? id;
 
+  const scenarioSelect = (
+    <select value={scenarioId ?? ''} onChange={(e) => { setSelectedId(null); setScenarioId(e.target.value); }}
+      aria-label="Scenario" className="rounded bg-ink-800 px-2 py-1 text-sm text-ink-50">
+      {scenarios.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+    </select>
+  );
+
+  if (phone) {
+    const DRAWER_OPEN = 0.5;                 // share of the map area the open drawer covers
+    const TAB_BAR_PX = 44;
+    const inset = () => (drawer ? (mainRef.current?.clientHeight ?? 0) * DRAWER_OPEN : TAB_BAR_PX);
+    const tabs = [
+      ['reports', `Reports (${callers.length})`], ['layers', 'Layers'], ['log', `Decision log (${decisions.length})`],
+    ] as const;
+    return (
+      <div className="flex flex-col" style={{ height: '100dvh' }} data-layout="phone">
+        <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-ink-700 bg-ink-900 px-2 py-1.5">
+          <h1 className="whitespace-nowrap text-sm font-bold">Nature Shield</h1>
+          {syntheticLayers.length > 0 && <span className="synthetic-tag">SYNTHETIC calls</span>}
+          {modelStreets && <span className="model-tag">{modelLabel(data!.streetsMeta)} streets</span>}
+        </header>
+        {error && <p className="p-4 text-rose-400">Could not load the scenario: {error}</p>}
+        {!data && !error && <p className="p-4 text-ink-400">Loading scenario…</p>}
+        {data && (
+          <>
+            <main ref={mainRef} className="relative min-h-0 flex-1 overflow-hidden">
+              <MapView data={data} now={now} layers={layers} selectedId={selected?.id ?? null}
+                nearIds={nearIds} stages={stages} routes={routes} urgencyOf={urgencyOf} onSelect={setSelectedId}
+                bottomInset={inset()} fitFire />
+              <div className="absolute inset-x-0 bottom-0 z-10 flex flex-col rounded-t-xl border-t border-ink-600 bg-ink-900 shadow-2xl"
+                style={{ height: drawer ? `${DRAWER_OPEN * 100}%` : TAB_BAR_PX }} data-drawer={drawer ?? 'closed'}>
+                <div className="flex shrink-0 text-xs font-bold" style={{ height: TAB_BAR_PX }} role="tablist">
+                  {tabs.map(([k, label]) => (
+                    <button key={k} role="tab" aria-selected={drawer === k} data-drawer-tab={k}
+                      onClick={() => setDrawer(drawer === k ? null : k)}
+                      className={`flex-1 px-1 ${drawer === k ? 'border-b-2 border-sky-400 text-ink-50' : 'text-ink-400'}`}>
+                      {label}{drawer === k ? ' ▾' : ''}
+                    </button>
+                  ))}
+                </div>
+                {drawer && (
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    {drawer === 'reports' && (
+                      <CallerList callers={callers} streets={data.streets.features} now={now} timeZone={timeZone}
+                        synthetic={data.callersMeta.synthetic === true} selectedId={selected?.id ?? null}
+                        cases={cases} routeChecks={routeChecks} canRoute={data.responders.length > 0}
+                        onSelect={setSelectedId} onTake={onTake} onConfirm={onConfirm} onDispatch={onDispatch} onReroute={onReroute} />
+                    )}
+                    {drawer === 'layers' && (
+                      <>
+                        <div className="flex flex-wrap items-center gap-2 border-b border-ink-700 p-3 text-xs text-ink-400">
+                          <label>Scenario {scenarioSelect}</label>
+                          <label>Operator{' '}
+                            <input value={operator} onChange={(e) => setOperator(e.target.value)} aria-label="Operator name"
+                              className="w-28 rounded bg-ink-800 px-2 py-1 text-sm text-ink-50" />
+                          </label>
+                        </div>
+                        <SidePanel data={data} now={now} timeZone={timeZone} layers={layers}
+                          onToggle={(k) => setLayers((l) => ({ ...l, [k]: !l[k] }))} />
+                      </>
+                    )}
+                    {drawer === 'log' && (
+                      <DecisionLog decisions={decisions} scenarioId={data.entry.id} timeZone={timeZone} labelOf={labelOf} />
+                    )}
+                  </div>
+                )}
+              </div>
+            </main>
+            <TimeBar compact start={start} end={end} now={now} playing={playing} speed={speed} timeZone={timeZone} marks={marks}
+              onSeek={setNow} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
+          </>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-ink-700 bg-ink-900 px-3 py-2">
         <h1 className="whitespace-nowrap text-base font-bold">Nature Shield <span className="font-normal text-ink-400">· Operator screen</span></h1>
         <label className="text-xs text-ink-400">
           Scenario{' '}
-          <select value={scenarioId ?? ''} onChange={(e) => { setSelectedId(null); setScenarioId(e.target.value); }}
-            className="rounded bg-ink-800 px-2 py-1 text-sm text-ink-50">
-            {scenarios.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
-          </select>
+          {scenarioSelect}
         </label>
         {syntheticLayers.length > 0 && (
           <span className="synthetic-tag" style={{ fontSize: 11, padding: '3px 8px' }}>

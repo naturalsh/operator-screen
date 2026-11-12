@@ -167,6 +167,9 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
       )}
 
       <Section title="Data on this screen">
+        <p className="mb-1 text-xs text-ink-400">
+          Basemap: OpenFreeMap, © OpenMapTiles, data © OpenStreetMap contributors.
+        </p>
         {files.map(([name, kind, note]) => (
           <div key={name} className="py-1">
             <div className="flex items-center gap-2">

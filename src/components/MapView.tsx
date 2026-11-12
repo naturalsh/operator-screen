@@ -50,9 +50,13 @@ interface Props {
   routes: { reportId: string; edgeIds: string[]; cut: boolean }[];
   urgencyOf: (c: CallerReport) => Urgency;
   onSelect: (id: string | null) => void;
+  /** Pixels at the bottom of the map covered by the phone drawer; a selected caller is centred above it. */
+  bottomInset?: number;
+  /** Start zoomed to the fire (forecast contours) instead of the scenario's default view; used on phones. */
+  fitFire?: boolean;
 }
 
-export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect }: Props) {
+export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, bottomInset = 0, fitFire = false }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
@@ -113,6 +117,16 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     });
     mapRef.current = map;
     created = map;
+    if (fitFire) {
+      // Bounding box of the forecast contours, so a narrow screen starts on the fire.
+      const box = new maplibregl.LngLatBounds();
+      const add = (c: unknown): void => {
+        if (Array.isArray(c) && typeof c[0] === 'number') box.extend(c as [number, number]);
+        else if (Array.isArray(c)) c.forEach(add);
+      };
+      for (const f of data.fire.features) if (f.properties.kind === 'forecast' && 'coordinates' in f.geometry) add(f.geometry.coordinates);
+      if (!box.isEmpty()) map.fitBounds(box, { padding: { top: 24, left: 24, right: 24, bottom: 24 + bottomInset }, animate: false });
+    }
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right');
 
@@ -295,7 +309,12 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   // Bring a newly selected caller into view.
   useEffect(() => {
     const c = data.callers.find((x) => x.id === selectedId);
-    if (c && mapRef.current) mapRef.current.easeTo({ center: [c.place.lon, c.place.lat], zoom: Math.max(mapRef.current.getZoom(), 13.2) });
+    if (c && mapRef.current) {
+      mapRef.current.easeTo({ center: [c.place.lon, c.place.lat], zoom: Math.max(mapRef.current.getZoom(), 13.2),
+        offset: [0, -bottomInset / 2] });
+    }
+    // bottomInset is read when the selection changes; opening or closing the drawer does not move the map.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, data]);
 
   return (

@@ -130,6 +130,22 @@ box the offline map is empty. The three data layers are always local files.
   (`valid_at`): in the sample scenario a street turns red when the modelled fire reaches it. Click a street for details.
 - **Right panel**: layer toggles, forecast and latest satellite pass, street counts, and which files are real.
 
+## On a phone
+
+Below 768 px the map fills the screen and starts on the fire. The reports, the layer panel and the decision
+log open from the bottom as a drawer with three tabs (**Reports / Layers / Decision log**); tap the open tab
+to close it. The time bar stays fixed at the bottom with touch-sized controls. Tapping a report card selects
+it and moves the map to the caller, in the part of the map the drawer does not cover. Scenario and operator
+name are in the Layers tab. The desktop layout is unchanged.
+
+| iPhone 390 × 844 | Reports | Card tapped | Layers | Decision log |
+|---|---|---|---|---|
+| ![map](docs/phone_iphone_390x844_1_map.png) | ![reports](docs/phone_iphone_390x844_2_reports.png) | ![card](docs/phone_iphone_390x844_3_card_tapped.png) | ![layers](docs/phone_iphone_390x844_4_layers.png) | ![log](docs/phone_iphone_390x844_5_log.png) |
+
+Android 360 × 800: [map](docs/phone_android_360x800_1_map.png), [reports](docs/phone_android_360x800_2_reports.png),
+[card tapped](docs/phone_android_360x800_3_card_tapped.png), [layers](docs/phone_android_360x800_4_layers.png),
+[decision log](docs/phone_android_360x800_5_log.png).
+
 ## Operator actions and the decision log
 
 Each report card walks through three steps; nothing happens without a click.

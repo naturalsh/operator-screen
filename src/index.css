@@ -39,3 +39,21 @@ body { background: #07090d; color: #f2f6fb; font-size: 14px; }
 .ns-popup.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: #33435a !important; }
 .ns-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #33435a !important; }
 .ns-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #33435a !important; }
+
+/* Phone layout (below 768 px): touch-sized controls. The desktop layout is untouched. */
+.touch-range { -webkit-appearance: none; appearance: none; height: 40px; background: transparent; margin: 0; }
+.touch-range::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: #33435a; }
+.touch-range::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 30px; height: 30px; margin-top: -12px; border-radius: 50%;
+  background: #60a5fa; border: 3px solid #07090d;
+}
+.touch-range::-moz-range-track { height: 6px; border-radius: 3px; background: #33435a; }
+.touch-range::-moz-range-thumb { width: 26px; height: 26px; border-radius: 50%; background: #60a5fa; border: 3px solid #07090d; }
+
+@media (max-width: 767px) {
+  [data-report] button, [data-report] select { min-height: 40px; padding-left: 14px; padding-right: 14px; font-size: 13px; }
+  input[type='checkbox'] { width: 20px; height: 20px; }
+  /* Keep the scale and attribution above the collapsed drawer's tab bar. */
+  .maplibregl-ctrl-bottom-left, .maplibregl-ctrl-bottom-right { bottom: 48px !important; }
+  .ns-popup { max-width: 86vw !important; }
+}
