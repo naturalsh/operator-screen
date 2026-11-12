@@ -58,7 +58,7 @@ for (const s of read('public/scenarios/index.json').scenarios) {
     const data = read(base + path);
     const n = validateRecords(path, kind, pick(data));
     const tag = data.metadata?.synthetic === true ? 'SYNTHETIC'
-      : data.metadata?.basis === 'fire_model' ? 'model output' : 'real';
+      : data.metadata?.basis?.startsWith('fire_model') ? (data.metadata.label ?? 'model output').toLowerCase() : 'real';
     console.log(`  ${path}: ${n} records (${tag})`);
   }
 }

@@ -3,7 +3,7 @@ import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map 
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL, URGENCY_ORDER,
-  fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
+  closureAt, closureSource, fireNearby, modelLabel, fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
 } from '../data';
 import { resolveBasemap } from '../basemap';
 import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
@@ -13,7 +13,7 @@ export type LayerKey = 'forecast' | 'observed' | 'streets' | 'callers' | 'crews'
 const LAYER_GROUPS: Record<LayerKey, string[]> = {
   forecast: ['forecast-pending', 'forecast-reached', 'forecast-label'],
   observed: ['hotspots', 'burned-area', 'flame-front'],
-  streets: ['streets-near', 'streets'],
+  streets: ['streets-near', 'streets-nearby', 'streets', 'streets-sat'],
   callers: ['callers-selected', 'callers', 'callers-label'],
   crews: ['routes-casing', 'routes', 'routes-cut', 'responders', 'responders-label'],
 };
@@ -76,6 +76,11 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.setFilter('flame-front', ['all', obs('flame_front'), upTo]);
     map.setFilter('burned-area', ['all', obs('burned_area'), upTo]);
     map.setFilter('streets-near', ['in', ['get', 'id'], ['literal', near]]);
+    // Blocked by a satellite detection only (the model has not reached the street yet): dashed red.
+    const satOnly: ExpressionSpecification = ['all', ['<=', ['coalesce', ['get', 'ts'], 9e15], t], ['>', ['coalesce', ['get', 'tm'], 9e15], t]];
+    map.setFilter('streets-sat', satOnly);
+    map.setFilter('streets', ['!', satOnly]);
+    map.setFilter('streets-nearby', ['all', ['<=', ['coalesce', ['get', 'tn'], 9e15], t], ['>', ['get', 't'], t]]);
     map.setPaintProperty('streets', 'line-color', ['match',
       ['case', ['<=', ['get', 't'], t], ['get', 'status'], ['get', 'before']],
       'open', STATUS_COLOUR.open, 'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked]);
@@ -130,6 +135,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
 
       map.addLayer({ id: 'streets-near', type: 'line', source: 'streets',
         layout: { 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.9 } });
+      // "Fire nearby (satellite)": an amber halo under streets a 1 km pixel covers but nothing has closed.
+      map.addLayer({ id: 'streets-nearby', type: 'line', source: 'streets',
+        paint: { 'line-color': '#fbbf24', 'line-opacity': 0.55,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 10, 4, 14, 9] } });
       map.addLayer({ id: 'streets', type: 'line', source: 'streets', layout: { 'line-cap': 'round' },
         paint: {
           'line-color': STATUS_COLOUR.open,
@@ -139,6 +148,13 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             10, ['match', ['get', 'highway'], 'track', 0.8, 1.8],
             14, ['match', ['get', 'highway'], 'track', 2.2, 4.5]],
         } });
+
+      // Satellite-only closures: red like the model's, but dashed (on a dark casing so the gaps read).
+      map.addLayer({ id: 'streets-sat', type: 'line', source: 'streets',
+        paint: { 'line-color': STATUS_COLOUR.blocked, 'line-dasharray': [1.6, 1.4],
+          'line-width': ['interpolate', ['linear'], ['zoom'],
+            10, ['match', ['get', 'highway'], 'track', 1.2, 2.2],
+            14, ['match', ['get', 'highway'], 'track', 2.6, 4.5]] } });
 
       // Crew routes: drawn over the streets; a route cut by a newly blocked street turns dashed amber.
       map.addLayer({ id: 'routes-casing', type: 'line', source: 'streets', layout: { 'line-cap': 'round', 'line-join': 'round' },
@@ -188,10 +204,12 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       }
 
       // One click handler, most specific feature first: caller, response point, street, fire front.
-      const CLICKABLE = ['callers', 'responders', 'streets', 'flame-front', 'forecast-reached', 'forecast-pending', 'hotspots', 'burned-area'];
+      const CLICKABLE = ['callers', 'responders', 'streets', 'streets-sat', 'flame-front', 'forecast-reached', 'forecast-pending', 'hotspots', 'burned-area'];
       const muted = (text: string) => `<div class="ns-muted">${text}</div>`;
       const tag = (p: { synthetic?: boolean; basis?: string }) => (p.synthetic ? '<span class="synthetic-tag">SYNTHETIC</span>'
-        : p.basis === 'fire_model' ? '<span class="model-tag">MODEL OUTPUT</span>' : '');
+        : p.basis === 'fire_model' ? '<span class="model-tag">MODEL OUTPUT</span>'
+          : p.basis === 'satellite' ? '<span class="model-tag">SATELLITE</span>'
+            : p.basis === 'fire_model_and_satellite' ? `<span class="model-tag">${modelLabel(latest.current.data.streetsMeta)}</span>` : '');
       map.on('click', (e) => {
         const hit = map.queryRenderedFeatures(e.point, { layers: CLICKABLE.filter((id) => map.getLayer(id)) })
           .sort((a, b) => CLICKABLE.indexOf(a.layer.id) - CLICKABLE.indexOf(b.layer.id))[0];
@@ -219,17 +237,23 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           html = `<b>${r.name}</b><div>${r.kind.replace('_', ' ')} · response point</div>`
             + muted(`Location: ${r.source} (${r.place.lat.toFixed(4)}° N, ${r.place.lon.toFixed(4)}° E)`)
             + muted('Crew availability here is an assumption of the demo.');
-        } else if (hit.layer.id === 'streets') {
+        } else if (hit.layer.id === 'streets' || hit.layer.id === 'streets-sat') {
           // Rendered features carry nested values (label_point) as JSON text, so read the street from the data.
           const p = d.streets.features.find((f) => f.properties.id === hit.properties.id)?.properties
             ?? (hit.properties as StreetAccess);
           const now = statusAt(p, t);
+          const closure = closureAt(p, t);
           html = `<b>${streetLabel(p)}</b>` + muted(`${p.highway ?? 'road'} · OSM way ${p.osm_way_id}`)
             + `<div><span style="color:${STATUS_COLOUR[now]}">■</span> ${STATUS_SHORT[now]}`
             + (p.free_width_m != null ? `, free width ${p.free_width_m} m` : '')
-            + ((p.t ?? 0) > 0 && (p.t ?? 0) <= t && p.status !== p.before ? ` since ${fmtTime(p.t!, tz)}` : '') + '</div>'
-            + ((p.t ?? 0) > t ? `<div>Model: ${p.status.replace('_', ' ')} from ${fmtTime(p.t!, tz)}</div>` : '')
-            + (p.reason ? muted(p.reason) : '')
+            + (closure ? ` since ${fmtTime(closure.since, tz)} — ${closureSource(p, closure)}`
+              : (p.t ?? 0) > 0 && (p.t ?? 0) <= t && p.status !== p.before ? ` since ${fmtTime(p.t!, tz)}` : '') + '</div>'
+            + (closure?.by === 'both' ? muted(`model from ${fmtTime(p.tm!, tz)} · satellite from ${fmtTime(p.ts!, tz)}`) : '')
+            + ((p.t ?? 0) > t ? `<div>Expected: ${p.status.replace('_', ' ')} from ${fmtTime(p.t!, tz)}`
+              + `${p.first_blocked_by ? ` (${p.first_blocked_by})` : ''}</div>` : '')
+            + (fireNearby(p, t) ? `<div style="color:#fbbf24">⚠ Fire nearby (satellite): ${p.fire_nearby_source ?? '1 km pixel'} `
+              + `since ${fmtTime(p.tn!, tz)}. 1 km pixel, too coarse to close the street.</div>` : '')
+            + (p.reason && closure ? muted(p.reason) : '')
             + (p.imagery_date ? muted(`Imagery: ${p.imagery_date}`) : '')
             + muted(p.confirmed_by_operator ? 'Confirmed by operator' : 'Not confirmed by an operator') + tag(p);
         } else {

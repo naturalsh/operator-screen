@@ -37,11 +37,48 @@ export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> 
   };
 }
 
+/** "Never" as a number MapLibre filters can compare (Infinity does not survive GeoJSON). */
+export const NEVER = 9e15;
+
+export interface Closure {
+  by: 'model' | 'satellite' | 'both';
+  /** Source and time of the first closure. */
+  firstBy: 'model' | 'satellite';
+  since: number;
+}
+
+/** Who has closed a street by `now` (null = not blocked by the fire model or a satellite). */
+export function closureAt(p: StreetAccess, now: number): Closure | null {
+  const m = (p.tm ?? NEVER) <= now, s = (p.ts ?? NEVER) <= now;
+  if (!m && !s) return null;
+  const firstBy = s && (!m || p.ts! <= p.tm!) ? 'satellite' : 'model';
+  return { by: m && s ? 'both' : m ? 'model' : 'satellite', firstBy, since: Math.min(m ? p.tm! : NEVER, s ? p.ts! : NEVER) };
+}
+
+/** "satellite (VIIRS N20)", "model", "model and satellite (VIIRS N20)". */
+export function closureSource(p: StreetAccess, c: Closure): string {
+  const sat = `satellite${p.satellite_source ? ` (${p.satellite_source})` : ''}`;
+  return c.by === 'both' ? `model and ${sat}` : c.by === 'model' ? 'model' : sat;
+}
+
+/** A 1 km satellite pixel with fire covers the street at `now` and the street is not blocked. */
+export function fireNearby(p: StreetAccess, now: number): boolean {
+  return (p.tn ?? NEVER) <= now && statusAt(p, now) !== 'blocked';
+}
+
 /** Adds the derived fields the screen works with: `t` (valid_at as epoch ms) and `before`. */
 export function prepareStreets(features: StreetFeature[]): StreetFeature[] {
   for (const f of features) {
     f.properties.t = f.properties.valid_at ? Date.parse(f.properties.valid_at) : 0;
     f.properties.before = f.properties.status_before ?? (f.properties.valid_at ? 'open' : f.properties.status);
+    const p = f.properties;
+    const sat = p.satellite_blocked_at ? Date.parse(p.satellite_blocked_at) : NEVER;
+    // Without per-source times a blocked street counts as one closure of its own basis.
+    const model = p.model_blocked_at ? Date.parse(p.model_blocked_at)
+      : p.status === 'blocked' && !p.satellite_blocked_at && p.basis !== 'satellite' ? p.t! : NEVER;
+    p.tm = model;
+    p.ts = sat === NEVER && p.status === 'blocked' && p.basis === 'satellite' ? p.t! : sat;
+    p.tn = p.fire_nearby_at ? Date.parse(p.fire_nearby_at) : NEVER;
   }
   return features;
 }
@@ -60,7 +97,12 @@ export function statusAt(p: StreetAccess, now: number): StreetStatus {
 
 /** Label of a data file: invented sample, model output or real data. */
 export function fileKind(meta: FileMeta): 'synthetic' | 'model' | 'real' {
-  return meta.synthetic === true ? 'synthetic' : meta.basis === 'fire_model' ? 'model' : 'real';
+  return meta.synthetic === true ? 'synthetic' : meta.basis?.startsWith('fire_model') ? 'model' : 'real';
+}
+
+/** Tag text of a model-derived file: "MODEL + SATELLITE" when satellite detections are part of it. */
+export function modelLabel(meta: FileMeta): string {
+  return meta.label ?? (meta.basis?.includes('satellite') ? 'MODEL + SATELLITE' : 'MODEL OUTPUT');
 }
 
 /** Reports received up to `now`, most urgent first (operator-confirmed urgency wins), then newest first. */

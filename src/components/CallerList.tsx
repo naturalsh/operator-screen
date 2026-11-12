@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL,
-  fmtAge, fmtTime, statusAt, streetLabel, streetsNear,
+  closureAt, closureSource, fireNearby, fmtAge, fmtTime, statusAt, streetLabel, streetsNear,
 } from '../data';
 import type { RoutePlan } from '../routing';
 import type { CallerReport, Stage, StreetFeature, Urgency } from '../types';
@@ -164,7 +164,10 @@ export function CallerList(props: Props) {
                     {near.slice(0, 6).map(({ street, dist }) => {
                       const p = street.properties;
                       const st = statusAt(p, now);
-                      const soon = (p.t ?? 0) > now ? ` → ${STATUS_SHORT[p.status].toLowerCase()} ${fmtTime(p.t!, timeZone)}` : '';
+                      const closure = closureAt(p, now);
+                      const soon = (p.t ?? 0) > now ? ` → ${STATUS_SHORT[p.status].toLowerCase()} ${fmtTime(p.t!, timeZone)}`
+                        : closure ? ` · ${closureSource(p, closure)}` : '';
+                      const warn = fireNearby(p, now);
                       return (
                         <li key={p.id} className="flex gap-1.5">
                           <span style={{ color: STATUS_COLOUR[st] }}>■</span>
@@ -173,6 +176,7 @@ export function CallerList(props: Props) {
                             <span className="block font-mono text-ink-400">
                               {p.free_width_m != null ? `${p.free_width_m} m wide · ` : ''}{Math.round(dist)} m away{soon}
                             </span>
+                            {warn && <span className="block text-amber-300">⚠ fire nearby (satellite: {p.fire_nearby_source})</span>}
                           </span>
                         </li>
                       );

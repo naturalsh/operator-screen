@@ -87,13 +87,53 @@
       "enum": [
         "imagery",
         "fire_model",
+        "satellite",
+        "fire_model_and_satellite",
         "operator"
       ],
-      "description": "What the status is based on: Road Check imagery, the fire model's road-closure calculation, or an operator's entry."
+      "description": "What the status is based on: Road Check imagery, the fire model's road-closure calculation, a satellite fire detection, both, or an operator's entry."
     },
     "reason": {
       "type": "string",
       "description": "Short human-readable reason for the status."
+    },
+    "blocked_by": {
+      "enum": [
+        "model",
+        "satellite",
+        "both"
+      ],
+      "description": "Which sources close the street within the scenario."
+    },
+    "first_blocked_by": {
+      "enum": [
+        "model",
+        "satellite"
+      ],
+      "description": "Source of the first closure (the one at valid_at)."
+    },
+    "model_blocked_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC time the modelled fire reaches the street."
+    },
+    "satellite_blocked_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC time of the first satellite detection of fire on the street."
+    },
+    "satellite_source": {
+      "type": "string",
+      "description": "Sensor behind satellite_blocked_at, e.g. 'VIIRS N20' or 'Sentinel-2 burned area'."
+    },
+    "fire_nearby_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC time a coarse (1 km) satellite pixel with fire first covers the street. A warning; it does not close the street."
+    },
+    "fire_nearby_source": {
+      "type": "string",
+      "description": "Sensor behind fire_nearby_at, e.g. 'MODIS Terra'."
     },
     "free_width_m": {
       "type": [

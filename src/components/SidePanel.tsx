@@ -1,4 +1,4 @@
-import { STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, fileKind, fmtAge, fmtTime, statusAt } from '../data';
+import { STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, closureAt, fileKind, fireNearby, fmtAge, fmtTime, modelLabel, statusAt } from '../data';
 import type { ScenarioData, StreetStatus } from '../types';
 import type { LayerKey } from './MapView';
 
@@ -20,18 +20,18 @@ interface Props {
 
 type Kind = 'synthetic' | 'model' | 'real';
 
-function KindTag({ kind, long }: { kind: Kind; long?: boolean }) {
+function KindTag({ kind, long, label }: { kind: Kind; long?: boolean; label?: string }) {
   if (kind === 'synthetic') return <span className="synthetic-tag">{long ? 'SYNTHETIC DATA' : 'SYNTHETIC'}</span>;
-  if (kind === 'model') return <span className="model-tag">MODEL OUTPUT</span>;
+  if (kind === 'model') return <span className="model-tag">{label ?? 'MODEL OUTPUT'}</span>;
   return long ? null : <span className="rounded bg-emerald-900 px-1.5 text-[10px] font-bold text-emerald-200">REAL DATA</span>;
 }
 
-function Section({ title, kind, children }: { title: string; kind?: Kind; children: React.ReactNode }) {
+function Section({ title, kind, label, children }: { title: string; kind?: Kind; label?: string; children: React.ReactNode }) {
   return (
     <section className="border-b border-ink-700 p-3">
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-xs font-bold uppercase tracking-wider text-ink-400">{title}</h2>
-        {kind && <KindTag kind={kind} long />}
+        {kind && <KindTag kind={kind} long label={label} />}
       </div>
       {children}
     </section>
@@ -48,6 +48,11 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
     (s) => [s, streets.filter((p) => statusAt(p, now) === s).length] as const);
   const imagery = [...new Set(streets.map((p) => p.imagery_date).filter(Boolean))].sort();
   const next = streets.filter((p) => (p.t ?? 0) > now && (p.t ?? 0) <= now + 4 * 3600000);
+  const closures = streets.map((p) => closureAt(p, now));
+  const by = (k: 'model' | 'satellite' | 'both') => closures.filter((c) => c?.by === k).length;
+  const hasSources = streets.some((p) => p.blocked_by);
+  const nearby = streets.filter((p) => fireNearby(p, now)).length;
+  const streetLabelText = modelLabel(data.streetsMeta);
   const streetKind = fileKind(data.streetsMeta);
   const files = [
     ['FireFront', fileKind(data.fireMeta), 'Fire model + NASA FIRMS, Copernicus Sentinel-2/3'],
@@ -99,7 +104,7 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
         </div>
       </Section>
 
-      <Section title="Street access" kind={streetKind === 'real' ? undefined : streetKind}>
+      <Section title="Street access" kind={streetKind === 'real' ? undefined : streetKind} label={streetLabelText}>
         {counts.map(([s, n]) => (
           <div key={s} className="flex items-center gap-2 py-0.5">
             <span className="inline-block h-1 w-5 rounded" style={{ background: STATUS_COLOUR[s] }} />
@@ -107,14 +112,41 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
             <span className="ml-auto font-mono">{n}</span>
           </div>
         ))}
+        {hasSources && (
+          <div className="ml-7 text-xs text-ink-200" data-blocked-split>
+            <div className="flex items-center gap-2 py-0.5">
+              <span className="inline-block h-0.5 w-5" style={{ background: STATUS_COLOUR.blocked }} />
+              model only<span className="ml-auto font-mono">{by('model')}</span>
+            </div>
+            <div className="flex items-center gap-2 py-0.5">
+              <span className="inline-block w-5 border-t-2 border-dashed" style={{ borderColor: STATUS_COLOUR.blocked }} />
+              satellite only<span className="ml-auto font-mono">{by('satellite')}</span>
+            </div>
+            <div className="flex items-center gap-2 py-0.5">
+              <span className="inline-block h-0.5 w-5" style={{ background: STATUS_COLOUR.blocked }} />
+              both<span className="ml-auto font-mono">{by('both')}</span>
+            </div>
+          </div>
+        )}
+        {hasSources && (
+          <div className="flex items-center gap-2 py-0.5" data-nearby>
+            <span className="inline-block h-1.5 w-5 rounded" style={{ background: '#fbbf24', opacity: 0.6 }} />
+            <span>Fire nearby (satellite), open</span>
+            <span className="ml-auto font-mono">{nearby}</span>
+          </div>
+        )}
         {next.length > 0 && (
           <p className="mt-1 text-xs" style={{ color: '#fca5a5' }}>
-            {next.length} more street{next.length > 1 ? 's' : ''} blocked within 4 h (model)
+            {next.length} more street{next.length > 1 ? 's' : ''} blocked within 4 h
           </p>
         )}
         <p className="mt-1 text-xs text-ink-400">
           {streetKind === 'model'
-            ? 'Blocked = the modelled fire has reached the street. Not a road survey. Click a street for details.'
+            ? (hasSources
+              ? 'Blocked = the modelled fire has reached the street (solid) or a satellite saw fire on it: VIIRS 375 m pixel, '
+                + 'Sentinel-2 flame front or burned area (dashed until the model agrees). MODIS and SLSTR 1 km pixels only '
+                + 'warn "fire nearby". Not a road survey. Click a street for details.'
+              : 'Blocked = the modelled fire has reached the street. Not a road survey. Click a street for details.')
             : `Imagery date: ${imagery.join(', ') || 'n/a'}. Click a street for its width.`}
         </p>
       </Section>
@@ -139,7 +171,7 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
           <div key={name} className="py-1">
             <div className="flex items-center gap-2">
               <b>{name}</b>
-              <KindTag kind={kind} />
+              <KindTag kind={kind} label={name === 'StreetAccess' ? streetLabelText : undefined} />
             </div>
             <div className="text-xs text-ink-400">{note}</div>
           </div>

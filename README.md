@@ -36,6 +36,8 @@ Without internet the packaged basemap is used: [docs/04_offline_basemap.png](doc
 Popups (click a street, a caller, a response point, a satellite detection or a forecast line):
 [street](docs/09_popup_street.png), [caller](docs/10_popup_caller.png),
 [response point](docs/11_popup_responder.png), [satellite detection](docs/12_popup_satellite.png).
+Street status from the model or a satellite, 22 June 04:02 local: [map](docs/16_satellite_closures_0402.png),
+[satellite closure popup](docs/17_popup_satellite_closure.png), [fire nearby popup](docs/18_popup_fire_nearby.png).
 Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_overview.png),
 [zoomed](docs/14_labels_zoomed.png).
 
@@ -44,7 +46,7 @@ Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_over
 | Label on screen | Meaning |
 |---|---|
 | **REAL DATA** | Measured or observed: satellite detections, OpenStreetMap geometry and station locations. |
-| **MODEL OUTPUT** | Computed by the fire model from real inputs. It is an estimate, not an observation: the forecast contours, and in the sample scenario the street access (which streets the modelled fire has reached). |
+| **MODEL OUTPUT** / **MODEL + SATELLITE** | Computed from real inputs; an estimate, not a survey. The forecast contours are model output. Street access in the sample scenario is MODEL + SATELLITE: a street is blocked when the modelled fire has reached it or a satellite has seen fire on it. |
 | **SYNTHETIC** | Invented sample data written for the demo so that a layer can be shown before the real tool's export exists. In the sample scenario every caller report is synthetic. No real caller data is in this repository. |
 
 ## What is real and what is synthetic
@@ -52,12 +54,12 @@ Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_over
 | Layer | File | Status |
 |---|---|---|
 | Fire front | `public/scenarios/marmaris_2022/firefront.geojson` | **Real.** Fire-model contours (8 / 20 / 40 h) and satellite observations (NASA FIRMS VIIRS and MODIS, Copernicus Sentinel-3 SLSTR, Sentinel-2), exported by the fire tool. |
-| Street access | `public/scenarios/marmaris_2022/street_access.geojson` | **Model output.** Real OpenStreetMap streets (© OpenStreetMap contributors, ODbL) classified by the fire repository's road-closure calculation: a street the modelled fire reaches (P ≥ 50 % contour every 2 h, 150 m safety buffer) is `blocked` from its `valid_at`. Not a road survey: no image was analysed, no width measured. |
+| Street access | `public/scenarios/marmaris_2022/street_access.geojson` | **Model + satellite.** Real OpenStreetMap streets (© OpenStreetMap contributors, ODbL). A street is `blocked` from its `valid_at` when the modelled fire reaches it (the fire repository's road-closure calculation: P ≥ 50 % contour every 2 h, 150 m safety buffer) **or** a satellite saw fire on it (a VIIRS 375 m pixel footprint crosses it, or the Sentinel-2 flame front or burned area is within 150 m). MODIS and SLSTR pixels (1 km) do not close a street; they raise a "fire nearby (satellite)" warning. Not a road survey: no width was measured. |
 | Caller reports | `public/scenarios/marmaris_2022/caller_reports.json` | **SYNTHETIC.** Invented reports, placed on streets the modelled fire reaches and timed around its arrival, so calls increase as the fire grows. |
 
 Every synthetic record carries `"synthetic": true`, and each synthetic file has `"metadata": {"synthetic": true}`.
-A file derived from the fire model has `"metadata": {"basis": "fire_model"}`. The screen takes its
-SYNTHETIC and MODEL OUTPUT labels from those flags, so they disappear by themselves when real files replace the samples.
+A file derived from the fire model has a `metadata.basis` starting with `fire_model` and may set
+`metadata.label` (the sample's street file: `MODEL + SATELLITE`). The screen takes its labels from those flags, so they disappear by themselves when real files replace the samples.
 
 ## Data sources and licences
 
@@ -120,7 +122,10 @@ box the offline map is empty. The three data layers are always local files.
 - **Caller reports** (left): reports received so far, life threat first, then urgent, then routine; newest first
   within a class. Click a report (or its marker) to see the caller's own words, the reasons for the suggested
   urgency and the streets within 600 m with their access class; those streets are outlined in white on the map.
-- **Street access**: green = open, orange = special access, red = blocked. Road Check classes are open
+- **Street access**: green = open, orange = special access, red = blocked. In the sample, solid red = closed by
+  the fire model (or by both), dashed red = closed by a satellite detection only, amber halo = open but a 1 km
+  satellite pixel with fire covers it. The right panel splits the blocked count into model / satellite / both,
+  and the popup names the source ("Blocked since 22 Jun, 04:02 — satellite (VIIRS N20)"). Road Check classes are open
   (free width ≥ 3 m), special access (2 m to under 3 m) and blocked (under 2 m). A status can start at a time
   (`valid_at`): in the sample scenario a street turns red when the modelled fire reaches it. Click a street for details.
 - **Right panel**: layer toggles, forecast and latest satellite pass, street counts, and which files are real.
@@ -191,7 +196,7 @@ All three share the same provenance fields: `schema_version`, `source`, `source_
 | Record | Required fields | Optional |
 |---|---|---|
 | `CallerReport` | `id`, `reported_at`, `place` (`lon`, `lat`, `label`), `language` (`el`/`tr`/`en`/`fr`), `urgency` (`life_threat`/`urgent`/`routine`), `urgency_reasons[]`, `hazard`, `people_at_risk`, `summary`, `confirmed_by_operator` | `summary_en`, `channel` |
-| `StreetAccess` | `id`, `osm_way_id`, `status` (`open`/`special_access`/`blocked`), `confirmed_by_operator`; with `basis: "imagery"` also `free_width_m` and `imagery_date` | `valid_at` + `status_before` (status that starts at a time), `basis` (`imagery`/`fire_model`/`operator`), `reason`, `edge_id`, `name`, `highway`, `confidence`, `imagery_source`; for routing and labels: `u`, `v`, `length_m`, `near_place`, `label_point`, `fire_distance_km` |
+| `StreetAccess` | `id`, `osm_way_id`, `status` (`open`/`special_access`/`blocked`), `confirmed_by_operator`; with `basis: "imagery"` also `free_width_m` and `imagery_date` | `valid_at` + `status_before` (status that starts at a time), `basis` (`imagery`/`fire_model`/`satellite`/`fire_model_and_satellite`/`operator`), `reason`, per-source closure: `blocked_by`, `first_blocked_by`, `model_blocked_at`, `satellite_blocked_at`, `satellite_source`; warning: `fire_nearby_at`, `fire_nearby_source`; `edge_id`, `name`, `highway`, `confidence`, `imagery_source`; for routing and labels: `u`, `v`, `length_m`, `near_place`, `label_point`, `fire_distance_km` |
 | `FireFront` | `id`, `kind` (`forecast`/`observed`), `valid_at`; forecast: `horizon_hours`, `model_run_at`; observed: `observation_type`, `instrument` | `probability`, `area_km2`, `satellite`, `detections`, `frp_mw` |
 | `Responder` (optional file) | `id`, `name`, `kind` (`fire_station`/`gendarmerie`/`police`/`other`), `place` (`lon`, `lat`) | |
 
@@ -213,8 +218,9 @@ src/components/                       MapView (MapLibre), CallerList (actions), 
 
 ## Known limits
 
-- Street access in the sample is the fire model's estimate of where the fire cuts roads, in 2-hour steps.
-  The model is slow in the first night compared with the satellite hotspots, so real closures came earlier.
+- Street access in the sample comes from the fire model in 2-hour steps and from satellite overpasses, which
+  are hours apart: a street is marked from the overpass that saw the fire, not from when the fire arrived.
+  A burned-area closure says the fire passed, not that the road is still impassable.
 - Caller reports are invented; their texts come from a small set of templates.
 - "Streets near a caller" is a straight-line distance, not a route.
 - Streets more than 3 km from the fire are drawn faint; they stay in the network for routing.

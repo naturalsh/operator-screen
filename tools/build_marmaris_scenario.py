@@ -9,12 +9,15 @@ What each file is:
 
 - firefront.geojson      REAL. The fire tool's export (`python -m fireproj.export_firefront`):
                          model contours + satellite observations.
-- street_access.geojson  MODEL OUTPUT. Real OpenStreetMap streets (© OpenStreetMap contributors,
-                         ODbL) classified by the fire repo's own road-closure calculation
-                         (`fireproj.road_closure.evaluate_road_closures`, 150 m safety buffer) against
-                         the modelled P >= 50 % contour every two hours. A street the modelled fire
-                         reaches becomes `blocked` at `valid_at`; before that it is `open`.
-                         It is not a road survey: no image was analysed and no width was measured.
+- street_access.geojson  MODEL + SATELLITE. Real OpenStreetMap streets (© OpenStreetMap contributors,
+                         ODbL). A street becomes `blocked` at `valid_at` when either
+                         (a) the modelled fire reaches it: the fire repo's own road-closure calculation
+                             (`fireproj.road_closure.evaluate_road_closures`, 150 m safety buffer) against
+                             the modelled P >= 50 % contour every two hours, or
+                         (b) a satellite saw fire on it: a VIIRS 375 m pixel footprint crosses it, or the
+                             Sentinel-2 flame front / burned area lies within 150 m.
+                         MODIS and SLSTR (1 km) pixels do not close a street; they set `fire_nearby_at`.
+                         It is not a road survey: no width was measured.
 - responders.json        REAL locations of two fire stations and a gendarmerie post from OpenStreetMap.
                          That a crew is available there is an assumption of the demo.
 - caller_reports.json    SYNTHETIC. Invented reports, but placed on streets the modelled fire reaches
@@ -36,6 +39,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 import shapely
 import numpy as np
 from shapely.geometry import LineString, Point, mapping
@@ -143,8 +147,40 @@ def build_street_access(fire_root: Path):
     status_gdf["_fire_km"] = (geom_utm.distance(extent) / 1000.0).round(1).to_numpy()
     status_gdf["_len_m"] = geom_utm.length.round(0).to_numpy()
 
+    # --- satellite observations (the fire tool's FireFront export) -----------------------------------
+    # The model is slow in the first hours, so streets are also closed where a satellite saw fire:
+    #   - a VIIRS 375 m pixel footprint that crosses the street, from the overpass time;
+    #   - the Sentinel-2 flame front or burned area within the safety buffer, from the image time.
+    # MODIS and SLSTR pixels are 1 km or more: too coarse to close a street, they only raise a
+    # "fire nearby (satellite)" warning.
+    ff = gpd.read_file(fire_root / "exports" / f"{EVENT}_firefront.geojson").to_crs(utm)
+    ff = ff[ff["kind"] == "observed"].sort_values("valid_at")
+    n = len(status_gdf)
+    sat_at, sat_src = np.full(n, None, dtype=object), np.full(n, None, dtype=object)
+    near_at, near_src = np.full(n, None, dtype=object), np.full(n, None, dtype=object)
+    sat_name = {"N": "S-NPP", "N20": "N20", "N21": "N21"}
+    for _, f in ff.iterrows():
+        when = pd.Timestamp(f["valid_at"]).tz_convert("UTC").to_pydatetime()
+        kind, inst = f["observation_type"], str(f["instrument"])
+        if kind == "hotspots" and inst == "VIIRS":
+            hits, label, at, src = geom_utm.intersects(f.geometry).to_numpy(), f"VIIRS {sat_name.get(f['satellite'], f['satellite'])}", sat_at, sat_src
+        elif kind in ("burned_area", "flame_front"):
+            hits = geom_utm.intersects(f.geometry.buffer(buffer_m)).to_numpy()
+            label, at, src = f"Sentinel-2 {kind.replace('_', ' ')}", sat_at, sat_src
+        else:
+            hits, label, at, src = geom_utm.intersects(f.geometry).to_numpy(), f"{inst} {f['satellite']}", near_at, near_src
+        new = hits & np.array([a is None for a in at])
+        at[new], src[new] = when, label
+    model_at_all = [t0 + timedelta(hours=float(h)) if st == "closed" and np.isfinite(h) else None
+                    for st, h in zip(status_gdf["status"], status_gdf["earliest_horizon_hours"])]
+    # First closure by either source; used for the status and for timing the synthetic calls.
+    first_all = [min([a for a in (m, s_) if a is not None], default=None) for m, s_ in zip(model_at_all, sat_at)]
+    status_gdf["closure_hours"] = [np.nan if a is None else (a - t0).total_seconds() / 3600.0 for a in first_all]
+    # Kept as plain lists: a DataFrame column would turn None into NaT / NaN.
+    closures = list(zip(model_at_all, sat_at, sat_src, near_at, near_src, first_all))
+
     feats = []
-    for _, r in status_gdf.iterrows():
+    for (_, r), (model_at, sat, sat_source, nearby_at, nearby_source, first) in zip(status_gdf.iterrows(), closures):
         way = r["osmid"]
         u, v = r["_uv"]
         edge_id = f"{int(way)}-{u}-{v}"
@@ -152,8 +188,17 @@ def build_street_access(fire_root: Path):
         line = r.geometry if int(r["u"]) == u else LineString(list(r.geometry.coords)[::-1])
         mid = line.interpolate(0.5, normalized=True)
         near, near_km = nearest_place(mid, places)
-        reached = r["status"] == "closed" and np.isfinite(r["earliest_horizon_hours"])
-        valid = t0 + timedelta(hours=float(r["earliest_horizon_hours"])) if reached else t0
+        reached = first is not None
+        valid = first if reached else t0
+        by = "both" if model_at and sat else "model" if model_at else "satellite" if sat else None
+        first_by = None if not reached else "satellite" if sat and (not model_at or sat <= model_at) else "model"
+        reasons = []
+        if model_at:
+            reasons.append(f"modelled fire (P ≥ 50 %, {buffer_m:.0f} m safety buffer) reaches this street "
+                           f"{float(r['earliest_horizon_hours']):g} h after ignition")
+        if sat:
+            reasons.append(f"{sat_source} saw fire on this street"
+                           + (f" (within {buffer_m:.0f} m)" if sat_source.startswith("Sentinel-2") else " (375 m pixel)"))
         feats.append({
             "type": "Feature",
             "geometry": mapping(_compact(line)),
@@ -174,13 +219,16 @@ def build_street_access(fire_root: Path):
                 "status": "blocked" if reached else "open",
                 **({"status_before": "open"} if reached else {}),
                 "valid_at": _iso(valid),
-                "basis": "fire_model",
-                **({"reason": f"modelled fire (P ≥ 50 %, {buffer_m:.0f} m safety buffer) reaches this street "
-                              f"{float(r['earliest_horizon_hours']):g} h after ignition"} if reached else {}),
+                "basis": {"model": "fire_model", "satellite": "satellite", "both": "fire_model_and_satellite"}.get(
+                    by, "fire_model_and_satellite"),
+                **({"blocked_by": by, "first_blocked_by": first_by, "reason": "; ".join(reasons)} if reached else {}),
+                **({"model_blocked_at": _iso(model_at)} if model_at else {}),
+                **({"satellite_blocked_at": _iso(sat), "satellite_source": sat_source} if sat else {}),
+                **({"fire_nearby_at": _iso(nearby_at), "fire_nearby_source": nearby_source} if nearby_at else {}),
                 "confirmed_by_operator": False,
-                "source": "fire model (nature-shield-fire road_closure)",
+                "source": "fire model + satellite detections (nature-shield-fire)",
                 "source_url": FIRE_REPO_URL,
-                "license": "ODbL-1.0 (OSM geometry); MIT (status)",
+                "license": "ODbL-1.0 (OSM geometry); MIT (model status); NASA FIRMS / Copernicus open data (detections)",
                 "fetched_at": GENERATED_AT,
                 "observed_at": _iso(valid),
                 "received_at": _iso(t0),
@@ -191,9 +239,11 @@ def build_street_access(fire_root: Path):
         "name": f"{EVENT}_street_access",
         "metadata": {
             "record": "StreetAccess", "schema_version": SCHEMA_VERSION, "synthetic": False,
-            "basis": "fire_model",
-            "note": "MODEL OUTPUT: streets the modelled fire reaches are blocked from valid_at. "
-                    "Not a road survey; no imagery was analysed.",
+            "basis": "fire_model_and_satellite",
+            "label": "MODEL + SATELLITE",
+            "note": "MODEL + SATELLITE: a street is blocked from the time the modelled fire reaches it or a "
+                    "satellite sees fire on it (VIIRS 375 m pixel, Sentinel-2 flame front or burned area). "
+                    "MODIS and SLSTR 1 km pixels only raise a 'fire nearby' warning. Not a road survey.",
             "model_run_at": _iso(t0), "contour_step_hours": 2, "safety_buffer_m": buffer_m,
             "far_from_fire_km": FAR_FROM_FIRE_KM, "osm_fetched_at": osm_fetched_at,
         },
@@ -261,7 +311,9 @@ def _place_label(pt: Point, name: str | None, places: dict) -> tuple[str, str]:
 
 def build_caller_reports(status_gdf: gpd.GeoDataFrame, t0: datetime, places: dict) -> dict:
     """Reports on streets the modelled fire reaches, timed around its arrival there."""
-    reached = status_gdf[status_gdf["status"] == "closed"].copy()
+    reached = status_gdf[status_gdf["closure_hours"].notna()].copy()
+    # Streets closed by either source, grouped in 2-hour steps of their first closure.
+    reached["earliest_horizon_hours"] = (np.ceil(reached["closure_hours"] / 2.0) * 2.0).clip(lower=2.0)
     reached["_len"] = reached.to_crs(reached.estimate_utm_crs()).length
     reached = reached[reached["_len"] > 150].sort_values(["earliest_horizon_hours", "_uv"])
     # Named roads and inhabited classes are where people are; keep a few forest roads too.

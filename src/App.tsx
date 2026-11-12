@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { URGENCY_LABEL, fileKind, loadIndex, loadScenario, streetsNear, visibleCallers } from './data';
+import { URGENCY_LABEL, fileKind, loadIndex, loadScenario, modelLabel, streetsNear, visibleCallers } from './data';
 import { buildGraph, cutStreets, planRoute, type RoutePlan } from './routing';
 import type { CallerReport, Decision, ScenarioData, ScenarioEntry, StreetFeature, Urgency } from './types';
 import { CallerList, NEAR_RADIUS_M, type CaseState, type RouteCheck } from './components/CallerList';
@@ -175,7 +175,7 @@ export function App() {
         )}
         {modelStreets && (
           <span className="model-tag" style={{ fontSize: 11, padding: '3px 8px' }}>
-            MODEL OUTPUT street access (not a road survey)
+            {modelLabel(data!.streetsMeta)} street access (not a road survey)
           </span>
         )}
         <label className="ml-auto whitespace-nowrap text-xs text-ink-400">

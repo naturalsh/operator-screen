@@ -45,7 +45,17 @@ export interface StreetAccess extends Provenance {
   /** Time from which `status` holds; before it `status_before` (default open) applies. */
   valid_at?: string;
   status_before?: StreetStatus | null;
-  basis?: 'imagery' | 'fire_model' | 'operator';
+  basis?: 'imagery' | 'fire_model' | 'satellite' | 'fire_model_and_satellite' | 'operator';
+  /** Which sources close the street within the scenario, and when each one does. */
+  blocked_by?: 'model' | 'satellite' | 'both';
+  first_blocked_by?: 'model' | 'satellite';
+  model_blocked_at?: string;
+  satellite_blocked_at?: string;
+  /** Sensor behind the satellite closure, e.g. "VIIRS N20". */
+  satellite_source?: string;
+  /** A coarse (1 km) satellite pixel with fire covers the street: a warning, not a closure. */
+  fire_nearby_at?: string;
+  fire_nearby_source?: string;
   reason?: string;
   free_width_m: number | null;
   confidence?: number;
@@ -60,9 +70,13 @@ export interface StreetAccess extends Provenance {
   label_point?: [number, number];
   /** Distance to the fire extent; far streets are drawn faint. */
   fire_distance_km?: number;
-  /** Added on load: valid_at as epoch ms (0 = always) and the status before it. */
+  /** Added on load: valid_at as epoch ms (0 = always) and the status before it; closure times per source
+   * and the fire-nearby time as epoch ms (NEVER when absent). */
   t?: number;
   before?: StreetStatus;
+  tm?: number;
+  ts?: number;
+  tn?: number;
   imagery_source?: string;
   confirmed_by_operator: boolean;
 }
@@ -107,7 +121,7 @@ export interface Decision {
   synthetic_report: boolean;
 }
 
-export interface FileMeta { record?: string; schema_version?: string; synthetic?: boolean; basis?: string; note?: string; far_from_fire_km?: number }
+export interface FileMeta { record?: string; schema_version?: string; synthetic?: boolean; basis?: string; label?: string; note?: string; far_from_fire_km?: number }
 
 export interface ScenarioEntry {
   id: string;
