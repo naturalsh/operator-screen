@@ -22,6 +22,12 @@ Without internet the packaged basemap is used: [docs/04_offline_basemap.png](doc
 |---|---|
 | ![Route cut](docs/07_route_cut_reroute.png) | ![Decision log](docs/08_decision_log.png) |
 
+Popups (click a street, a caller, a response point, a satellite detection or a forecast line):
+[street](docs/09_popup_street.png), [caller](docs/10_popup_caller.png),
+[response point](docs/11_popup_responder.png), [satellite detection](docs/12_popup_satellite.png).
+Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_overview.png),
+[zoomed](docs/14_labels_zoomed.png).
+
 ## What is real and what is synthetic
 
 | Layer | File | Status |
@@ -47,6 +53,7 @@ Other commands:
 
 ```bash
 npm run validate     # check every data file against schemas/*.schema.json
+npm run routes       # table: drive time from each response point to each caller
 npm run build        # type-check and build into dist/
 npm run preview      # serve dist/ on http://localhost:4173
 ```
@@ -72,6 +79,9 @@ box the offline map is empty. The three data layers are always local files.
 - **Time bar** (bottom): play / pause, slider in 10-minute steps, speed. Marks show when each forecast becomes valid.
   Everything follows this clock: reports appear at `reported_at`, satellite observations at `valid_at`,
   a forecast contour turns solid at `valid_at` and is dashed before that.
+- **Map markers**: caller colour = urgency, ring = the operator's step; the label shows the people at risk.
+  Labels that would overlap are hidden, the most urgent kept, and appear when you zoom in. Click anything on
+  the map for a popup with its details and source.
 - **Caller reports** (left): reports received so far, life threat first, then urgent, then routine; newest first
   within a class. Click a report (or its marker) to see the caller's own words, the reasons for the suggested
   urgency and the streets within 600 m with their access class; those streets are outlined in white on the map.
@@ -112,6 +122,10 @@ the previous and the new value. **Download JSON** saves the log
 - Drive times are free-flow: road-class speeds as in the fire repository's evacuation settings (trunk 70,
   secondary 50, tertiary 40, residential and unclassified 30 km/h), plus our own 20 km/h for service roads and
   15 km/h for forest tracks. One-way restrictions, turn-out time and traffic are ignored.
+- `npm run routes` prints the drive time from every response point to every caller at the time of the call,
+  using the same routing code as the screen. In the sample most callers are 7–45 minutes from the nearest
+  point. Two are about 95 minutes away because the modelled fire blocks the direct road and the only way in
+  is 16 km of forest tracks; the route line on the card shows the forest-track kilometres.
 - Routing needs `u`, `v` (junction node ids) on the street features and a connected network; without
   `responders.json` the Dispatch button is disabled.
 
