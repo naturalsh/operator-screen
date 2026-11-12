@@ -1,31 +1,39 @@
 import { useEffect, useRef, useState } from 'react';
 import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map as MLMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, fmtTime, statusAt, visibleCallers } from '../data';
+import { STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, fmtTime, statusAt, streetLabel, visibleCallers } from '../data';
 import { resolveBasemap } from '../basemap';
-import type { CallerReport, ScenarioData, StreetAccess } from '../types';
+import type { CallerReport, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
 
-export type LayerKey = 'forecast' | 'observed' | 'streets' | 'callers';
+export type LayerKey = 'forecast' | 'observed' | 'streets' | 'callers' | 'crews';
 
 const LAYER_GROUPS: Record<LayerKey, string[]> = {
   forecast: ['forecast-pending', 'forecast-reached', 'forecast-label'],
   observed: ['hotspots', 'burned-area', 'flame-front'],
   streets: ['streets-near', 'streets'],
   callers: ['callers-selected', 'callers', 'callers-label'],
+  crews: ['routes-casing', 'routes', 'routes-cut', 'responders', 'responders-label'],
 };
 
 const HORIZON_COLOUR = ['match', ['get', 'horizon_hours'], 8, '#fde047', 20, '#fb923c', '#f97316'] as unknown as string;
 const INSTRUMENT_COLOUR = ['match', ['get', 'instrument'], 'MODIS', '#a855f7', 'SLSTR', '#14b8a6', '#ef4444'] as unknown as string;
 
-function callersFc(callers: CallerReport[], synthetic: boolean): GeoJSON.FeatureCollection {
+function callersFc(callers: CallerReport[], synthetic: boolean, stages: Record<string, Stage>,
+  urgencyOf: (c: CallerReport) => Urgency): GeoJSON.FeatureCollection {
   return {
     type: 'FeatureCollection',
-    features: callers.map((c) => ({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [c.place.lon, c.place.lat] },
-      properties: { id: c.id, urgency: c.urgency, colour: URGENCY_COLOUR[c.urgency],
-        label: `${c.people_at_risk > 0 ? `${c.people_at_risk} · ` : ''}${c.place.label ?? ''}${synthetic ? ' (synthetic)' : ''}` },
-    })),
+    features: callers.map((c) => {
+      const stage = stages[c.id] ?? 'new';
+      const urgency = urgencyOf(c);
+      // Short map label (the list carries the place): the operator's stage once it is not new, people at risk.
+      return {
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [c.place.lon, c.place.lat] },
+        properties: { id: c.id, urgency, colour: URGENCY_COLOUR[urgency], stage, ring: STAGE_COLOUR[stage],
+          label: [stage === 'new' ? '' : STAGE_LABEL[stage], c.people_at_risk > 0 ? `${c.people_at_risk} at risk` : '',
+            synthetic ? '(synthetic)' : ''].filter(Boolean).join(' · ') },
+      };
+    }),
   };
 }
 
@@ -35,22 +43,25 @@ interface Props {
   layers: Record<LayerKey, boolean>;
   selectedId: string | null;
   nearIds: string[];
+  stages: Record<string, Stage>;
+  routes: { reportId: string; edgeIds: string[]; cut: boolean }[];
+  urgencyOf: (c: CallerReport) => Urgency;
   onSelect: (id: string | null) => void;
 }
 
-export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Props) {
+export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
   const [offline, setOffline] = useState(false);
-  const latest = useRef({ now, layers, selectedId, nearIds, data });
-  latest.current = { now, layers, selectedId, nearIds, data };
+  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf });
+  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf };
 
   /** Push the current time, selection and toggles into the map. */
   const sync = () => {
     const map = mapRef.current;
     if (!map || !ready.current) return;
-    const { now: t, layers: on, selectedId: sel, nearIds: near, data: d } = latest.current;
+    const { now: t, layers: on, selectedId: sel, nearIds: near, data: d, stages: st, routes: rts, urgencyOf: uo } = latest.current;
     const upTo: ExpressionSpecification = ['<=', ['get', 't'], t];
     const kind = (k: string): ExpressionSpecification => ['==', ['get', 'kind'], k];
     const obs = (o: string): ExpressionSpecification => ['==', ['get', 'observation_type'], o];
@@ -66,7 +77,12 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
       'open', STATUS_COLOUR.open, 'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked]);
     map.setFilter('callers-selected', ['==', ['get', 'id'], sel ?? '']);
     (map.getSource('callers') as GeoJSONSource).setData(
-      callersFc(visibleCallers(d.callers, t), d.callersMeta.synthetic === true));
+      callersFc(visibleCallers(d.callers, t), d.callersMeta.synthetic === true, st, uo));
+    const ok = rts.filter((r) => !r.cut).flatMap((r) => r.edgeIds);
+    const cut = rts.filter((r) => r.cut).flatMap((r) => r.edgeIds);
+    map.setFilter('routes-casing', ['in', ['get', 'id'], ['literal', [...ok, ...cut]]]);
+    map.setFilter('routes', ['in', ['get', 'id'], ['literal', ok]]);
+    map.setFilter('routes-cut', ['in', ['get', 'id'], ['literal', cut]]);
     for (const [key, ids] of Object.entries(LAYER_GROUPS) as [LayerKey, string[]][]) {
       for (const id of ids) map.setLayoutProperty(id, 'visibility', on[key] ? 'visible' : 'none');
     }
@@ -94,7 +110,12 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
     map.on('load', () => {
       map.addSource('fire', { type: 'geojson', data: data.fire });
       map.addSource('streets', { type: 'geojson', data: data.streets });
-      map.addSource('callers', { type: 'geojson', data: callersFc([], false) });
+      map.addSource('callers', { type: 'geojson', data: callersFc([], false, {}, (c) => c.urgency) });
+      map.addSource('responders', { type: 'geojson', data: {
+        type: 'FeatureCollection',
+        features: data.responders.map((r) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.place.lon, r.place.lat] },
+          properties: { id: r.id, name: r.name, kind: r.kind } })),
+      } });
 
       map.addLayer({ id: 'hotspots', type: 'fill', source: 'fire',
         paint: { 'fill-color': INSTRUMENT_COLOUR, 'fill-opacity': ['match', ['get', 'instrument'], 'VIIRS', 0.3, 0.1] } });
@@ -108,10 +129,20 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
       map.addLayer({ id: 'streets', type: 'line', source: 'streets', layout: { 'line-cap': 'round' },
         paint: {
           'line-color': STATUS_COLOUR.open,
+          // Streets far from the fire stay on the map for routing but are drawn faint.
+          'line-opacity': ['case', ['>', ['coalesce', ['get', 'fire_distance_km'], 0], data.streetsMeta.far_from_fire_km ?? 3], 0.22, 1],
           'line-width': ['interpolate', ['linear'], ['zoom'],
             10, ['match', ['get', 'highway'], 'track', 0.8, 1.8],
             14, ['match', ['get', 'highway'], 'track', 2.2, 4.5]],
         } });
+
+      // Crew routes: drawn over the streets; a route cut by a newly blocked street turns dashed amber.
+      map.addLayer({ id: 'routes-casing', type: 'line', source: 'streets', layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#083344', 'line-width': 9, 'line-opacity': 0.9 } });
+      map.addLayer({ id: 'routes', type: 'line', source: 'streets', layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#22d3ee', 'line-width': 5 } });
+      map.addLayer({ id: 'routes-cut', type: 'line', source: 'streets',
+        paint: { 'line-color': '#fbbf24', 'line-width': 5, 'line-dasharray': [1.2, 1.2] } });
 
       map.addLayer({ id: 'forecast-pending', type: 'line', source: 'fire',
         paint: { 'line-color': HORIZON_COLOUR, 'line-width': 1.4, 'line-dasharray': [3, 3], 'line-opacity': 0.55 } });
@@ -122,11 +153,20 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
           'text-font': ['Noto Sans Regular'], 'text-size': 11, 'symbol-spacing': 400 },
         paint: { 'text-color': '#fde68a', 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
 
+      map.addLayer({ id: 'responders', type: 'circle', source: 'responders',
+        paint: { 'circle-radius': 8, 'circle-color': '#0e7490', 'circle-stroke-color': '#a5f3fc', 'circle-stroke-width': 2.5 } });
+      map.addLayer({ id: 'responders-label', type: 'symbol', source: 'responders',
+        layout: { 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Regular'], 'text-size': 11,
+          'text-offset': [0, -1.4], 'text-anchor': 'bottom', 'text-allow-overlap': true },
+        paint: { 'text-color': '#a5f3fc', 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
+
       map.addLayer({ id: 'callers-selected', type: 'circle', source: 'callers',
         paint: { 'circle-radius': 17, 'circle-color': 'rgba(255,255,255,0.15)', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2.5 } });
       map.addLayer({ id: 'callers', type: 'circle', source: 'callers',
         paint: { 'circle-radius': ['match', ['get', 'urgency'], 'life_threat', 9, 'urgent', 7.5, 6],
-          'circle-color': ['get', 'colour'], 'circle-stroke-color': '#07090d', 'circle-stroke-width': 2 } });
+          'circle-color': ['get', 'colour'],
+          'circle-stroke-color': ['match', ['get', 'stage'], 'new', '#07090d', ['get', 'ring']],
+          'circle-stroke-width': ['match', ['get', 'stage'], 'new', 2, 'taken', 2.5, 3.5] } });
       map.addLayer({ id: 'callers-label', type: 'symbol', source: 'callers',
         layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Regular'], 'text-size': 11,
           'text-offset': [0, 1.3], 'text-anchor': 'top', 'text-optional': true },
@@ -151,7 +191,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
         const tz = d.entry.timezone ?? 'UTC';
         const pending = (p.t ?? 0) > t ? `<br>Model: ${p.status.replace('_', ' ')} from ${fmtTime(p.t!, tz)}` : '';
         new maplibregl.Popup({ closeButton: false, maxWidth: '300px' }).setLngLat(e.lngLat).setHTML(
-          `<b>${p.name || (p.highway === 'track' ? 'Forest track' : 'Unnamed street')}</b> · OSM way ${p.osm_way_id}<br>`
+          `<b>${streetLabel(p)}</b><br><span style="color:#8a9bb3">${p.highway ?? 'road'} · OSM way ${p.osm_way_id}</span><br>`
           + `<span style="color:${STATUS_COLOUR[st]}">■</span> ${STATUS_SHORT[st]}`
           + (p.free_width_m != null ? `, free width ${p.free_width_m} m` : '')
           + ((p.t ?? 0) > 0 && (p.t ?? 0) <= t ? ` since ${fmtTime(p.t!, tz)}` : '') + pending

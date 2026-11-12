@@ -50,6 +50,16 @@ export interface StreetAccess extends Provenance {
   free_width_m: number | null;
   confidence?: number;
   imagery_date: string | null;
+  /** Junction node ids of the segment (geometry runs u -> v) and its length; needed for routing. */
+  u?: number;
+  v?: number;
+  length_m?: number;
+  /** Nearest named place and a representative point [lon, lat], used to label unnamed streets. */
+  near_place?: string;
+  near_place_km?: number;
+  label_point?: [number, number];
+  /** Distance to the fire extent; far streets are drawn faint. */
+  fire_distance_km?: number;
   /** Added on load: valid_at as epoch ms (0 = always) and the status before it. */
   t?: number;
   before?: StreetStatus;
@@ -72,7 +82,32 @@ export interface FireFront extends Provenance {
   frp_mw?: number;
 }
 
-export interface FileMeta { record?: string; schema_version?: string; synthetic?: boolean; basis?: string; note?: string }
+/** A place crews are sent from. */
+export interface Responder extends Provenance {
+  id: string;
+  name: string;
+  kind: 'fire_station' | 'gendarmerie' | 'police' | 'other';
+  place: { lon: number; lat: number };
+}
+
+/** What the operator has done with a report on this screen. */
+export type Stage = 'new' | 'taken' | 'confirmed' | 'dispatched';
+
+export interface Decision {
+  seq: number;
+  /** Wall-clock time of the click and the scenario time shown on screen at that moment (UTC). */
+  decided_at: string;
+  scenario_time: string;
+  operator: string;
+  report_id: string;
+  action: 'take' | 'confirm_urgency' | 'dispatch' | 'dispatch_no_access' | 'reroute' | 'reroute_no_access';
+  previous: string | null;
+  new: string | null;
+  note?: string;
+  synthetic_report: boolean;
+}
+
+export interface FileMeta { record?: string; schema_version?: string; synthetic?: boolean; basis?: string; note?: string; far_from_fire_km?: number }
 
 export interface ScenarioEntry {
   id: string;
@@ -83,7 +118,7 @@ export interface ScenarioEntry {
   end: string;
   initial?: string;
   timezone?: string;
-  files: { fire_front: string; caller_reports: string; street_access: string };
+  files: { fire_front: string; caller_reports: string; street_access: string; responders?: string };
 }
 
 export interface FireMeta extends FileMeta {
@@ -99,6 +134,8 @@ export interface ScenarioData {
   streetsMeta: FileMeta;
   callers: CallerReport[];
   callersMeta: FileMeta;
+  responders: Responder[];
+  respondersMeta: FileMeta;
 }
 
 export type StreetFeature = Feature<LineString | MultiLineString, StreetAccess>;

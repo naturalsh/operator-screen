@@ -72,6 +72,41 @@ box the offline map is empty. The three data layers are always local files.
   (`valid_at`): in the sample scenario a street turns red when the modelled fire reaches it. Click a street for details.
 - **Right panel**: layer toggles, forecast and latest satellite pass, street counts, and which files are real.
 
+## Operator actions and the decision log
+
+Each report card walks through three steps; nothing happens without a click.
+
+1. **Take**: the operator picks the report up.
+2. **Confirm urgency**: the agent's suggestion is preselected and can be changed before confirming.
+   The list re-sorts on the confirmed urgency; the report keeps the agent's original suggestion.
+3. **Dispatch**: the fastest crew is routed to the caller (see below).
+
+The step reached is shown on the card and on the map marker (ring colour and label). Every click is written
+to the **Decision log** tab on the right: scenario time, wall-clock time, operator (name field in the header),
+the previous and the new value. **Download JSON** saves the log
+(`{"record": "DecisionLog", "scenario": ..., "decisions": [...]}`); decisions on synthetic reports carry
+`"synthetic_report": true`. The log lives in the page: reloading or switching scenario clears it.
+
+## Crew routing
+
+- **Response points** come from `responders.json`. In the sample they are three real OpenStreetMap locations:
+  İçmeler İtfaiye Müdürlüğü and Armutalan İtfaiye (fire stations) and Hisarönü Jandarma Karakolu.
+  That a crew is available at each of them is an assumption of the demo.
+- **Dispatch** computes, on the scenario's street network, the fastest drive from any response point to the
+  caller's street that avoids every street blocked at the current scenario time, draws it and shows the drive
+  time and distance. If the caller's own street is blocked, the route ends at its nearest reachable end and the
+  card says how far away the crew stops.
+- If no response point can reach the caller, the card shows **"No access by road at this time"** and the
+  attempt is logged. "Try dispatch again" repeats it at the current time.
+- When the clock moves on and a street on a dispatched route becomes blocked, the route turns dashed amber
+  and the card warns **"Route cut"** with the street; it offers a new route ("Use new route") or says there is
+  no access.
+- Drive times are free-flow: road-class speeds as in the fire repository's evacuation settings (trunk 70,
+  secondary 50, tertiary 40, residential and unclassified 30 km/h), plus our own 20 km/h for service roads and
+  15 km/h for forest tracks. One-way restrictions, turn-out time and traffic are ignored.
+- Routing needs `u`, `v` (junction node ids) on the street features and a connected network; without
+  `responders.json` the Dispatch button is disabled.
+
 ## Dropping in the Greek team's files
 
 Only data files change; no code.
@@ -99,8 +134,9 @@ All three share the same provenance fields: `schema_version`, `source`, `source_
 | Record | Required fields | Optional |
 |---|---|---|
 | `CallerReport` | `id`, `reported_at`, `place` (`lon`, `lat`, `label`), `language` (`el`/`tr`/`en`/`fr`), `urgency` (`life_threat`/`urgent`/`routine`), `urgency_reasons[]`, `hazard`, `people_at_risk`, `summary`, `confirmed_by_operator` | `summary_en`, `channel` |
-| `StreetAccess` | `id`, `osm_way_id`, `status` (`open`/`special_access`/`blocked`), `confirmed_by_operator`; with `basis: "imagery"` also `free_width_m` and `imagery_date` | `valid_at` + `status_before` (status that starts at a time), `basis` (`imagery`/`fire_model`/`operator`), `reason`, `edge_id`, `name`, `highway`, `confidence`, `imagery_source` |
+| `StreetAccess` | `id`, `osm_way_id`, `status` (`open`/`special_access`/`blocked`), `confirmed_by_operator`; with `basis: "imagery"` also `free_width_m` and `imagery_date` | `valid_at` + `status_before` (status that starts at a time), `basis` (`imagery`/`fire_model`/`operator`), `reason`, `edge_id`, `name`, `highway`, `confidence`, `imagery_source`; for routing and labels: `u`, `v`, `length_m`, `near_place`, `label_point`, `fire_distance_km` |
 | `FireFront` | `id`, `kind` (`forecast`/`observed`), `valid_at`; forecast: `horizon_hours`, `model_run_at`; observed: `observation_type`, `instrument` | `probability`, `area_km2`, `satellite`, `detections`, `frp_mw` |
+| `Responder` (optional file) | `id`, `name`, `kind` (`fire_station`/`gendarmerie`/`police`/`other`), `place` (`lon`, `lat`) | |
 
 ## Layout
 
@@ -109,11 +145,13 @@ public/scenarios/index.json           scenario list (title, map view, time windo
 public/scenarios/<id>/                the three data files of a scenario
 schemas/                              JSON Schema (draft 2020-12) of the three records
 scripts/validate.mjs                  data files vs. schemas
+tools/fetch_osm.py                    downloads the OpenStreetMap extract (roads, stations, place names) into tools/osm/
 tools/build_marmaris_scenario.py      builds the scenario from the fire repository (needs its environment)
 tools/fetch_basemap.mjs               packages the offline basemap into public/basemap/
 src/basemap.ts                        online style with offline fallback
 src/data.ts                           loading, sorting, "streets near a caller"
-src/components/                       MapView (MapLibre), CallerList, SidePanel, TimeBar
+src/routing.ts                        street graph, fastest route avoiding blocked streets
+src/components/                       MapView (MapLibre), CallerList (actions), DecisionLog, SidePanel, TimeBar
 ```
 
 ## Known limits
@@ -122,4 +160,7 @@ src/components/                       MapView (MapLibre), CallerList, SidePanel,
   The model is slow in the first night compared with the satellite hotspots, so real closures came earlier.
 - Caller reports are invented; their texts come from a small set of templates.
 - "Streets near a caller" is a straight-line distance, not a route.
-- One scenario so far. The streets cover the fire area (forest tracks included), not the town of Marmaris.
+- Streets more than 3 km from the fire are drawn faint; they stay in the network for routing.
+- Most streets in the fire area have no name in OpenStreetMap; they are labelled by the nearest named place
+  and a coordinate. "Bördübet" is the ignition locality from the fire repository's configuration, not an OSM place.
+- One scenario so far. The streets cover the fire area, İçmeler and Marmaris (forest tracks and service roads included).

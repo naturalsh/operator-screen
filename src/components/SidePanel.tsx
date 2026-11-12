@@ -7,6 +7,7 @@ const LAYER_LABEL: Record<LayerKey, string> = {
   observed: 'Fire front: observed',
   streets: 'Street access',
   callers: 'Caller reports',
+  crews: 'Response points and routes',
 };
 
 interface Props {
@@ -52,6 +53,7 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
     ['FireFront', fileKind(data.fireMeta), 'Fire model + NASA FIRMS, Copernicus Sentinel-2/3'],
     ['StreetAccess', streetKind, data.streetsMeta.note ?? 'Road Check'],
     ['CallerReport', fileKind(data.callersMeta), data.callersMeta.note ?? 'Voice intake'],
+    ...(data.responders.length ? [['Responder', fileKind(data.respondersMeta), data.respondersMeta.note ?? ''] as const] : []),
   ] as const;
 
   return (
@@ -116,6 +118,21 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
             : `Imagery date: ${imagery.join(', ') || 'n/a'}. Click a street for its width.`}
         </p>
       </Section>
+
+      {data.responders.length > 0 && (
+        <Section title="Response points">
+          {data.responders.map((r) => (
+            <div key={r.id} className="py-0.5">
+              <span style={{ color: '#22d3ee' }}>●</span> {r.name}
+              <span className="text-xs text-ink-400"> · {r.kind.replace('_', ' ')}</span>
+            </div>
+          ))}
+          <p className="mt-1 text-xs text-ink-400">
+            Real locations from OpenStreetMap. Crew availability is assumed. Routes avoid streets blocked at the
+            current time; times are free-flow drive times.
+          </p>
+        </Section>
+      )}
 
       <Section title="Data on this screen">
         {files.map(([name, kind, note]) => (

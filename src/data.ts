@@ -1,4 +1,4 @@
-import type { CallerReport, FileMeta, FireMeta, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
+import type { CallerReport, FileMeta, FireMeta, Responder, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
 
 const BASE = `${import.meta.env.BASE_URL}scenarios/`;
 
@@ -13,10 +13,13 @@ export async function loadIndex(): Promise<ScenarioEntry[]> {
 }
 
 export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> {
-  const [fire, streets, callers] = await Promise.all([
+  const [fire, streets, callers, responders] = await Promise.all([
     getJson<ScenarioData['fire'] & { metadata?: FireMeta }>(entry.files.fire_front),
     getJson<ScenarioData['streets'] & { metadata?: FileMeta }>(entry.files.street_access),
     getJson<{ metadata?: FileMeta; records: CallerReport[] }>(entry.files.caller_reports),
+    entry.files.responders
+      ? getJson<{ metadata?: FileMeta; records: Responder[] }>(entry.files.responders)
+      : Promise.resolve({ metadata: {} as FileMeta, records: [] as Responder[] }),
   ]);
   // MapLibre filters compare numbers, so each fire feature gets its time as epoch ms.
   for (const f of fire.features) f.properties.t = Date.parse(f.properties.valid_at);
@@ -32,6 +35,8 @@ export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> 
     streetsMeta: streets.metadata ?? {},
     callers: callers.records,
     callersMeta: callers.metadata ?? {},
+    responders: responders.records,
+    respondersMeta: responders.metadata ?? {},
   };
 }
 
@@ -52,13 +57,27 @@ export function fileKind(meta: FileMeta): 'synthetic' | 'model' | 'real' {
   return meta.synthetic === true ? 'synthetic' : meta.basis === 'fire_model' ? 'model' : 'real';
 }
 
-/** Reports received up to `now`, most urgent first, then newest first. */
-export function visibleCallers(callers: CallerReport[], now: number): CallerReport[] {
+/** Reports received up to `now`, most urgent first (operator-confirmed urgency wins), then newest first. */
+export function visibleCallers(callers: CallerReport[], now: number, urgencyOf?: (c: CallerReport) => Urgency): CallerReport[] {
+  const u = urgencyOf ?? ((c: CallerReport) => c.urgency);
   return callers
     .filter((c) => Date.parse(c.reported_at) <= now)
-    .sort((a, b) => URGENCY_ORDER[a.urgency] - URGENCY_ORDER[b.urgency]
+    .sort((a, b) => URGENCY_ORDER[u(a)] - URGENCY_ORDER[u(b)]
       || Date.parse(b.reported_at) - Date.parse(a.reported_at));
 }
+
+/** Name of a street; unnamed ones are described by the nearest place and a coordinate. */
+export function streetLabel(p: StreetAccess): string {
+  if (p.name) return p.name;
+  const kind = p.highway === 'track' ? 'Forest track' : 'Unnamed road';
+  const where = p.near_place
+    ? ` ${(p.near_place_km ?? 0) < 0.5 ? 'at' : `${p.near_place_km} km from`} ${p.near_place}` : '';
+  const at = p.label_point ? ` (${p.label_point[1].toFixed(4)}° N, ${p.label_point[0].toFixed(4)}° E)` : ` (way ${p.osm_way_id})`;
+  return kind + where + at;
+}
+
+export const STAGE_LABEL = { new: 'NEW', taken: 'TAKEN', confirmed: 'CONFIRMED', dispatched: 'DISPATCHED' } as const;
+export const STAGE_COLOUR = { new: '#8a9bb3', taken: '#e2e8f0', confirmed: '#a7f3d0', dispatched: '#22d3ee' } as const;
 
 function metres(lon1: number, lat1: number, lon2: number, lat2: number): number {
   const k = Math.PI / 180;
