@@ -15,6 +15,7 @@ const check = {
   caller: ajv.compile(read('schemas/caller_report.schema.json')),
   street: ajv.compile(read('schemas/street_access.schema.json')),
   fire: ajv.compile(read('schemas/fire_front.schema.json')),
+  responder: ajv.compile(read('schemas/responder.schema.json')),
 };
 const GEOMETRY = {
   street: ['LineString', 'MultiLineString'],
@@ -30,12 +31,12 @@ function report(file, id, messages) {
 function validateRecords(file, kind, records) {
   const ids = new Set();
   for (const [i, rec] of records.entries()) {
-    const props = kind === 'caller' ? rec : rec.properties;
+    const props = kind === 'caller' || kind === 'responder' ? rec : rec.properties;
     const id = props?.id ?? `#${i}`;
     if (!check[kind](props)) {
       report(file, id, check[kind].errors.map((e) => `${e.instancePath || '/'} ${e.message}`));
     }
-    if (kind !== 'caller' && !GEOMETRY[kind].includes(rec.geometry?.type)) {
+    if (GEOMETRY[kind] && !GEOMETRY[kind].includes(rec.geometry?.type)) {
       report(file, id, [`geometry must be ${GEOMETRY[kind].join(' or ')}, got ${rec.geometry?.type}`]);
     }
     if (ids.has(id)) report(file, id, ['duplicate id']);
@@ -51,6 +52,7 @@ for (const s of read('public/scenarios/index.json').scenarios) {
     ['fire', s.files.fire_front, (d) => d.features],
     ['street', s.files.street_access, (d) => d.features],
     ['caller', s.files.caller_reports, (d) => d.records],
+    ...(s.files.responders ? [['responder', s.files.responders, (d) => d.records]] : []),
   ];
   for (const [kind, path, pick] of files) {
     const data = read(base + path);

@@ -27,6 +27,40 @@
       "type": "string",
       "description": "OSM highway class."
     },
+    "u": {
+      "type": "integer",
+      "description": "OSM node id at the start of the segment (geometry runs u -> v). With v and a connected network, lets the screen route crews."
+    },
+    "v": {
+      "type": "integer",
+      "description": "OSM node id at the end of the segment."
+    },
+    "length_m": {
+      "type": "number",
+      "minimum": 0
+    },
+    "near_place": {
+      "type": "string",
+      "description": "Nearest named place; used to label unnamed streets."
+    },
+    "near_place_km": {
+      "type": "number",
+      "minimum": 0
+    },
+    "label_point": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 2,
+      "maxItems": 2,
+      "description": "[lon, lat] shown with unnamed streets."
+    },
+    "fire_distance_km": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Distance to the fire extent; far streets are drawn faint."
+    },
     "status": {
       "enum": [
         "open",

@@ -1,7 +1,8 @@
 """Build the data of the `marmaris_2022` scenario from the fire repository.
 
-Run with the fire repo's environment (offline; it only reads that repo's caches):
+Run with the fire repo's environment (offline; it reads that repo's caches and tools/osm/):
 
+    python tools/fetch_osm.py                                  # once: OpenStreetMap extract (needs network)
     <fire repo>/fireproj/.venv/bin/python tools/build_marmaris_scenario.py <fire repo>/fireproj
 
 What each file is:
@@ -14,6 +15,8 @@ What each file is:
                          the modelled P >= 50 % contour every two hours. A street the modelled fire
                          reaches becomes `blocked` at `valid_at`; before that it is `open`.
                          It is not a road survey: no image was analysed and no width was measured.
+- responders.json        REAL locations of two fire stations and a gendarmerie post from OpenStreetMap.
+                         That a crew is available there is an assumption of the demo.
 - caller_reports.json    SYNTHETIC. Invented reports, but placed on streets the modelled fire reaches
                          and timed shortly before (or just after) it gets there, so calls increase
                          as the fire grows.
@@ -33,8 +36,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import geopandas as gpd
+import shapely
 import numpy as np
-from shapely.geometry import Point, mapping
+from shapely.geometry import LineString, Point, mapping
+from shapely.ops import unary_union
 
 OUT = Path(__file__).resolve().parents[1] / "public" / "scenarios" / "marmaris_2022"
 SCHEMA_VERSION = "0.2.0"
@@ -42,10 +47,55 @@ GENERATED_AT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 EVENT = "marmaris_2022"
 HORIZONS_H = [float(h) for h in range(2, 41, 2)]     # modelled contour every 2 h up to 40 h
 FIRE_REPO_URL = "https://github.com/ismailefe45-m/GreekTurkeyHackhatonFire"
-#: Named places (lon, lat) from the fire repo's OSM settlement cache + the configured ignition point.
-PLACES = {"Hisarönü": (28.1452, 36.8001), "Değirmenyanı": (28.1419, 36.8319),
-          "Hisarönü Jandarma Karakolu": (28.1045, 36.8041), "İçmeler": (28.2314, 36.8013),
-          "Bördübet": (28.060, 36.868)}
+OSM_EXTRACT = Path(__file__).resolve().parent / "osm" / "marmaris_osm.json"
+#: OSM elements used as response points (two fire stations, one gendarmerie post).
+RESPONDERS = {("node", 6622303971): "fire_station", ("node", 12349466130): "fire_station",
+              ("way", 1518696480): "gendarmerie"}
+FAR_FROM_FIRE_KM = 3.0
+
+
+def load_osm():
+    """``(edges_gdf, places, responders, fetched_at)`` from the cached Overpass extract.
+
+    Ways are split at every node shared with another way (and at their ends), so each edge runs
+    between two junction nodes ``u`` and ``v``: the same segmentation OSMnx produces.
+    """
+    data = json.loads(OSM_EXTRACT.read_text(encoding="utf-8"))
+    nodes = {e["id"]: (e["lon"], e["lat"]) for e in data["elements"] if e["type"] == "node"}
+    ways = [e for e in data["elements"] if e["type"] == "way" and "highway" in e.get("tags", {})]
+    uses: dict[int, int] = {}
+    for w in ways:
+        for i, n in enumerate(w["nodes"]):
+            uses[n] = uses.get(n, 0) + (2 if i in (0, len(w["nodes"]) - 1) else 1)
+    rows = []
+    for w in ways:
+        ids = [n for n in w["nodes"] if n in nodes]
+        start = 0
+        for i in range(1, len(ids)):
+            if uses[ids[i]] > 1 or i == len(ids) - 1:
+                seg = ids[start:i + 1]
+                if len(seg) >= 2 and seg[0] != seg[-1]:
+                    rows.append({"u": seg[0], "v": seg[-1], "osmid": w["id"], "name": w["tags"].get("name", ""),
+                                 "highway": w["tags"]["highway"], "geometry": LineString([nodes[n] for n in seg])})
+                start = i
+    edges = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
+    places = {e["tags"]["name"]: (e["lon"], e["lat"]) for e in data["elements"]
+              if e["type"] == "node" and e.get("tags", {}).get("place") and e["tags"].get("name")}
+    responders = []
+    for e in data["elements"]:
+        kind = RESPONDERS.get((e["type"], e["id"]))
+        if kind:
+            c = e.get("center", e)
+            responders.append({"osm": f"{e['type']}/{e['id']}", "kind": kind, "name": e["tags"]["name"],
+                               "lon": round(c["lon"], 5), "lat": round(c["lat"], 5)})
+    return edges, places, responders, data["nature_shield"]["fetched_at"]
+
+
+def nearest_place(pt: Point, places: dict) -> tuple[str, float]:
+    """Name of the nearest OSM place and the distance to it in km."""
+    k = float(np.cos(np.radians(pt.y)))
+    return min(((n, float(np.hypot((pt.x - x) * k, pt.y - y)) * 111.2) for n, (x, y) in places.items()),
+               key=lambda item: item[1])
 
 
 def _iso(dt: datetime) -> str:
@@ -59,8 +109,7 @@ def _unit(key: str) -> float:
 
 # --------------------------------------------------------------------------- street access (model output)
 def build_street_access(fire_root: Path):
-    from fireproj.config import BBox, load_config
-    from fireproj.data.roads import fetch_road_network
+    from fireproj.config import load_config
     from fireproj.reconstruction import run_reconstruction
     from fireproj.road_closure import evaluate_road_closures
 
@@ -72,25 +121,36 @@ def build_street_access(fire_root: Path):
     t0 = res.spec.ignition_utc
     buffer_m = float(cfg["road_closure"]["safety_buffer_m"])
 
-    bbox = BBox(west=28.04, south=36.80, east=28.21, north=36.90)       # the fire app's Marmaris 2022 AOI
-    _, _, edges = fetch_road_network(cfg, bbox)
+    edges, places, responders, osm_fetched_at = load_osm()
+    # The ignition locality is not a named place in OSM; the fire repo's config gives its position.
+    places["Bördübet"] = (res.spec.ignition_lon, res.spec.ignition_lat)
     status_gdf, _ = evaluate_road_closures(
         edges, None, res.modelled_gdf, None, res.model_grid, run_cfg,
         selected_horizon_hours=max(HORIZONS_H), selected_prob_threshold=0.5,
     )
     status_gdf["_uv"] = [tuple(sorted((int(u), int(v)))) for u, v in zip(status_gdf["u"], status_gdf["v"])]
-    status_gdf = status_gdf.sort_values(["_uv", "earliest_horizon_hours"]).drop_duplicates("_uv")
+    status_gdf = status_gdf.sort_values(["_uv", "earliest_horizon_hours"]).drop_duplicates(["_uv", "osmid"])
+    # Distance to the fire extent (modelled 40 h contour + observed burned area), for de-emphasising far streets.
+    utm = res.model_grid.crs
+    extent = unary_union(list(res.modelled_gdf.to_crs(utm).geometry) + list(res.observed_gdf.to_crs(utm).geometry))
+    geom_utm = status_gdf.to_crs(utm).geometry
+    status_gdf["_fire_km"] = (geom_utm.distance(extent) / 1000.0).round(1).to_numpy()
+    status_gdf["_len_m"] = geom_utm.length.round(0).to_numpy()
 
     feats = []
     for _, r in status_gdf.iterrows():
-        way = r["osmid"][0] if isinstance(r["osmid"], list) else r["osmid"]
+        way = r["osmid"]
         u, v = r["_uv"]
         edge_id = f"{int(way)}-{u}-{v}"
+        # Geometry runs from node u to node v (u < v), so the router can read node positions from it.
+        line = r.geometry if int(r["u"]) == u else LineString(list(r.geometry.coords)[::-1])
+        mid = line.interpolate(0.5, normalized=True)
+        near, near_km = nearest_place(mid, places)
         reached = r["status"] == "closed" and np.isfinite(r["earliest_horizon_hours"])
         valid = t0 + timedelta(hours=float(r["earliest_horizon_hours"])) if reached else t0
         feats.append({
             "type": "Feature",
-            "geometry": mapping(r.geometry.simplify(0.00002)),
+            "geometry": mapping(shapely.set_precision(line.simplify(0.00002), 1e-5)),
             "properties": {
                 "schema_version": SCHEMA_VERSION,
                 "id": f"{EVENT}-street-{edge_id}",
@@ -98,19 +158,23 @@ def build_street_access(fire_root: Path):
                 "edge_id": edge_id,
                 "name": r["name"] or None,
                 "highway": str(r["highway"]),
+                "u": u,
+                "v": v,
+                "length_m": float(r["_len_m"]),
+                "near_place": near,
+                "near_place_km": round(near_km, 1),
+                "label_point": [round(mid.x, 5), round(mid.y, 5)],
+                "fire_distance_km": float(r["_fire_km"]),
                 "status": "blocked" if reached else "open",
-                "status_before": "open" if reached else None,
+                **({"status_before": "open"} if reached else {}),
                 "valid_at": _iso(valid),
                 "basis": "fire_model",
-                "reason": (f"modelled fire (P ≥ 50 %, {buffer_m:.0f} m safety buffer) reaches this street "
-                           f"{float(r['earliest_horizon_hours']):g} h after ignition") if reached
-                          else "not reached by the modelled fire within 40 h",
-                "free_width_m": None,
-                "imagery_date": None,
+                **({"reason": f"modelled fire (P ≥ 50 %, {buffer_m:.0f} m safety buffer) reaches this street "
+                              f"{float(r['earliest_horizon_hours']):g} h after ignition"} if reached else {}),
                 "confirmed_by_operator": False,
-                "source": "fire model: nature-shield-fire road_closure (Rothermel + MTT + Monte Carlo)",
+                "source": "fire model (nature-shield-fire road_closure)",
                 "source_url": FIRE_REPO_URL,
-                "license": "geometry: ODbL-1.0 (© OpenStreetMap contributors); status: MIT (fire model output)",
+                "license": "ODbL-1.0 (OSM geometry); MIT (status)",
                 "fetched_at": GENERATED_AT,
                 "observed_at": _iso(valid),
                 "received_at": _iso(t0),
@@ -125,10 +189,23 @@ def build_street_access(fire_root: Path):
             "note": "MODEL OUTPUT: streets the modelled fire reaches are blocked from valid_at. "
                     "Not a road survey; no imagery was analysed.",
             "model_run_at": _iso(t0), "contour_step_hours": 2, "safety_buffer_m": buffer_m,
+            "far_from_fire_km": FAR_FROM_FIRE_KM, "osm_fetched_at": osm_fetched_at,
         },
         "features": feats,
     }
-    return fc, status_gdf, t0
+    resp = {
+        "metadata": {"record": "Responder", "schema_version": SCHEMA_VERSION, "synthetic": False,
+                     "note": "Real station locations from OpenStreetMap. That a crew is available at each "
+                             "station is an assumption of the demo."},
+        "records": [{
+            "schema_version": SCHEMA_VERSION, "id": f"osm-{r['osm'].replace('/', '-')}", "name": r["name"],
+            "kind": r["kind"], "place": {"lon": r["lon"], "lat": r["lat"]},
+            "source": "OpenStreetMap", "source_url": f"https://www.openstreetmap.org/{r['osm']}",
+            "license": "ODbL-1.0 (© OpenStreetMap contributors)", "fetched_at": osm_fetched_at,
+            "observed_at": osm_fetched_at, "received_at": osm_fetched_at,
+        } for r in sorted(responders, key=lambda r: r["name"])],
+    }
+    return fc, status_gdf, t0, places, resp
 
 
 # --------------------------------------------------------------------------- caller reports (synthetic)
@@ -167,13 +244,16 @@ TEMPLATES = {
 }
 
 
-def _place_label(pt: Point, name: str | None) -> str:
-    near, dist_km = min(((n, pt.distance(Point(xy)) * 96.0) for n, xy in PLACES.items()), key=lambda x: x[1])
-    where = near if dist_km < 0.7 else f"{near} ({dist_km:.0f} km away)"
-    return f"{name}, {where}" if name else where
+def _place_label(pt: Point, name: str | None, places: dict) -> tuple[str, str]:
+    """``(label, spoken)``: the label names the street (or says it is unnamed), the nearest OSM place
+    and the coordinate; ``spoken`` is the short form a caller would use in a sentence."""
+    near, dist_km = nearest_place(pt, places)
+    where = near if dist_km < 0.5 else f"{dist_km:.1f} km from {near}"
+    spoken = name or (near if dist_km < 0.5 else f"{near} ({dist_km:.0f} km)")
+    return f"{name or 'Unnamed road'}, {where} ({pt.y:.4f}° N, {pt.x:.4f}° E)", spoken
 
 
-def build_caller_reports(status_gdf: gpd.GeoDataFrame, t0: datetime) -> dict:
+def build_caller_reports(status_gdf: gpd.GeoDataFrame, t0: datetime, places: dict) -> dict:
     """Reports on streets the modelled fire reaches, timed around its arrival there."""
     reached = status_gdf[status_gdf["status"] == "closed"].copy()
     reached["_len"] = reached.to_crs(reached.estimate_utm_crs()).length
@@ -207,7 +287,7 @@ def build_caller_reports(status_gdf: gpd.GeoDataFrame, t0: datetime) -> dict:
             urgency = ("life_threat" if kind == "approach_near" and (people >= 3 or "elderly" in reasons)
                        else "routine" if kind == "approach_far" and "information request" in reasons
                        else "urgent")
-            label = _place_label(pt, r["name"] or None)
+            label, spoken = _place_label(pt, r["name"] or None, places)
             records.append({
                 "schema_version": SCHEMA_VERSION,
                 "reported_at": _iso(reported.replace(second=0, microsecond=0)),
@@ -218,8 +298,8 @@ def build_caller_reports(status_gdf: gpd.GeoDataFrame, t0: datetime) -> dict:
                 "hazard": "fire",
                 "people_at_risk": people,
                 "channel": ["voice", "voice", "whatsapp", "sms"][int(4 * _unit(key + "ch"))],
-                "summary": text.format(place=label, n=people),
-                "summary_en": text_en.format(place=label, n=people),
+                "summary": text.format(place=spoken, n=people),
+                "summary_en": text_en.format(place=spoken, n=people),
                 "confirmed_by_operator": _unit(key + "ok") < 0.4,
                 "synthetic": True,
                 "source": "nature-shield-operator synthetic sample",
@@ -246,9 +326,10 @@ def main() -> int:
     fire_root = Path(sys.argv[1]).resolve()
     OUT.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(fire_root / "exports" / f"{EVENT}_firefront.geojson", OUT / "firefront.geojson")
-    streets, status_gdf, t0 = build_street_access(fire_root)
-    callers = build_caller_reports(status_gdf, t0)
-    for name, data in (("street_access.geojson", streets), ("caller_reports.json", callers)):
+    streets, status_gdf, t0, places, responders = build_street_access(fire_root)
+    callers = build_caller_reports(status_gdf, t0, places)
+    for name, data in (("street_access.geojson", streets), ("caller_reports.json", callers),
+                       ("responders.json", responders)):
         (OUT / name).write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     for p in sorted(OUT.iterdir()):
         print(f"{p.name}: {p.stat().st_size / 1024:.0f} kB")
