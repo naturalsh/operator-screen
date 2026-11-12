@@ -1,0 +1,19 @@
+{
+  "scenarios": [
+    {
+      "id": "marmaris_2022",
+      "title": "Marmaris 2022 wildfire (21–24 June)",
+      "center": [28.135, 36.852],
+      "zoom": 11.4,
+      "start": "2022-06-21T17:00:00Z",
+      "end": "2022-06-24T01:00:00Z",
+      "initial": "2022-06-22T01:02:00Z",
+      "timezone": "Europe/Istanbul",
+      "files": {
+        "fire_front": "marmaris_2022/firefront.geojson",
+        "caller_reports": "marmaris_2022/caller_reports.json",
+        "street_access": "marmaris_2022/street_access.geojson"
+      }
+    }
+  ]
+}

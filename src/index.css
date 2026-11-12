@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body { background: #07090d; color: #f2f6fb; font-size: 14px; }
+
+/* Anything synthetic is marked with the same dashed purple treatment everywhere. */
+.synthetic-tag {
+  border: 1px dashed #c084fc; color: #e9d5ff; background: rgba(192,132,252,0.12);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em; padding: 1px 5px; border-radius: 3px;
+  white-space: nowrap;
+}
+
+.maplibregl-ctrl-attrib { background: rgba(13,17,23,0.8) !important; color: #8a9bb3 !important; }
+.maplibregl-ctrl-attrib a { color: #c9d4e3 !important; }
+.maplibregl-popup-content { background: #0d1117; color: #f2f6fb; border: 1px solid #33435a; font-size: 12px; }
+.maplibregl-popup-tip { border-top-color: #0d1117 !important; border-bottom-color: #0d1117 !important; }
