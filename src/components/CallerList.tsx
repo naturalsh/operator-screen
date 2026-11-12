@@ -39,7 +39,8 @@ interface Props {
 const btn = 'rounded px-2.5 py-1 text-xs font-bold text-ink-950 hover:brightness-110';
 
 function fmtRoute(r: RoutePlan): string {
-  return `${Math.max(1, Math.round(r.minutes))} min · ${r.km.toFixed(1)} km`;
+  return `${Math.max(1, Math.round(r.minutes))} min · ${r.km.toFixed(1)} km`
+    + (r.trackKm >= 0.5 ? ` (${r.trackKm.toFixed(1)} km on forest tracks)` : '');
 }
 
 function Actions({ c, cs, check, now, timeZone, canRoute, onTake, onConfirm, onDispatch, onReroute }: {

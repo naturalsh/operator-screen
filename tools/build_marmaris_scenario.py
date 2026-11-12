@@ -102,6 +102,12 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _compact(line: LineString) -> LineString:
+    """Simplified geometry at ~1 m precision; very short segments are kept as they are."""
+    out = shapely.set_precision(line.simplify(0.00002), 1e-5)
+    return out if not out.is_empty and len(out.coords) >= 2 else line
+
+
 def _unit(key: str) -> float:
     """Deterministic pseudo-random number in [0, 1) from a string."""
     return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16) / 0x100000000
@@ -150,7 +156,7 @@ def build_street_access(fire_root: Path):
         valid = t0 + timedelta(hours=float(r["earliest_horizon_hours"])) if reached else t0
         feats.append({
             "type": "Feature",
-            "geometry": mapping(shapely.set_precision(line.simplify(0.00002), 1e-5)),
+            "geometry": mapping(_compact(line)),
             "properties": {
                 "schema_version": SCHEMA_VERSION,
                 "id": f"{EVENT}-street-{edge_id}",

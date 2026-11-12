@@ -35,6 +35,8 @@ export interface RoutePlan {
   edgeIds: string[];
   minutes: number;
   km: number;
+  /** Part of the route on forest tracks (slow, and not every vehicle can use them). */
+  trackKm: number;
   /** Scenario time (epoch ms) the route was computed for. */
   computedAt: number;
   /** The caller's own street is blocked: the crew stops at its nearest reachable end. */
@@ -57,7 +59,7 @@ export function buildGraph(streets: StreetFeature[]): Graph {
   const nodeXY = new Map<number, [number, number]>();
   streets.forEach((s, edge) => {
     const p = s.properties;
-    if (p.u == null || p.v == null || s.geometry.type !== 'LineString') return;
+    if (p.u == null || p.v == null || s.geometry.type !== 'LineString' || s.geometry.coordinates.length < 2) return;
     const coords = s.geometry.coordinates;
     const metres = p.length_m ?? lengthM(coords);
     const minutes = (metres / 1000 / (SPEED_KMH[p.highway ?? ''] ?? DEFAULT_SPEED_KMH)) * 60;
@@ -120,23 +122,12 @@ class Heap {
   }
 }
 
-/**
- * Fastest crew to a caller at scenario time `now`, avoiding blocked streets.
- * Returns null when no responder can reach the caller's street by road.
- */
-export function planRoute(g: Graph, caller: CallerReport, responders: Responder[], now: number): RoutePlan | null {
-  const blocked = (edge: number) => statusAt(g.streets[edge].properties, now) === 'blocked';
-  const callerXY: [number, number] = [caller.place.lon, caller.place.lat];
-  const target = nearestEdge(g, callerXY);
-  if (target < 0) return null;
-  const tp = g.streets[target].properties;
-  const lastStretchBlocked = blocked(target);
-
-  // Dijkstra outwards from both ends of the caller's street (the network is treated as undirected).
+/** Dijkstra outwards from `sources` over passable streets (the network is treated as undirected). */
+function reach(g: Graph, sources: number[], blocked: (edge: number) => boolean) {
   const dist = new Map<number, number>();
   const via = new Map<number, Arc & { from: number }>();
   const heap = new Heap();
-  for (const n of [tp.u!, tp.v!]) { dist.set(n, 0); heap.push([0, n]); }
+  for (const n of sources) { dist.set(n, 0); heap.push([0, n]); }
   while (heap.size) {
     const [d, n] = heap.pop();
     if (d > (dist.get(n) ?? Infinity)) continue;
@@ -150,37 +141,83 @@ export function planRoute(g: Graph, caller: CallerReport, responders: Responder[
       }
     }
   }
+  return { dist, via };
+}
 
-  let best: RoutePlan | null = null;
+/**
+ * Fastest crew to a caller at scenario time `now`, avoiding blocked streets.
+ * Returns null when no responder can reach the caller's street by road.
+ */
+export function planRoute(g: Graph, caller: CallerReport, responders: Responder[], now: number): RoutePlan | null {
+  const blocked = (edge: number) => statusAt(g.streets[edge].properties, now) === 'blocked';
+  const callerXY: [number, number] = [caller.place.lon, caller.place.lat];
+  const target = nearestEdge(g, callerXY);
+  if (target < 0) return null;
+  const tp = g.streets[target].properties;
+  const lastStretchBlocked = blocked(target);
+
+  const { dist, via } = reach(g, [tp.u!, tp.v!], blocked);
+  const options = stationOptions(g, responders, dist, via, blocked);
+  if (!options.length) return null;
+  // Every option ends with the same final stretch, so the fastest drive to the street is the fastest overall.
+  const o = options.reduce((a, b) => (b.minutes < a.minutes ? b : a));
+  let { minutes, km } = o;
+  const edgeIds = [...o.edgeIds];
+  let lastStretchM = metresBetween(g.nodeXY.get(o.endNode) ?? callerXY, callerXY);
+  if (!lastStretchBlocked) {
+    // Drive the final stretch along the caller's own street.
+    edgeIds.push(tp.id);
+    km += lastStretchM / 1000;
+    minutes += (lastStretchM / 1000 / (SPEED_KMH[tp.highway ?? ''] ?? DEFAULT_SPEED_KMH)) * 60;
+    if (tp.highway === 'track') o.trackKm += lastStretchM / 1000;
+    lastStretchM = 0;
+  }
+  return { responderId: o.responder.id, responderName: o.responder.name, edgeIds, minutes, km, trackKm: o.trackKm,
+    computedAt: now, lastStretchBlocked, lastStretchM };
+}
+
+interface StationOption { responder: Responder; minutes: number; km: number; trackKm: number; edgeIds: string[]; endNode: number }
+
+/** Drive from every response point to the caller's street (to its nearer reachable end), blocked streets avoided. */
+function stationOptions(g: Graph, responders: Responder[], dist: Map<number, number>,
+  via: Map<number, Arc & { from: number }>, blocked: (edge: number) => boolean): StationOption[] {
+  const out: StationOption[] = [];
   for (const r of responders) {
-    // A station leaves by the nearest street that is passable now.
-    const startEdge = nearestEdge(g, [r.place.lon, r.place.lat], (e) => !blocked(e));
+    // A station leaves by the nearest street that is passable now and connected to the caller.
+    const startEdge = nearestEdge(g, [r.place.lon, r.place.lat],
+      (e) => !blocked(e) && (dist.has(g.streets[e].properties.u!) || dist.has(g.streets[e].properties.v!)));
     if (startEdge < 0) continue;
     const sp = g.streets[startEdge].properties;
     const start = [sp.u!, sp.v!].filter((n) => dist.has(n)).sort((a, b) => dist.get(a)! - dist.get(b)!)[0];
     if (start == null) continue;
-    const minutes = dist.get(start)!;
-    if (best && minutes >= best.minutes) continue;
     const edgeIds: string[] = [];
-    let km = 0;
+    let km = 0, trackKm = 0;
     for (let n = start; via.has(n); n = via.get(n)!.from) {
       const s = g.streets[via.get(n)!.edge].properties;
       edgeIds.push(s.id);
       km += (s.length_m ?? 0) / 1000;
+      if (s.highway === 'track') trackKm += (s.length_m ?? 0) / 1000;
     }
-    let lastStretchM = metresBetween(g.nodeXY.get(lastNode(via, start)) ?? callerXY, callerXY);
-    let total = minutes;
-    if (!lastStretchBlocked) {
-      // Drive the final stretch along the caller's own street.
-      edgeIds.push(tp.id);
-      km += lastStretchM / 1000;
-      total += (lastStretchM / 1000 / (SPEED_KMH[tp.highway ?? ''] ?? DEFAULT_SPEED_KMH)) * 60;
-      lastStretchM = 0;
-    }
-    best = { responderId: r.id, responderName: r.name, edgeIds, minutes: total, km, computedAt: now,
-      lastStretchBlocked, lastStretchM };
+    out.push({ responder: r, minutes: dist.get(start)!, km, trackKm, edgeIds, endNode: lastNode(via, start) });
   }
-  return best;
+  return out;
+}
+
+/**
+ * Drive time (minutes) from every response point to a caller's street at `now`; null = no access by road.
+ * The final stretch along the caller's own street is not included. Used for the station/caller table.
+ */
+export function stationTimes(g: Graph, caller: CallerReport, responders: Responder[], now: number):
+  { name: string; minutes: number | null; km: number | null; trackKm: number | null }[] {
+  const blocked = (edge: number) => statusAt(g.streets[edge].properties, now) === 'blocked';
+  const target = nearestEdge(g, [caller.place.lon, caller.place.lat]);
+  const tp = g.streets[target].properties;
+  const { dist, via } = reach(g, [tp.u!, tp.v!], blocked);
+  const options = stationOptions(g, responders, dist, via, blocked);
+  return responders.map((r) => {
+    const o = options.find((x) => x.responder.id === r.id);
+    return { name: r.name, minutes: o ? o.minutes : null, km: o ? o.km : null, trackKm: o ? o.trackKm : null };
+  });
 }
 
 function lastNode(via: Map<number, Arc & { from: number }>, start: number): number {

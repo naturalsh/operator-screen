@@ -1,6 +1,6 @@
 import type { CallerReport, FileMeta, FireMeta, Responder, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
 
-const BASE = `${import.meta.env.BASE_URL}scenarios/`;
+const BASE = `${import.meta.env?.BASE_URL ?? '/'}scenarios/`;
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path);
@@ -23,10 +23,7 @@ export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> 
   ]);
   // MapLibre filters compare numbers, so each fire feature gets its time as epoch ms.
   for (const f of fire.features) f.properties.t = Date.parse(f.properties.valid_at);
-  for (const f of streets.features) {
-    f.properties.t = f.properties.valid_at ? Date.parse(f.properties.valid_at) : 0;
-    f.properties.before = f.properties.status_before ?? (f.properties.valid_at ? 'open' : f.properties.status);
-  }
+  prepareStreets(streets.features);
   return {
     entry,
     fire,
@@ -38,6 +35,15 @@ export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> 
     responders: responders.records,
     respondersMeta: responders.metadata ?? {},
   };
+}
+
+/** Adds the derived fields the screen works with: `t` (valid_at as epoch ms) and `before`. */
+export function prepareStreets(features: StreetFeature[]): StreetFeature[] {
+  for (const f of features) {
+    f.properties.t = f.properties.valid_at ? Date.parse(f.properties.valid_at) : 0;
+    f.properties.before = f.properties.status_before ?? (f.properties.valid_at ? 'open' : f.properties.status);
+  }
+  return features;
 }
 
 export const URGENCY_ORDER: Record<Urgency, number> = { life_threat: 0, urgent: 1, routine: 2 };
