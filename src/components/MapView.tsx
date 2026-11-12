@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map as MLMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { STATUS_COLOUR, STATUS_LABEL, URGENCY_COLOUR, visibleCallers } from '../data';
+import { STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, fmtTime, statusAt, visibleCallers } from '../data';
 import type { CallerReport, ScenarioData, StreetAccess } from '../types';
 
 export type LayerKey = 'forecast' | 'observed' | 'streets' | 'callers';
@@ -62,6 +62,9 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
     map.setFilter('flame-front', ['all', obs('flame_front'), upTo]);
     map.setFilter('burned-area', ['all', obs('burned_area'), upTo]);
     map.setFilter('streets-near', ['in', ['get', 'id'], ['literal', near]]);
+    map.setPaintProperty('streets', 'line-color', ['match',
+      ['case', ['<=', ['get', 't'], t], ['get', 'status'], ['get', 'before']],
+      'open', STATUS_COLOUR.open, 'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked]);
     map.setFilter('callers-selected', ['==', ['get', 'id'], sel ?? '']);
     (map.getSource('callers') as GeoJSONSource).setData(
       callersFc(visibleCallers(d.callers, t), d.callersMeta.synthetic === true));
@@ -99,9 +102,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
         layout: { 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.9 } });
       map.addLayer({ id: 'streets', type: 'line', source: 'streets', layout: { 'line-cap': 'round' },
         paint: {
-          'line-color': ['match', ['get', 'status'], 'open', STATUS_COLOUR.open,
-            'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked],
-          'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.6, 14, 4],
+          'line-color': STATUS_COLOUR.open,
+          'line-width': ['interpolate', ['linear'], ['zoom'],
+            10, ['match', ['get', 'highway'], 'track', 0.8, 1.8],
+            14, ['match', ['get', 'highway'], 'track', 2.2, 4.5]],
         } });
 
       map.addLayer({ id: 'forecast-pending', type: 'line', source: 'fire',
@@ -137,11 +141,20 @@ export function MapView({ data, now, layers, selectedId, nearIds, onSelect }: Pr
         if (map.queryRenderedFeatures(e.point, { layers: ['callers'] }).length) return;
         const p = e.features?.[0]?.properties as StreetAccess | undefined;
         if (!p) return;
-        new maplibregl.Popup({ closeButton: false }).setLngLat(e.lngLat).setHTML(
-          `<b>${p.name ?? 'Unnamed street'}</b> · OSM way ${p.osm_way_id}<br>`
-          + `<span style="color:${STATUS_COLOUR[p.status]}">■</span> ${STATUS_LABEL[p.status]}, free width ${p.free_width_m} m<br>`
-          + `Imagery: ${p.imagery_date}${p.confirmed_by_operator ? ' · confirmed by operator' : ' · not confirmed'}`
-          + (p.synthetic ? '<br><span class="synthetic-tag">SYNTHETIC</span>' : '')).addTo(map);
+        const { now: t, data: d } = latest.current;
+        const st = statusAt(p, t);
+        const tz = d.entry.timezone ?? 'UTC';
+        const pending = (p.t ?? 0) > t ? `<br>Model: ${p.status.replace('_', ' ')} from ${fmtTime(p.t!, tz)}` : '';
+        new maplibregl.Popup({ closeButton: false, maxWidth: '300px' }).setLngLat(e.lngLat).setHTML(
+          `<b>${p.name || (p.highway === 'track' ? 'Forest track' : 'Unnamed street')}</b> · OSM way ${p.osm_way_id}<br>`
+          + `<span style="color:${STATUS_COLOUR[st]}">■</span> ${STATUS_SHORT[st]}`
+          + (p.free_width_m != null ? `, free width ${p.free_width_m} m` : '')
+          + ((p.t ?? 0) > 0 && (p.t ?? 0) <= t ? ` since ${fmtTime(p.t!, tz)}` : '') + pending
+          + (p.reason ? `<br><span style="color:#8a9bb3">${p.reason}</span>` : '')
+          + (p.imagery_date ? `<br>Imagery: ${p.imagery_date}` : '')
+          + `<br>${p.confirmed_by_operator ? 'Confirmed by operator' : 'Not confirmed by an operator'} `
+          + (p.synthetic ? '<span class="synthetic-tag">SYNTHETIC</span>'
+            : p.basis === 'fire_model' ? '<span class="model-tag">MODEL OUTPUT</span>' : '')).addTo(map);
       });
       for (const id of ['callers', 'streets']) {
         map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });

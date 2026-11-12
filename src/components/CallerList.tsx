@@ -1,4 +1,4 @@
-import { STATUS_COLOUR, URGENCY_COLOUR, URGENCY_LABEL, fmtAge, fmtTime, streetsNear } from '../data';
+import { STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL, fmtAge, fmtTime, statusAt, streetsNear } from '../data';
 import type { CallerReport, StreetFeature } from '../types';
 
 export const NEAR_RADIUS_M = 600;
@@ -25,7 +25,7 @@ export function CallerList({ callers, streets, now, timeZone, synthetic, selecte
         {callers.map((c) => {
           const selected = c.id === selectedId;
           const near = selected ? streetsNear(streets, c, NEAR_RADIUS_M) : [];
-          const count = (s: string) => near.filter((n) => n.street.properties.status === s).length;
+          const count = (s: string) => near.filter((n) => statusAt(n.street.properties, now) === s).length;
           return (
             <button key={c.id} onClick={() => onSelect(selected ? null : c.id)}
               className={`block w-full border-b border-ink-800 px-3 py-2 text-left hover:bg-ink-850 ${selected ? 'bg-ink-800' : ''}`}
@@ -56,15 +56,20 @@ export function CallerList({ callers, streets, now, timeZone, synthetic, selecte
                     <span style={{ color: STATUS_COLOUR.blocked }}>■</span> {count('blocked')} blocked
                   </p>
                   <ul className="mt-1 space-y-0.5">
-                    {near.slice(0, 5).map(({ street, dist }) => (
-                      <li key={street.properties.id} className="flex gap-1.5">
-                        <span style={{ color: STATUS_COLOUR[street.properties.status] }}>■</span>
-                        <span className="truncate">{street.properties.name ?? `way ${street.properties.osm_way_id}`}</span>
-                        <span className="ml-auto whitespace-nowrap font-mono text-ink-400">
-                          {street.properties.free_width_m} m wide · {Math.round(dist)} m away
-                        </span>
-                      </li>
-                    ))}
+                    {near.slice(0, 6).map(({ street, dist }) => {
+                      const p = street.properties;
+                      const st = statusAt(p, now);
+                      const soon = (p.t ?? 0) > now ? ` → ${STATUS_SHORT[p.status].toLowerCase()} ${fmtTime(p.t!, timeZone)}` : '';
+                      return (
+                        <li key={p.id} className="flex gap-1.5">
+                          <span style={{ color: STATUS_COLOUR[st] }}>■</span>
+                          <span className="truncate">{p.name || `${p.highway ?? 'way'} ${p.osm_way_id}`}</span>
+                          <span className="ml-auto whitespace-nowrap font-mono text-ink-400">
+                            {p.free_width_m != null ? `${p.free_width_m} m wide · ` : ''}{Math.round(dist)} m{soon}
+                          </span>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               )}

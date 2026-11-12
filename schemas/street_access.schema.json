@@ -35,10 +35,39 @@
       ],
       "description": "open: free width >= 3 m; special_access: 2 m to under 3 m; blocked: under 2 m."
     },
+    "valid_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC time from which `status` holds. Before it the screen shows `status_before`. Omit for a status that holds for the whole scenario."
+    },
+    "status_before": {
+      "enum": [
+        "open",
+        "special_access",
+        "blocked",
+        null
+      ],
+      "description": "Status shown before valid_at (default: open)."
+    },
+    "basis": {
+      "enum": [
+        "imagery",
+        "fire_model",
+        "operator"
+      ],
+      "description": "What the status is based on: Road Check imagery, the fire model's road-closure calculation, or an operator's entry."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Short human-readable reason for the status."
+    },
     "free_width_m": {
-      "type": "number",
+      "type": [
+        "number",
+        "null"
+      ],
       "minimum": 0,
-      "description": "Estimated free width in metres."
+      "description": "Estimated free width in metres (Road Check). null when the status does not come from imagery."
     },
     "confidence": {
       "type": "number",
@@ -46,9 +75,12 @@
       "maximum": 1
     },
     "imagery_date": {
-      "type": "string",
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "date",
-      "description": "Date of the drone or aerial image the estimate comes from."
+      "description": "Date of the drone or aerial image the estimate comes from. null when basis is not imagery."
     },
     "imagery_source": {
       "type": "string",
@@ -99,8 +131,6 @@
     "id",
     "osm_way_id",
     "status",
-    "free_width_m",
-    "imagery_date",
     "confirmed_by_operator",
     "schema_version",
     "source",
@@ -110,5 +140,33 @@
     "observed_at",
     "received_at"
   ],
-  "additionalProperties": true
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "basis": {
+            "const": "imagery"
+          }
+        },
+        "required": [
+          "basis"
+        ]
+      },
+      "then": {
+        "required": [
+          "free_width_m",
+          "imagery_date"
+        ],
+        "properties": {
+          "free_width_m": {
+            "type": "number"
+          },
+          "imagery_date": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
 }

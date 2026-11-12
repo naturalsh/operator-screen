@@ -42,9 +42,17 @@ export interface StreetAccess extends Provenance {
   name: string | null;
   highway?: string;
   status: StreetStatus;
-  free_width_m: number;
+  /** Time from which `status` holds; before it `status_before` (default open) applies. */
+  valid_at?: string;
+  status_before?: StreetStatus | null;
+  basis?: 'imagery' | 'fire_model' | 'operator';
+  reason?: string;
+  free_width_m: number | null;
   confidence?: number;
-  imagery_date: string;
+  imagery_date: string | null;
+  /** Added on load: valid_at as epoch ms (0 = always) and the status before it. */
+  t?: number;
+  before?: StreetStatus;
   imagery_source?: string;
   confirmed_by_operator: boolean;
 }
@@ -64,7 +72,7 @@ export interface FireFront extends Provenance {
   frp_mw?: number;
 }
 
-export interface FileMeta { record?: string; schema_version?: string; synthetic?: boolean; note?: string }
+export interface FileMeta { record?: string; schema_version?: string; synthetic?: boolean; basis?: string; note?: string }
 
 export interface ScenarioEntry {
   id: string;

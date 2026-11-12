@@ -1,4 +1,4 @@
-import { STATUS_COLOUR, STATUS_LABEL, fmtAge, fmtTime } from '../data';
+import { STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, fileKind, fmtAge, fmtTime, statusAt } from '../data';
 import type { ScenarioData, StreetStatus } from '../types';
 import type { LayerKey } from './MapView';
 
@@ -17,12 +17,20 @@ interface Props {
   onToggle: (key: LayerKey) => void;
 }
 
-function Section({ title, tag, children }: { title: string; tag?: boolean; children: React.ReactNode }) {
+type Kind = 'synthetic' | 'model' | 'real';
+
+function KindTag({ kind, long }: { kind: Kind; long?: boolean }) {
+  if (kind === 'synthetic') return <span className="synthetic-tag">{long ? 'SYNTHETIC DATA' : 'SYNTHETIC'}</span>;
+  if (kind === 'model') return <span className="model-tag">MODEL OUTPUT</span>;
+  return long ? null : <span className="rounded bg-emerald-900 px-1.5 text-[10px] font-bold text-emerald-200">REAL DATA</span>;
+}
+
+function Section({ title, kind, children }: { title: string; kind?: Kind; children: React.ReactNode }) {
   return (
     <section className="border-b border-ink-700 p-3">
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-xs font-bold uppercase tracking-wider text-ink-400">{title}</h2>
-        {tag && <span className="synthetic-tag">SYNTHETIC DATA</span>}
+        {kind && <KindTag kind={kind} long />}
       </div>
       {children}
     </section>
@@ -36,12 +44,14 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
   const last = seen[0];
   const streets = data.streets.features.map((f) => f.properties);
   const counts = (['open', 'special_access', 'blocked'] as StreetStatus[]).map(
-    (s) => [s, streets.filter((p) => p.status === s).length] as const);
-  const imagery = [...new Set(streets.map((p) => p.imagery_date))].sort();
+    (s) => [s, streets.filter((p) => statusAt(p, now) === s).length] as const);
+  const imagery = [...new Set(streets.map((p) => p.imagery_date).filter(Boolean))].sort();
+  const next = streets.filter((p) => (p.t ?? 0) > now && (p.t ?? 0) <= now + 4 * 3600000);
+  const streetKind = fileKind(data.streetsMeta);
   const files = [
-    ['FireFront', data.fireMeta.synthetic === true, 'Fire model + NASA FIRMS, Copernicus Sentinel-2/3'],
-    ['StreetAccess', data.streetsMeta.synthetic === true, data.streetsMeta.note ?? 'Road Check'],
-    ['CallerReport', data.callersMeta.synthetic === true, data.callersMeta.note ?? 'Voice intake'],
+    ['FireFront', fileKind(data.fireMeta), 'Fire model + NASA FIRMS, Copernicus Sentinel-2/3'],
+    ['StreetAccess', streetKind, data.streetsMeta.note ?? 'Road Check'],
+    ['CallerReport', fileKind(data.callersMeta), data.callersMeta.note ?? 'Voice intake'],
   ] as const;
 
   return (
@@ -55,7 +65,7 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
         ))}
       </Section>
 
-      <Section title="Fire front" tag={data.fireMeta.synthetic === true}>
+      <Section title="Fire front" kind={data.fireMeta.synthetic === true ? 'synthetic' : undefined}>
         <p className="mb-1 text-xs text-ink-400">Forecast (model, P ≥ 50 %)</p>
         {forecasts.map((p) => (
           <div key={p.id} className="flex items-center gap-2 py-0.5">
@@ -87,24 +97,32 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
         </div>
       </Section>
 
-      <Section title="Street access" tag={data.streetsMeta.synthetic === true}>
+      <Section title="Street access" kind={streetKind === 'real' ? undefined : streetKind}>
         {counts.map(([s, n]) => (
           <div key={s} className="flex items-center gap-2 py-0.5">
             <span className="inline-block h-1 w-5 rounded" style={{ background: STATUS_COLOUR[s] }} />
-            <span>{STATUS_LABEL[s]}</span>
+            <span>{streetKind === 'model' ? STATUS_SHORT[s] : STATUS_LABEL[s]}</span>
             <span className="ml-auto font-mono">{n}</span>
           </div>
         ))}
-        <p className="mt-1 text-xs text-ink-400">Imagery date: {imagery.join(', ')}. Click a street for its width.</p>
+        {next.length > 0 && (
+          <p className="mt-1 text-xs" style={{ color: '#fca5a5' }}>
+            {next.length} more street{next.length > 1 ? 's' : ''} blocked within 4 h (model)
+          </p>
+        )}
+        <p className="mt-1 text-xs text-ink-400">
+          {streetKind === 'model'
+            ? 'Blocked = the modelled fire has reached the street. Not a road survey. Click a street for details.'
+            : `Imagery date: ${imagery.join(', ') || 'n/a'}. Click a street for its width.`}
+        </p>
       </Section>
 
       <Section title="Data on this screen">
-        {files.map(([name, synthetic, note]) => (
+        {files.map(([name, kind, note]) => (
           <div key={name} className="py-1">
             <div className="flex items-center gap-2">
               <b>{name}</b>
-              {synthetic ? <span className="synthetic-tag">SYNTHETIC</span>
-                : <span className="rounded bg-emerald-900 px-1.5 text-[10px] font-bold text-emerald-200">REAL DATA</span>}
+              <KindTag kind={kind} />
             </div>
             <div className="text-xs text-ink-400">{note}</div>
           </div>

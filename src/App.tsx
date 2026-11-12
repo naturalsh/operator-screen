@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { loadIndex, loadScenario, streetsNear, visibleCallers } from './data';
+import { fileKind, loadIndex, loadScenario, streetsNear, visibleCallers } from './data';
 import type { ScenarioData, ScenarioEntry } from './types';
 import { CallerList, NEAR_RADIUS_M } from './components/CallerList';
 import { MapView, type LayerKey } from './components/MapView';
@@ -64,7 +64,9 @@ export function App() {
     colour: f.properties.horizon_hours === 8 ? '#fde047' : f.properties.horizon_hours === 20 ? '#fb923c' : '#f97316',
   })) : []), [data]);
 
-  const anySynthetic = !!data && [data.fireMeta, data.streetsMeta, data.callersMeta].some((m) => m.synthetic === true);
+  const syntheticLayers = data ? ([['caller reports', data.callersMeta], ['street access', data.streetsMeta],
+    ['fire front', data.fireMeta]] as const).filter(([, m]) => m.synthetic === true).map(([n]) => n) : [];
+  const modelStreets = !!data && fileKind(data.streetsMeta) === 'model';
   const timeZone = data?.entry.timezone ?? 'UTC';
 
   return (
@@ -78,12 +80,17 @@ export function App() {
             {scenarios.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
           </select>
         </label>
-        {anySynthetic && (
+        {syntheticLayers.length > 0 && (
           <span className="synthetic-tag" style={{ fontSize: 11, padding: '3px 8px' }}>
-            SYNTHETIC caller reports and street access (invented samples)
+            SYNTHETIC {syntheticLayers.join(' and ')}
           </span>
         )}
-        <span className="ml-auto whitespace-nowrap text-xs text-ink-400">Decision-support prototype. A human confirms every decision.</span>
+        {modelStreets && (
+          <span className="model-tag" style={{ fontSize: 11, padding: '3px 8px' }}>
+            MODEL OUTPUT street access (fire model, not a road survey)
+          </span>
+        )}
+        <span className="ml-auto whitespace-nowrap text-xs text-ink-400">Decision-support prototype · a human confirms every decision</span>
       </header>
 
       {error && <p className="p-4 text-rose-400">Could not load the scenario: {error}</p>}

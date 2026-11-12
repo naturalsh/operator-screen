@@ -1,4 +1,4 @@
-import type { CallerReport, FileMeta, FireMeta, ScenarioData, ScenarioEntry, StreetFeature, Urgency } from './types';
+import type { CallerReport, FileMeta, FireMeta, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
 
 const BASE = `${import.meta.env.BASE_URL}scenarios/`;
 
@@ -20,6 +20,10 @@ export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> 
   ]);
   // MapLibre filters compare numbers, so each fire feature gets its time as epoch ms.
   for (const f of fire.features) f.properties.t = Date.parse(f.properties.valid_at);
+  for (const f of streets.features) {
+    f.properties.t = f.properties.valid_at ? Date.parse(f.properties.valid_at) : 0;
+    f.properties.before = f.properties.status_before ?? (f.properties.valid_at ? 'open' : f.properties.status);
+  }
   return {
     entry,
     fire,
@@ -35,7 +39,18 @@ export const URGENCY_ORDER: Record<Urgency, number> = { life_threat: 0, urgent: 
 export const URGENCY_LABEL: Record<Urgency, string> = { life_threat: 'LIFE THREAT', urgent: 'URGENT', routine: 'ROUTINE' };
 export const URGENCY_COLOUR: Record<Urgency, string> = { life_threat: '#f43f5e', urgent: '#fb923c', routine: '#60a5fa' };
 export const STATUS_COLOUR = { open: '#22c55e', special_access: '#f59e0b', blocked: '#ef4444' } as const;
+export const STATUS_SHORT = { open: 'Open', special_access: 'Special access', blocked: 'Blocked' } as const;
 export const STATUS_LABEL = { open: 'Open (≥ 3 m)', special_access: 'Special access (2–3 m)', blocked: 'Blocked (< 2 m)' } as const;
+
+/** Status of a street at `now`: `status` from `valid_at` on, `status_before` until then. */
+export function statusAt(p: StreetAccess, now: number): StreetStatus {
+  return (p.t ?? 0) <= now ? p.status : p.before ?? 'open';
+}
+
+/** Label of a data file: invented sample, model output or real data. */
+export function fileKind(meta: FileMeta): 'synthetic' | 'model' | 'real' {
+  return meta.synthetic === true ? 'synthetic' : meta.basis === 'fire_model' ? 'model' : 'real';
+}
 
 /** Reports received up to `now`, most urgent first, then newest first. */
 export function visibleCallers(callers: CallerReport[], now: number): CallerReport[] {
