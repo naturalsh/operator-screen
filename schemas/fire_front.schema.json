@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nature-shield.example/schemas/fire_front.schema.json",
+  "title": "FireFront",
+  "description": "One fire-front polygon from the fire tool. These are the `properties` of a GeoJSON Feature whose geometry is a Polygon or MultiPolygon in EPSG:4326.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "enum": [
+        "forecast",
+        "observed"
+      ]
+    },
+    "valid_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC time the polygon describes."
+    },
+    "area_km2": {
+      "type": "number",
+      "minimum": 0
+    },
+    "horizon_hours": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "forecast: hours after model_run_at."
+    },
+    "probability": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "forecast: Monte Carlo contour level."
+    },
+    "model_run_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "forecast: start time of the model run."
+    },
+    "observation_type": {
+      "enum": [
+        "hotspots",
+        "flame_front",
+        "burned_area"
+      ]
+    },
+    "instrument": {
+      "type": "string",
+      "description": "observed: VIIRS, MODIS, SLSTR, MSI ..."
+    },
+    "satellite": {
+      "type": "string"
+    },
+    "detections": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "hotspots: pixels in this overpass."
+    },
+    "frp_mw": {
+      "type": "number",
+      "minimum": 0,
+      "description": "hotspots: summed fire radiative power (MW)."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Tool, model or archive that produced the record."
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Link to the original record, page or repository."
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the producing tool fetched or exported the record (UTC)."
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the thing happened in the world (UTC)."
+    },
+    "received_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the platform received it (UTC)."
+    },
+    "synthetic": {
+      "type": "boolean",
+      "description": "true for invented sample data; the screen labels such records SYNTHETIC."
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "valid_at",
+    "schema_version",
+    "source",
+    "source_url",
+    "license",
+    "fetched_at",
+    "observed_at",
+    "received_at"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "forecast"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "horizon_hours",
+          "model_run_at"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "observed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "observation_type",
+          "instrument"
+        ]
+      }
+    }
+  ]
+}

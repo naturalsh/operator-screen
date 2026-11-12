@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nature-shield.example/schemas/street_access.schema.json",
+  "title": "StreetAccess",
+  "description": "Vehicle access of one street segment from Road Check. These are the `properties` of a GeoJSON Feature whose geometry is a LineString or MultiLineString in EPSG:4326.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "osm_way_id": {
+      "type": "integer",
+      "description": "OpenStreetMap way id of the street."
+    },
+    "edge_id": {
+      "type": "string",
+      "description": "Optional segment id '<way>-<u>-<v>' (OSM node ids, smaller first) when a way is split at junctions."
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "highway": {
+      "type": "string",
+      "description": "OSM highway class."
+    },
+    "status": {
+      "enum": [
+        "open",
+        "special_access",
+        "blocked"
+      ],
+      "description": "open: free width >= 3 m; special_access: 2 m to under 3 m; blocked: under 2 m."
+    },
+    "free_width_m": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Estimated free width in metres."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "imagery_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Date of the drone or aerial image the estimate comes from."
+    },
+    "imagery_source": {
+      "type": "string",
+      "description": "Image id and licence, e.g. an OpenAerialMap id."
+    },
+    "confirmed_by_operator": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Tool, model or archive that produced the record."
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Link to the original record, page or repository."
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the producing tool fetched or exported the record (UTC)."
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the thing happened in the world (UTC)."
+    },
+    "received_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the platform received it (UTC)."
+    },
+    "synthetic": {
+      "type": "boolean",
+      "description": "true for invented sample data; the screen labels such records SYNTHETIC."
+    }
+  },
+  "required": [
+    "id",
+    "osm_way_id",
+    "status",
+    "free_width_m",
+    "imagery_date",
+    "confirmed_by_operator",
+    "schema_version",
+    "source",
+    "source_url",
+    "license",
+    "fetched_at",
+    "observed_at",
+    "received_at"
+  ],
+  "additionalProperties": true
+}

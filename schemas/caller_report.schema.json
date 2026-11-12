@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nature-shield.example/schemas/caller_report.schema.json",
+  "title": "CallerReport",
+  "description": "One report taken by the Voice intake tool. File layout: {\"metadata\": {...}, \"records\": [CallerReport, ...]}.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reported_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the caller reported (UTC)."
+    },
+    "place": {
+      "type": "object",
+      "properties": {
+        "lon": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "label": {
+          "type": "string",
+          "description": "Address or landmark as understood from the caller."
+        }
+      },
+      "required": [
+        "lon",
+        "lat"
+      ]
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z]{2}$",
+      "description": "ISO 639-1 code of the caller's language (el, tr, en, fr)."
+    },
+    "urgency": {
+      "enum": [
+        "life_threat",
+        "urgent",
+        "routine"
+      ]
+    },
+    "urgency_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Why the agent suggested this urgency."
+    },
+    "hazard": {
+      "type": "string",
+      "description": "fire, earthquake, flood, medical, other."
+    },
+    "people_at_risk": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "channel": {
+      "enum": [
+        "voice",
+        "sms",
+        "whatsapp",
+        "web"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Summary in the caller's language."
+    },
+    "summary_en": {
+      "type": "string",
+      "description": "English summary for the operator."
+    },
+    "confirmed_by_operator": {
+      "type": "boolean",
+      "description": "false while the urgency is only the agent's suggestion."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Tool, model or archive that produced the record."
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Link to the original record, page or repository."
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the producing tool fetched or exported the record (UTC)."
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the thing happened in the world (UTC)."
+    },
+    "received_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the platform received it (UTC)."
+    },
+    "synthetic": {
+      "type": "boolean",
+      "description": "true for invented sample data; the screen labels such records SYNTHETIC."
+    }
+  },
+  "required": [
+    "id",
+    "reported_at",
+    "place",
+    "language",
+    "urgency",
+    "urgency_reasons",
+    "hazard",
+    "people_at_risk",
+    "summary",
+    "confirmed_by_operator",
+    "schema_version",
+    "source",
+    "source_url",
+    "license",
+    "fetched_at",
+    "observed_at",
+    "received_at"
+  ],
+  "additionalProperties": true
+}
