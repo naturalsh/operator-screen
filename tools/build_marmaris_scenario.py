@@ -16,7 +16,8 @@ What each file is:
                              the modelled P >= 50 % contour every two hours, or
                          (b) a satellite saw fire on it: a VIIRS 375 m pixel footprint crosses it, or the
                              Sentinel-2 flame front / burned area lies within 150 m.
-                         MODIS and SLSTR (1 km) pixels do not close a street; they set `fire_nearby_at`.
+                         A single MODIS or SLSTR (1 km) pixel does not close a street; it sets
+                         `fire_nearby_at`. Two separate overpasses with such a pixel over the street do.
                          It is not a road survey: no width was measured.
 - responders.json        REAL locations of two fire stations and a gendarmerie post from OpenStreetMap.
                          That a crew is available there is an assumption of the demo.
@@ -56,6 +57,8 @@ OSM_EXTRACT = Path(__file__).resolve().parent / "osm" / "marmaris_osm.json"
 RESPONDERS = {("node", 6622303971): "fire_station", ("node", 12349466130): "fire_station",
               ("way", 1518696480): "gendarmerie"}
 FAR_FROM_FIRE_KM = 3.0
+#: Two coarse (1 km) detections count as separate overpasses when they are at least this far apart in time.
+REPEAT_GAP_MIN = 30
 
 
 def load_osm():
@@ -151,14 +154,17 @@ def build_street_access(fire_root: Path):
     # The model is slow in the first hours, so streets are also closed where a satellite saw fire:
     #   - a VIIRS 375 m pixel footprint that crosses the street, from the overpass time;
     #   - the Sentinel-2 flame front or burned area within the safety buffer, from the image time.
-    # MODIS and SLSTR pixels are 1 km or more: too coarse to close a street, they only raise a
-    # "fire nearby (satellite)" warning.
+    # MODIS and SLSTR pixels are 1 km or more: one such detection is too coarse to close a street and only
+    # raises a "fire nearby (satellite)" warning. When a second, separate overpass (at least
+    # REPEAT_GAP_MIN minutes later) again sees fire in a coarse pixel over the street, the street is closed
+    # from that second overpass: "satellite (repeated MODIS/SLSTR)".
     ff = gpd.read_file(fire_root / "exports" / f"{EVENT}_firefront.geojson").to_crs(utm)
     ff = ff[ff["kind"] == "observed"].sort_values("valid_at")
     n = len(status_gdf)
     sat_at, sat_src = np.full(n, None, dtype=object), np.full(n, None, dtype=object)
     near_at, near_src = np.full(n, None, dtype=object), np.full(n, None, dtype=object)
     sat_name = {"N": "S-NPP", "N20": "N20", "N21": "N21"}
+    coarse: list[list[tuple[datetime, str]]] = [[] for _ in range(n)]
     for _, f in ff.iterrows():
         when = pd.Timestamp(f["valid_at"]).tz_convert("UTC").to_pydatetime()
         kind, inst = f["observation_type"], str(f["instrument"])
@@ -169,8 +175,16 @@ def build_street_access(fire_root: Path):
             label, at, src = f"Sentinel-2 {kind.replace('_', ' ')}", sat_at, sat_src
         else:
             hits, label, at, src = geom_utm.intersects(f.geometry).to_numpy(), f"{inst} {f['satellite']}", near_at, near_src
+            for i in np.flatnonzero(hits):
+                coarse[i].append((when, label))
         new = hits & np.array([a is None for a in at])
         at[new], src[new] = when, label
+    # Repeated coarse detections: closed from the first overpass that is a separate pass from the first one.
+    for i, seen in enumerate(coarse):
+        again = next(((w, lab) for w, lab in seen[1:] if (w - seen[0][0]).total_seconds() >= REPEAT_GAP_MIN * 60), None)
+        if again and (sat_at[i] is None or again[0] < sat_at[i]):
+            sat_at[i] = again[0]
+            sat_src[i] = f"repeated MODIS/SLSTR: {seen[0][1]} + {again[1]}"
     model_at_all = [t0 + timedelta(hours=float(h)) if st == "closed" and np.isfinite(h) else None
                     for st, h in zip(status_gdf["status"], status_gdf["earliest_horizon_hours"])]
     # First closure by either source; used for the status and for timing the synthetic calls.
@@ -197,7 +211,8 @@ def build_street_access(fire_root: Path):
             reasons.append(f"modelled fire (P ≥ 50 %, {buffer_m:.0f} m safety buffer) reaches this street "
                            f"{float(r['earliest_horizon_hours']):g} h after ignition")
         if sat:
-            reasons.append(f"{sat_source} saw fire on this street"
+            reasons.append(f"two separate overpasses saw fire in 1 km pixels over this street ({sat_source[22:]})"
+                           if sat_source.startswith("repeated") else f"{sat_source} saw fire on this street"
                            + (f" (within {buffer_m:.0f} m)" if sat_source.startswith("Sentinel-2") else " (375 m pixel)"))
         feats.append({
             "type": "Feature",
@@ -242,8 +257,9 @@ def build_street_access(fire_root: Path):
             "basis": "fire_model_and_satellite",
             "label": "MODEL + SATELLITE",
             "note": "MODEL + SATELLITE: a street is blocked from the time the modelled fire reaches it or a "
-                    "satellite sees fire on it (VIIRS 375 m pixel, Sentinel-2 flame front or burned area). "
-                    "MODIS and SLSTR 1 km pixels only raise a 'fire nearby' warning. Not a road survey.",
+                    "satellite sees fire on it (VIIRS 375 m pixel, Sentinel-2 flame front or burned area, or "
+                    "MODIS/SLSTR 1 km pixels in two separate overpasses). A single MODIS/SLSTR detection only "
+                    "raises a 'fire nearby' warning. Not a road survey.",
             "model_run_at": _iso(t0), "contour_step_hours": 2, "safety_buffer_m": buffer_m,
             "far_from_fire_km": FAR_FROM_FIRE_KM, "osm_fetched_at": osm_fetched_at,
         },

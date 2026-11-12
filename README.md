@@ -38,6 +38,8 @@ Popups (click a street, a caller, a response point, a satellite detection or a f
 [response point](docs/11_popup_responder.png), [satellite detection](docs/12_popup_satellite.png).
 Street status from the model or a satellite, 22 June 04:02 local: [map](docs/16_satellite_closures_0402.png),
 [satellite closure popup](docs/17_popup_satellite_closure.png), [fire nearby popup](docs/18_popup_fire_nearby.png).
+The eastern cluster at 22 June 04:10 before and after the repeated-detection rule and the halo fix:
+[before](docs/19_cluster_0410_before.png), [after](docs/20_cluster_0410_after.png).
 Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_overview.png),
 [zoomed](docs/14_labels_zoomed.png).
 
@@ -54,7 +56,7 @@ Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_over
 | Layer | File | Status |
 |---|---|---|
 | Fire front | `public/scenarios/marmaris_2022/firefront.geojson` | **Real.** Fire-model contours (8 / 20 / 40 h) and satellite observations (NASA FIRMS VIIRS and MODIS, Copernicus Sentinel-3 SLSTR, Sentinel-2), exported by the fire tool. |
-| Street access | `public/scenarios/marmaris_2022/street_access.geojson` | **Model + satellite.** Real OpenStreetMap streets (© OpenStreetMap contributors, ODbL). A street is `blocked` from its `valid_at` when the modelled fire reaches it (the fire repository's road-closure calculation: P ≥ 50 % contour every 2 h, 150 m safety buffer) **or** a satellite saw fire on it (a VIIRS 375 m pixel footprint crosses it, or the Sentinel-2 flame front or burned area is within 150 m). MODIS and SLSTR pixels (1 km) do not close a street; they raise a "fire nearby (satellite)" warning. Not a road survey: no width was measured. |
+| Street access | `public/scenarios/marmaris_2022/street_access.geojson` | **Model + satellite.** Real OpenStreetMap streets (© OpenStreetMap contributors, ODbL). A street is `blocked` from its `valid_at` when the modelled fire reaches it (the fire repository's road-closure calculation: P ≥ 50 % contour every 2 h, 150 m safety buffer) **or** a satellite saw fire on it (a VIIRS 375 m pixel footprint crosses it, or the Sentinel-2 flame front or burned area is within 150 m, or MODIS/SLSTR 1 km pixels cover it in two separate overpasses at least 30 minutes apart: "satellite (repeated MODIS/SLSTR)"). A single MODIS or SLSTR pixel does not close a street; it raises a "fire nearby (satellite)" warning, drawn as an amber halo. Not a road survey: no width was measured. |
 | Caller reports | `public/scenarios/marmaris_2022/caller_reports.json` | **SYNTHETIC.** Invented reports, placed on streets the modelled fire reaches and timed around its arrival, so calls increase as the fire grows. |
 
 Every synthetic record carries `"synthetic": true`, and each synthetic file has `"metadata": {"synthetic": true}`.

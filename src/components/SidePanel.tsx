@@ -144,8 +144,9 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
           {streetKind === 'model'
             ? (hasSources
               ? 'Blocked = the modelled fire has reached the street (solid) or a satellite saw fire on it: VIIRS 375 m pixel, '
-                + 'Sentinel-2 flame front or burned area (dashed until the model agrees). MODIS and SLSTR 1 km pixels only '
-                + 'warn "fire nearby". Not a road survey. Click a street for details.'
+                + 'Sentinel-2 flame front or burned area, or MODIS/SLSTR 1 km pixels in two separate overpasses (dashed until '
+                + 'the model agrees). A single MODIS/SLSTR pixel only warns "fire nearby" (amber halo). Not a road survey. '
+                + 'Click a street for details.'
               : 'Blocked = the modelled fire has reached the street. Not a road survey. Click a street for details.')
             : `Imagery date: ${imagery.join(', ') || 'n/a'}. Click a street for its width.`}
         </p>

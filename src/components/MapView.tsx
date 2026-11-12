@@ -84,7 +84,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     const satOnly: ExpressionSpecification = ['all', ['<=', ['coalesce', ['get', 'ts'], 9e15], t], ['>', ['coalesce', ['get', 'tm'], 9e15], t]];
     map.setFilter('streets-sat', satOnly);
     map.setFilter('streets', ['!', satOnly]);
-    map.setFilter('streets-nearby', ['all', ['<=', ['coalesce', ['get', 'tn'], 9e15], t], ['>', ['get', 't'], t]]);
+    // Fire nearby: a coarse pixel covers the street and neither source has closed it yet. (Not `t > now`:
+    // a street that is never closed has t = scenario start.)
+    map.setFilter('streets-nearby', ['all', ['<=', ['coalesce', ['get', 'tn'], 9e15], t],
+      ['>', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t]]);
     map.setPaintProperty('streets', 'line-color', ['match',
       ['case', ['<=', ['get', 't'], t], ['get', 'status'], ['get', 'before']],
       'open', STATUS_COLOUR.open, 'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked]);
@@ -151,8 +154,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         layout: { 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.9 } });
       // "Fire nearby (satellite)": an amber halo under streets a 1 km pixel covers but nothing has closed.
       map.addLayer({ id: 'streets-nearby', type: 'line', source: 'streets',
-        paint: { 'line-color': '#fbbf24', 'line-opacity': 0.55,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 10, 4, 14, 9] } });
+        paint: { 'line-color': '#fbbf24', 'line-opacity': 0.75,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 10, 5, 14, 11] } });
       map.addLayer({ id: 'streets', type: 'line', source: 'streets', layout: { 'line-cap': 'round' },
         paint: {
           'line-color': STATUS_COLOUR.open,
