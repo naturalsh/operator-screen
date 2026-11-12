@@ -2,6 +2,9 @@
 
 **Live demo: https://naturalsh.github.io/operator-screen/**
 
+Published from `main` by GitHub Actions ([workflow](.github/workflows/pages.yml)); the screenshot
+[docs/15_live_site.png](docs/15_live_site.png) was taken from the live site.
+
 One screen for the response operator: **caller reports** (Voice intake), **street access** (Road Check)
 and the **fire front** (Fire modelling) on the same map and the same clock.
 
