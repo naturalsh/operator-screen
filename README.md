@@ -25,7 +25,7 @@ The sample scenario replays the Marmaris wildfire of 21–24 June 2022.
 
 Without internet the packaged basemap is used: [docs/04_offline_basemap.png](docs/04_offline_basemap.png).
 
-| Dispatch: fastest crew, route avoiding blocked streets | No access by road |
+| Dispatch: route avoiding blocked streets | No access by road |
 |---|---|
 | ![Dispatch](docs/05_dispatch_route.png) | ![No access](docs/06_no_access.png) |
 
@@ -158,6 +158,33 @@ Share of satellite hotspots inside the forecast, updated forecasts against the s
 The updates are computed by `tools/build_marmaris_scenario.py` with the fire repository's model, on its
 reconstruction grid (forecasts stop at that grid's edge) and its cached weather, which ends on 23 June:
 the last update is issued on 23 June at 14:14 local. The model has no suppression, so late updates over-predict.
+
+## Crews
+
+Each response point has **two crews** (an assumption, stated on screen), e.g. Armutalan-1 and Armutalan-2.
+A crew goes **available → en route → on scene → returning → available**; it stays on scene for 45 minutes by
+default (adjustable in the Crews section, logged; applies to crews sent afterwards) and then drives back.
+
+- **Dispatch** sends the nearest free crew. With the report card selected, the suggested crew is shown with its
+  ETA and every other crew is in a list with its own ETA: available and returning crews freely, crews on their
+  way to another incident marked ⚠ ("Reassign … here"), which the operator has to pick explicitly.
+- A **vehicle icon** moves along the route with the time slider; the card and the icon count the ETA down.
+- If a street on the route becomes blocked while the crew is driving, the vehicle **stops where it is**, the card
+  says which street cut the route and offers a **new route from the vehicle's position**.
+- **Reassign**: a crew en route can be redirected to another waiting incident. The incident it leaves becomes
+  **UNASSIGNED**, moves to the top of the list and shows a warning.
+- The **Crews** section lists each crew's status, position and incident; click (or tap) a crew to move the map to it.
+- Every step (dispatch, reassign, the incident left unassigned, re-route, setting change) is in the decision log.
+- Crews and missions live in the page; reloading clears them. Moving the time slider back undoes nothing:
+  positions and statuses are recomputed for the time shown.
+
+| Suggested crew and candidates | Vehicle en route with ETA | Route cut, new route from the vehicle |
+|---|---|---|
+| ![suggestion](docs/crews_3_suggestion.png) | ![vehicle](docs/crews_2_dispatch_vehicle.png) | ![route cut](docs/crews_7_route_cut.png) |
+
+More: [Crews panel](docs/crews_1_crews_panel.png), [unassigned incident](docs/crews_4_unassigned.png),
+[decision log](docs/crews_5_decision_log.png), [returning crew, map on it](docs/crews_6_returning_focus.png),
+[phone: crews](docs/crews_8_phone_crews.png), [phone: crew tapped](docs/crews_9_phone_crew_focus.png).
 
 ## On a phone
 
