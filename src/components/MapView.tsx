@@ -246,6 +246,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
 
     map.on('load', () => {
       map.addSource('fire', { type: 'geojson', data: data.fire });
+      map.addSource('forecast-tags', { type: 'geojson', data: forecastTagPoints(data) });
       map.addSource('streets', { type: 'geojson', data: data.streets });
       map.addSource('callers', { type: 'geojson', data: callersFc([], {}, (c) => c.urgency) });
       map.addSource('responders', { type: 'geojson', data: {
@@ -319,10 +320,15 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         paint: { 'line-color': '#fdba74', 'line-width': 1, 'line-opacity': 0.45 } });
       map.addLayer({ id: 'forecast-fill-edge', type: 'line', source: 'fire',
         paint: { 'line-color': '#ffffff', 'line-width': 1.4, 'line-opacity': 0.9 } });
-      map.addLayer({ id: 'forecast-tag', type: 'symbol', source: 'fire',
-        layout: { 'symbol-placement': 'line', 'text-field': ['concat', '+', ['to-string', ['get', 'horizon_hours']], ' h'],
-          'text-font': ['Noto Sans Regular'], 'text-size': 11, 'symbol-spacing': ['interpolate', ['linear'], ['zoom'], 10, 100, 12, 130, 15, 320], 'text-max-angle': 80,
-          'text-keep-upright': true, 'text-allow-overlap': true, 'text-ignore-placement': true },
+      // Two tags per horizon at most, at two tips of its contour (see forecastTagPoints).
+      map.addLayer({ id: 'forecast-tag', type: 'symbol', source: 'forecast-tags',
+        layout: { 'text-field': ['concat', '+', ['to-string', ['get', 'horizon_hours']], ' h'],
+          'text-font': ['Noto Sans Regular'], 'text-size': 11,
+          // Just outside the contour, on the side the tip faces.
+          'text-anchor': ['match', ['get', 'side'], 'n', 'bottom', 's', 'top', 'e', 'left', 'w', 'right', 'ne', 'bottom-left', 'top-right'],
+          'text-offset': ['match', ['get', 'side'], 'n', ['literal', [0, -0.2]], 's', ['literal', [0, 0.2]], 'e', ['literal', [0.3, 0]],
+            'w', ['literal', [-0.3, 0]], 'ne', ['literal', [0.2, -0.2]], ['literal', [-0.2, 0.2]]],
+          'text-allow-overlap': false, 'text-padding': 2, 'symbol-sort-key': ['get', 'horizon_hours'] },
         paint: { 'text-color': '#ffffff', 'text-halo-color': '#7c2d12', 'text-halo-width': 1.6 } });
 
       map.addLayer({ id: 'responders', type: 'circle', source: 'responders',
@@ -483,6 +489,32 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       )}
     </>
   );
+}
+
+/** Label points of the forecast contours: two tips of each contour, on different sides for each horizon
+ * (first: north and south, second: east and west, third: north-east and south-west) so nested contours do
+ * not put their tags on top of each other. Points carry the contour's properties for the same filter. */
+function forecastTagPoints(data: ScenarioData): GeoJSON.FeatureCollection {
+  const features: GeoJSON.Feature[] = [];
+  for (const f of data.fire.features) {
+    const p = f.properties;
+    if (p.kind !== 'forecast') continue;
+    const rings = f.geometry.type === 'Polygon' ? [f.geometry.coordinates[0]]
+      : f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates.map((poly) => poly[0]) : [];
+    const pts = rings.flat();
+    if (!pts.length) continue;
+    const tip = (score: (c: number[]) => number) => pts.reduce((a, b) => (score(b) > score(a) ? b : a));
+    const sides: [string, (c: number[]) => number][][] = [
+      [['n', (c) => c[1]], ['s', (c) => -c[1]]],
+      [['e', (c) => c[0]], ['w', (c) => -c[0]]],
+      [['ne', (c) => c[0] + c[1]], ['sw', (c) => -c[0] - c[1]]],
+    ];
+    const props = { id: p.id, kind: p.kind, set: p.set, issue_t: p.issue_t, horizon_hours: p.horizon_hours, t: p.t };
+    for (const [side, score] of sides[Math.min(p.rank ?? 0, 2)]) {
+      features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: tip(score) }, properties: { ...props, side } });
+    }
+  }
+  return { type: 'FeatureCollection', features };
 }
 
 /** A line sample for the legend: solid, dashed or a halo, in the given colour. */
