@@ -1,6 +1,6 @@
 import { HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, closureAt, currentForecast, fileKind, fireNearby, fmtAge, fmtTime, modelLabel, statusAt } from '../data';
 import type { ScenarioData, StreetStatus } from '../types';
-import type { LayerKey } from './MapView';
+import type { LayerKey, MapMode } from './MapView';
 import { CREWS_PER_STATION, CREW_STATUS_COLOUR, CREW_STATUS_LABEL, type CrewState } from '../crews';
 
 const LAYER_LABEL: Record<LayerKey, string> = {
@@ -8,6 +8,7 @@ const LAYER_LABEL: Record<LayerKey, string> = {
   initial: 'Fire front: initial forecast (at ignition)',
   observed: 'Fire front: observed',
   streets: 'Street access',
+  nearby: 'Fire nearby (satellite), within 1 km of the selected caller and routes',
   callers: 'Caller reports',
   crews: 'Response points and routes',
 };
@@ -17,6 +18,7 @@ interface Props {
   now: number;
   timeZone: string;
   layers: Record<LayerKey, boolean>;
+  mode: MapMode;
   onToggle: (key: LayerKey) => void;
   crewStates: CrewState[];
   /** Short label of a report (what a crew is assigned to). */
@@ -46,7 +48,7 @@ function Section({ title, kind, label, children }: { title: string; kind?: Kind;
   );
 }
 
-export function SidePanel({ data, now, timeZone, layers, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew }: Props) {
+export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew }: Props) {
   const fire = data.fire.features.map((f) => f.properties);
   const cur = currentForecast(fire, now);
   const hasUpdates = cur?.set === 'update';
@@ -75,12 +77,16 @@ export function SidePanel({ data, now, timeZone, layers, onToggle, crewStates, l
   return (
     <div className="h-full overflow-y-auto text-sm">
       <Section title="Layers">
-        {(Object.keys(LAYER_LABEL) as LayerKey[]).filter((k) => k !== 'initial' || hasUpdates).map((k) => (
+        {(Object.keys(LAYER_LABEL) as LayerKey[])
+          .filter((k) => (k !== 'initial' || hasUpdates) && (mode === 'detailed' || (k !== 'initial' && k !== 'nearby'))).map((k) => (
           <label key={k} className="flex cursor-pointer items-center gap-2 py-0.5">
             <input type="checkbox" checked={layers[k]} onChange={() => onToggle(k)} />
             {LAYER_LABEL[k]}
           </label>
         ))}
+              {mode === 'simple' && (
+          <p className="mt-1 text-xs text-ink-400">Detailed mode adds the initial forecast, satellite sensors, model/satellite closures and the fire-nearby warning.</p>
+        )}
       </Section>
 
       {crewStates.length > 0 && (
@@ -140,7 +146,7 @@ export function SidePanel({ data, now, timeZone, layers, onToggle, crewStates, l
             </span>
           </div>
         ))}
-        {hasUpdates && layers.initial && (
+        {hasUpdates && layers.initial && mode === 'detailed' && (
           <div className="mt-1" data-initial-forecast>
             <p className="mb-1 text-xs text-ink-400">Initial forecast, issued at ignition ({fmtTime(initial[0]?.issue_t ?? 0, timeZone)})</p>
             {initial.map((p) => (
@@ -182,7 +188,7 @@ export function SidePanel({ data, now, timeZone, layers, onToggle, crewStates, l
             <span className="ml-auto font-mono">{n}</span>
           </div>
         ))}
-        {hasSources && (
+        {hasSources && mode === 'detailed' && (
           <div className="ml-7 text-xs text-ink-200" data-blocked-split>
             <div className="flex items-center gap-2 py-0.5">
               <span className="inline-block h-0.5 w-5" style={{ background: STATUS_COLOUR.blocked }} />
@@ -198,7 +204,7 @@ export function SidePanel({ data, now, timeZone, layers, onToggle, crewStates, l
             </div>
           </div>
         )}
-        {hasSources && (
+        {hasSources && mode === 'detailed' && (
           <div className="flex items-center gap-2 py-0.5" data-nearby>
             <span className="inline-block h-1.5 w-5 rounded" style={{ background: '#fbbf24', opacity: 0.6 }} />
             <span>Fire nearby (satellite), open</span>

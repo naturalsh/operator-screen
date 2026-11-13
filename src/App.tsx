@@ -10,7 +10,7 @@ import { buildGraph, planLegs } from './routing';
 import type { CallerReport, Decision, ScenarioData, ScenarioEntry, StreetFeature, Urgency } from './types';
 import { CallerList, NEAR_RADIUS_M, type CardCrew, type CaseState } from './components/CallerList';
 import { DecisionLog } from './components/DecisionLog';
-import { MapView, type LayerKey, type Vehicle } from './components/MapView';
+import { MapView, type LayerKey, type MapMode, type Vehicle } from './components/MapView';
 import { SidePanel } from './components/SidePanel';
 import { TimeBar } from './components/TimeBar';
 import { useMediaQuery } from './useMediaQuery';
@@ -32,8 +32,10 @@ export function App() {
   const [speed, setSpeed] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(params.get('call'));
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>({
-    forecast: true, initial: false, observed: true, streets: true, callers: true, crews: true,
+    forecast: true, initial: false, observed: true, streets: true, nearby: false, callers: true, crews: true,
   });
+  // Simple (default) shows what a newcomer needs; Detailed shows every source. `?mode=detailed` deep-links.
+  const [mode, setMode] = useState<MapMode>(params.get('mode') === 'detailed' ? 'detailed' : 'simple');
   const [operator, setOperator] = useState('operator-1');
   const [cases, setCases] = useState<Record<string, CaseState>>({});
   const [missions, setMissions] = useState<Mission[]>([]);
@@ -308,7 +310,7 @@ export function App() {
       onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} />
   );
   const sidePanel = data && (
-    <SidePanel data={data} now={now} timeZone={timeZone} layers={layers}
+    <SidePanel data={data} now={now} timeZone={timeZone} layers={layers} mode={mode}
       onToggle={(k) => setLayers((l) => ({ ...l, [k]: !l[k] }))}
       crewStates={crewStates} labelOf={shortLabel} onSceneMin={onSceneMin} onSceneChange={changeOnScene}
       onFocusCrew={(s) => setFocus({ lon: s.position[0], lat: s.position[1], key: Date.now() })} />
@@ -318,8 +320,18 @@ export function App() {
       labelOf={(id) => (id === 'settings' ? 'Crews' : labelOf(id))} />
   );
   const mapProps = data && {
-    data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId,
+    data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
   };
+  const modeSwitch = (compact: boolean) => (
+    <div role="group" aria-label="Map detail" className={`flex shrink-0 overflow-hidden rounded border border-ink-600 ${compact ? 'text-[11px]' : 'text-xs'}`}>
+      {(['simple', 'detailed'] as const).map((m) => (
+        <button key={m} data-mode={m} aria-pressed={mode === m} onClick={() => setMode(m)}
+          className={`${compact ? 'h-8 px-2' : 'px-2.5 py-1'} font-bold ${mode === m ? 'bg-sky-500 text-ink-950' : 'text-ink-200 hover:bg-ink-800'}`}>
+          {m === 'simple' ? 'Simple' : 'Detailed'}
+        </button>
+      ))}
+    </div>
+  );
 
   if (phone) {
     const DRAWER_OPEN = 0.5;                 // share of the map the open drawer (portrait) may cover
@@ -345,6 +357,7 @@ export function App() {
       <div className="flex flex-col" style={{ height: '100dvh' }} data-layout={landscape ? 'phone-landscape' : 'phone'}>
         <header className={`flex items-center gap-x-2 gap-y-1 border-b border-ink-700 bg-ink-900 px-2 ${landscape ? 'h-10 flex-nowrap' : 'flex-wrap py-1.5'}`}>
           <h1 className="whitespace-nowrap text-sm font-bold">Nature Shield</h1>
+          {modeSwitch(true)}
           {syntheticLayers.length > 0 && <span className="synthetic-tag">SYNTHETIC calls</span>}
           {modelStreets && <span className="model-tag truncate">{modelLabel(data!.streetsMeta)} streets</span>}
           {landscape && <div className="ml-auto flex shrink-0 gap-1 text-xs font-bold" role="tablist">{tabButtons}</div>}
@@ -399,6 +412,7 @@ export function App() {
           Scenario{' '}
           {scenarioSelect}
         </label>
+        {modeSwitch(false)}
         {syntheticLayers.length > 0 && (
           <span className="synthetic-tag" style={{ fontSize: 11, padding: '3px 8px' }}>
             SYNTHETIC {syntheticLayers.join(' and ')}

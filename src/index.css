@@ -68,3 +68,12 @@ body { background: #07090d; color: #f2f6fb; font-size: 14px; }
   margin-top: 1px; padding: 0 5px; border-radius: 3px; background: rgba(7, 9, 13, 0.85); color: #f2f6fb;
   font: 600 11px/1.5 ui-sans-serif, system-ui, sans-serif; white-space: nowrap; border: 1px solid var(--vehicle);
 }
+
+/* Map legend, bottom-left; above the collapsed drawer's tab bar on a portrait phone. */
+.ns-legend {
+  position: absolute; left: 8px; bottom: 30px; z-index: 5; max-width: calc(100% - 16px);
+  background: rgba(13, 17, 23, 0.92); border: 1px solid #33435a; border-radius: 6px;
+  padding: 5px 8px; font-size: 11.5px; line-height: 1.35; color: #e2e8f0; min-width: 120px;
+}
+@media (max-width: 767px) and (min-height: 501px) { .ns-legend { bottom: 76px; } }
+@media (max-height: 500px) { .ns-legend { bottom: 8px; font-size: 11px; } }

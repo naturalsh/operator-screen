@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map as MLMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {
@@ -12,13 +12,25 @@ import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgenc
 /** A crew vehicle that is away from its station. */
 export interface Vehicle { id: string; name: string; status: CrewStatus; position: [number, number]; label: string }
 
-export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'callers' | 'crews';
+export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'nearby' | 'callers' | 'crews';
+
+/** Simple: what a newcomer needs to read the screen. Detailed: every source and distinction. */
+export type MapMode = 'simple' | 'detailed';
+
+/** Layers that only exist in Detailed mode. */
+const DETAILED_ONLY = ['initial-pending', 'initial-reached', 'initial-label', 'streets-sat', 'streets-nearby', 'burned-area'];
+
+/** Satellite detections in Simple mode: one colour for every sensor. */
+const SIMPLE_FIRE_COLOUR = '#fb7185';
+/** Radius around the selected caller and the active routes in which "fire nearby" is drawn. */
+const NEARBY_RADIUS_M = 1000;
 
 const LAYER_GROUPS: Record<LayerKey, string[]> = {
   forecast: ['forecast-pending', 'forecast-reached', 'forecast-label'],
   initial: ['initial-pending', 'initial-reached', 'initial-label'],
   observed: ['hotspots', 'burned-area', 'flame-front'],
-  streets: ['streets-near', 'streets-nearby', 'streets', 'streets-sat'],
+  streets: ['streets-near', 'streets', 'streets-sat'],
+  nearby: ['streets-nearby'],
   callers: ['callers-selected', 'callers', 'callers-label'],
   crews: ['routes-casing', 'routes', 'routes-cut', 'responders', 'responders-label'],
 };
@@ -57,6 +69,7 @@ interface Props {
   onSelect: (id: string | null) => void;
   /** Crew vehicles on the road or on scene, at their position for the time shown. */
   vehicles?: Vehicle[];
+  mode?: MapMode;
   /** Move the map here when `key` changes (a crew picked in the panel). */
   focus?: { lon: number; lat: number; key: number } | null;
   /** Pixels of the map covered by the phone drawer (bottom, portrait) or side panel (right, landscape);
@@ -67,15 +80,37 @@ interface Props {
   fitFire?: boolean;
 }
 
-export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null,
+export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
   insetBottom = 0, insetRight = 0, fitFire = false }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const [offline, setOffline] = useState(false);
-  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles });
-  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles };
+  // Streets with a "fire nearby" warning within NEARBY_RADIUS_M of the selected caller or an active route.
+  const routesKey = routes.map((r) => `${r.reportId}:${r.edgeIds.length}:${r.edgeIds[0] ?? ''}`).join('|');
+  const nearbyIds = useMemo(() => {
+    const pts: [number, number][] = [];
+    const c = data.callers.find((x) => x.id === selectedId);
+    if (c) pts.push([c.place.lon, c.place.lat]);
+    const onRoute = new Set(routes.flatMap((r) => r.edgeIds));
+    for (const s of data.streets.features) {
+      if (!onRoute.has(s.properties.id) || s.geometry.type !== 'LineString') continue;
+      const cs = s.geometry.coordinates;
+      pts.push(cs[0] as [number, number], cs[cs.length - 1] as [number, number]);
+      if (s.properties.label_point) pts.push(s.properties.label_point);
+    }
+    if (!pts.length) return [];
+    const near = (a: [number, number], b: [number, number]) => {
+      const k = Math.cos((a[1] * Math.PI) / 180);
+      return Math.hypot((a[0] - b[0]) * k, a[1] - b[1]) * 111195 <= NEARBY_RADIUS_M;
+    };
+    return data.streets.features.filter((s) => s.properties.fire_nearby_at && s.properties.label_point
+      && pts.some((p) => near(p, s.properties.label_point!))).map((s) => s.properties.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, selectedId, routesKey]);
+  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds });
+  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds };
   const vehicleMarkers = useRef(new Map<string, maplibregl.Marker>());
 
   /** Push the current time, selection and toggles into the map. */
@@ -104,12 +139,25 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.setFilter('streets-near', ['in', ['get', 'id'], ['literal', near]]);
     // Blocked by a satellite detection only (the model has not reached the street yet): dashed red.
     const satOnly: ExpressionSpecification = ['all', ['<=', ['coalesce', ['get', 'ts'], 9e15], t], ['>', ['coalesce', ['get', 'tm'], 9e15], t]];
+    const simple = latest.current.mode === 'simple';
+    // Simple: every closed street is the same solid red; Detailed: satellite-only closures are dashed.
     map.setFilter('streets-sat', satOnly);
-    map.setFilter('streets', ['!', satOnly]);
+    map.setFilter('streets', simple ? null : ['!', satOnly]);
+    map.setPaintProperty('hotspots', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : INSTRUMENT_COLOUR);
+    // Every overpass adds its pixels, so overlaps build up: keep each layer of pixels very light in Simple.
+    map.setPaintProperty('hotspots', 'fill-opacity', simple ? 0.06 : ['match', ['get', 'instrument'], 'VIIRS', 0.3, 0.1]);
+    // The forecast is the main fire line in Simple: draw the not-yet-reached part clearly too.
+    map.setPaintProperty('forecast-pending', 'line-width', simple ? 2.2 : 1.4);
+    map.setPaintProperty('forecast-pending', 'line-opacity', simple ? 0.95 : 0.55);
+    map.setPaintProperty('forecast-reached', 'line-width', simple ? 4 : 3.5);
+    map.setPaintProperty('hotspots', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : INSTRUMENT_COLOUR);
+    map.setPaintProperty('flame-front', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : '#fde047');
+    map.setPaintProperty('flame-front', 'fill-opacity', simple ? 0.6 : 0.95);
     // Fire nearby: a coarse pixel covers the street and neither source has closed it yet. (Not `t > now`:
     // a street that is never closed has t = scenario start.)
     map.setFilter('streets-nearby', ['all', ['<=', ['coalesce', ['get', 'tn'], 9e15], t],
-      ['>', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t]]);
+      ['>', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t],
+      ['in', ['get', 'id'], ['literal', latest.current.nearbyIds]]]);
     map.setPaintProperty('streets', 'line-color', ['match',
       ['case', ['<=', ['get', 't'], t], ['get', 'status'], ['get', 'before']],
       'open', STATUS_COLOUR.open, 'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked]);
@@ -146,7 +194,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       el.querySelector('.ns-vehicle-label')!.textContent = `${v.name} · ${v.label}`;
     }
     for (const [key, ids] of Object.entries(LAYER_GROUPS) as [LayerKey, string[]][]) {
-      for (const id of ids) map.setLayoutProperty(id, 'visibility', on[key] ? 'visible' : 'none');
+      for (const id of ids) {
+        const shownHere = on[key] && !(simple && DETAILED_ONLY.includes(id));
+        map.setLayoutProperty(id, 'visibility', shownHere ? 'visible' : 'none');
+      }
     }
   };
 
@@ -206,7 +257,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         paint: {
           'line-color': STATUS_COLOUR.open,
           // Streets far from the fire stay on the map for routing but are drawn faint.
-          'line-opacity': ['case', ['>', ['coalesce', ['get', 'fire_distance_km'], 0], data.streetsMeta.far_from_fire_km ?? 3], 0.22, 1],
+          // Streets far from the fire (the town of Marmaris, mostly) are barely visible; routes and the
+          // white highlight around a selected caller are separate layers, so they still show.
+          'line-opacity': ['step', ['coalesce', ['get', 'fire_distance_km'], 0], 1, 1.5, 0.55,
+            data.streetsMeta.far_from_fire_km ?? 3, 0.07],
           'line-width': ['interpolate', ['linear'], ['zoom'],
             10, ['match', ['get', 'highway'], 'track', 0.8, 1.8],
             14, ['match', ['get', 'highway'], 'track', 2.2, 4.5]],
@@ -394,11 +448,84 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   return (
     <>
       <div ref={container} className="h-full w-full" />
+      <Legend mode={mode} nearby={layers.nearby} />
       {offline && (
         <span className="absolute left-2 top-2 rounded bg-ink-800/90 px-2 py-1 text-[11px] text-ink-200">
           Offline basemap (packaged copy, demo area only)
         </span>
       )}
     </>
+  );
+}
+
+/** A line sample for the legend: solid, dashed or a halo, in the given colour. */
+function LineKey({ colour, dashed, halo, casing }: { colour: string; dashed?: boolean; halo?: boolean; casing?: string }) {
+  return (
+    <svg width="26" height="10" aria-hidden="true" className="shrink-0">
+      {casing && <line x1="2" y1="5" x2="24" y2="5" stroke={casing} strokeWidth="7" strokeLinecap="round" />}
+      <line x1="2" y1="5" x2="24" y2="5" stroke={colour} strokeWidth={halo ? 8 : 3} strokeOpacity={halo ? 0.7 : 1}
+        strokeDasharray={dashed ? '4 3' : undefined} strokeLinecap={dashed ? 'butt' : 'round'} />
+    </svg>
+  );
+}
+
+function DotKey({ fill, ring }: { fill: string; ring?: string }) {
+  return (
+    <svg width="26" height="14" aria-hidden="true" className="shrink-0">
+      <circle cx="13" cy="7" r="5" fill={fill} stroke={ring ?? '#07090d'} strokeWidth={ring ? 2.5 : 1.5} />
+    </svg>
+  );
+}
+
+function AreaKey({ fill, opacity }: { fill: string; opacity: number }) {
+  return (
+    <svg width="26" height="12" aria-hidden="true" className="shrink-0">
+      <rect x="3" y="1" width="20" height="10" fill={fill} fillOpacity={opacity} stroke={fill} strokeOpacity={0.6} />
+    </svg>
+  );
+}
+
+/** Small collapsible legend in the bottom-left corner of the map; open on desktop, closed on phones. */
+function Legend({ mode, nearby }: { mode: MapMode; nearby: boolean }) {
+  const [open, setOpen] = useState(() => !window.matchMedia('(max-width: 767px), (max-height: 500px)').matches);
+  const simple = mode === 'simple';
+  const row = (key: React.ReactNode, text: string) => (
+    <div className="flex items-center gap-1.5 whitespace-nowrap">{key}<span>{text}</span></div>
+  );
+  return (
+    <div className="ns-legend" data-legend={open ? 'open' : 'closed'}>
+      <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex w-full items-center gap-1 font-bold">
+        Legend <span className="ml-auto text-ink-400">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="mt-1 space-y-0.5">
+          {row(<LineKey colour={STATUS_COLOUR.open} />, 'Open road')}
+          {simple ? row(<LineKey colour={STATUS_COLOUR.blocked} />, 'Closed road')
+            : <>
+              {row(<LineKey colour={STATUS_COLOUR.blocked} />, 'Closed (model, or model + satellite)')}
+              {row(<LineKey colour={STATUS_COLOUR.blocked} dashed />, 'Closed (satellite only)')}
+            </>}
+          {!simple && nearby && row(<LineKey colour="#fbbf24" halo />, 'Fire nearby (satellite, 1 km pixel)')}
+          {row(<LineKey colour="#22d3ee" casing="#083344" />, 'Crew route')}
+          {row(<LineKey colour="#fbbf24" dashed casing="#083344" />, 'Route cut')}
+          {row(<LineKey colour={HORIZON_COLOURS[0]} />, 'Fire forecast (+4 / +8 / +12 h)')}
+          {row(<LineKey colour={HORIZON_COLOURS[0]} dashed />, 'Forecast, time not reached yet')}
+          {!simple && row(<LineKey colour={INITIAL_FORECAST_COLOUR} />, 'Initial forecast (at ignition)')}
+          {simple ? row(<AreaKey fill={SIMPLE_FIRE_COLOUR} opacity={0.35} />, 'Fire seen by satellite')
+            : <>
+              {row(<AreaKey fill="#ef4444" opacity={0.45} />, 'VIIRS 375 m')}
+              {row(<AreaKey fill="#a855f7" opacity={0.3} />, 'MODIS 1 km')}
+              {row(<AreaKey fill="#14b8a6" opacity={0.3} />, 'SLSTR 1 km')}
+              {row(<AreaKey fill="#fde047" opacity={0.9} />, 'Flame front (Sentinel-2)')}
+            </>}
+          <div className="pt-0.5" />
+          {row(<DotKey fill={URGENCY_COLOUR.life_threat} />, 'Caller: life threat')}
+          {row(<DotKey fill={URGENCY_COLOUR.urgent} />, 'Caller: urgent')}
+          {row(<DotKey fill={URGENCY_COLOUR.routine} />, 'Caller: routine')}
+          {row(<DotKey fill="#8a9bb3" ring={STAGE_COLOUR.dispatched} />, 'Crew dispatched (ring)')}
+          {row(<DotKey fill="#0e7490" ring="#a5f3fc" />, 'Fire station / gendarmerie')}
+        </div>
+      )}
+    </div>
   );
 }
