@@ -8,6 +8,10 @@ const ACTION_LABEL: Record<Decision['action'], string> = {
   dispatch_no_access: 'Dispatch: no road access',
   reroute: 'Re-route',
   reroute_no_access: 'Re-route: no road access',
+  dispatch_no_crew: 'Dispatch: no crew free',
+  reassign: 'Reassign crew',
+  unassigned: 'Crew taken away',
+  settings: 'Setting changed',
 };
 
 interface Props {

@@ -6,7 +6,11 @@ import {
   HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, closureAt, closureSource, currentForecast, fireNearby, modelLabel, fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
 } from '../data';
 import { resolveBasemap } from '../basemap';
+import { CREW_STATUS_COLOUR, type CrewStatus } from '../crews';
 import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
+
+/** A crew vehicle that is away from its station. */
+export interface Vehicle { id: string; name: string; status: CrewStatus; position: [number, number]; label: string }
 
 export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'callers' | 'crews';
 
@@ -51,6 +55,10 @@ interface Props {
   routes: { reportId: string; edgeIds: string[]; cut: boolean }[];
   urgencyOf: (c: CallerReport) => Urgency;
   onSelect: (id: string | null) => void;
+  /** Crew vehicles on the road or on scene, at their position for the time shown. */
+  vehicles?: Vehicle[];
+  /** Move the map here when `key` changes (a crew picked in the panel). */
+  focus?: { lon: number; lat: number; key: number } | null;
   /** Pixels of the map covered by the phone drawer (bottom, portrait) or side panel (right, landscape);
    * a selected caller is centred in the part that stays visible. */
   insetBottom?: number;
@@ -59,14 +67,16 @@ interface Props {
   fitFire?: boolean;
 }
 
-export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, insetBottom = 0, insetRight = 0, fitFire = false }: Props) {
+export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null,
+  insetBottom = 0, insetRight = 0, fitFire = false }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const [offline, setOffline] = useState(false);
-  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf });
-  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf };
+  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles });
+  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles };
+  const vehicleMarkers = useRef(new Map<string, maplibregl.Marker>());
 
   /** Push the current time, selection and toggles into the map. */
   const sync = () => {
@@ -111,6 +121,30 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.setFilter('routes-casing', ['in', ['get', 'id'], ['literal', [...ok, ...cut]]]);
     map.setFilter('routes', ['in', ['get', 'id'], ['literal', ok]]);
     map.setFilter('routes-cut', ['in', ['get', 'id'], ['literal', cut]]);
+    // Crew vehicles: one DOM marker each, moved to the crew's position for the time shown.
+    const shown = on.crews ? latest.current.vehicles : [];
+    for (const [id, marker] of vehicleMarkers.current) {
+      if (!shown.some((v) => v.id === id)) { marker.remove(); vehicleMarkers.current.delete(id); }
+    }
+    for (const v of shown) {
+      let marker = vehicleMarkers.current.get(v.id);
+      if (!marker) {
+        const el = document.createElement('div');
+        el.className = 'ns-vehicle';
+        el.dataset.vehicle = v.id;
+        el.innerHTML = '<svg viewBox="0 0 28 18" width="30" height="20" aria-hidden="true">'
+          + '<rect x="1" y="3" width="17" height="10" rx="1.5" class="ns-vehicle-body"/><path d="M18 6h5l4 4v3h-9z" class="ns-vehicle-body"/>'
+          + '<circle cx="7" cy="14" r="3" fill="#07090d" stroke="#fff" stroke-width="1"/><circle cx="21" cy="14" r="3" fill="#07090d" stroke="#fff" stroke-width="1"/></svg>'
+          + '<span class="ns-vehicle-label"></span>';
+        marker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(v.position).addTo(map);
+        vehicleMarkers.current.set(v.id, marker);
+      }
+      marker.setLngLat(v.position);
+      const el = marker.getElement();
+      el.dataset.status = v.status;
+      el.style.setProperty('--vehicle', CREW_STATUS_COLOUR[v.status]);
+      el.querySelector('.ns-vehicle-label')!.textContent = `${v.name} · ${v.label}`;
+    }
     for (const [key, ids] of Object.entries(LAYER_GROUPS) as [LayerKey, string[]][]) {
       for (const id of ids) map.setLayoutProperty(id, 'visibility', on[key] ? 'visible' : 'none');
     }
@@ -326,7 +360,11 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       sync();
     });
     });
-    return () => { cancelled = true; ready.current = false; popupRef.current?.remove(); created?.remove(); mapRef.current = null; };
+    return () => {
+      cancelled = true; ready.current = false; popupRef.current?.remove();
+      vehicleMarkers.current.forEach((m) => m.remove()); vehicleMarkers.current.clear();
+      created?.remove(); mapRef.current = null;
+    };
     // The map is rebuilt only when another scenario is loaded.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
@@ -343,6 +381,15 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     // The insets are read when the selection changes; opening or closing the drawer does not move the map.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, data]);
+
+  // A crew picked in the panel: go to it, clear of the phone drawer or side panel.
+  useEffect(() => {
+    if (focus && mapRef.current) {
+      mapRef.current.easeTo({ center: [focus.lon, focus.lat], zoom: Math.max(mapRef.current.getZoom(), 12.8),
+        offset: [-insetRight / 2, -insetBottom / 2] });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.key]);
 
   return (
     <>

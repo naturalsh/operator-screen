@@ -3,7 +3,7 @@ import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL,
   closureAt, closureSource, fireNearby, fmtAge, fmtTime, statusAt, streetLabel, streetsNear,
 } from '../data';
-import type { RoutePlan } from '../routing';
+import { CREW_STATUS_COLOUR, CREW_STATUS_LABEL, type Candidate, type CrewStatus } from '../crews';
 import type { CallerReport, Stage, StreetFeature, Urgency } from '../types';
 
 export const NEAR_RADIUS_M = 600;
@@ -12,12 +12,36 @@ export interface CaseState {
   stage: Stage;
   /** Urgency confirmed (or changed) by the operator; the agent's suggestion stays in the report. */
   urgency?: Urgency;
-  route?: RoutePlan;
+  /** The crew mission serving this report. */
+  missionId?: number;
   /** Scenario time of the last dispatch / re-route attempt that found no road access. */
   noAccessAt?: number;
+  /** Scenario time of the last dispatch attempt that found no crew free, and why. */
+  noCrewAt?: number;
+  noCrewNote?: string;
+  /** Why the report has no crew any more (its crew was redirected). */
+  unassignedNote?: string;
 }
 
-export interface RouteCheck { cut: StreetFeature[]; alternative: RoutePlan | null }
+/** What a dispatched report's card shows about its crew at the current time. */
+export interface CardCrew {
+  crewName: string;
+  status: CrewStatus;
+  /** Minutes to arrival (en route), to leaving (on scene) or to the station (returning). */
+  etaMin: number | null;
+  km: number;
+  trackKm: number;
+  sentAt: number;
+  arrivedAt: number | null;
+  leftAt: number | null;
+  lastStretchBlocked: boolean;
+  lastStretchM: number;
+  cutOff: boolean;
+  /** Holding: when and where the route was cut, and the new route from where the vehicle is (null = none). */
+  holdFrom: number | null;
+  cutStreet: string | null;
+  alternative: { minutes: number; km: number } | null;
+}
 
 interface Props {
   callers: CallerReport[];
@@ -27,39 +51,167 @@ interface Props {
   synthetic: boolean;
   selectedId: string | null;
   cases: Record<string, CaseState>;
-  routeChecks: Record<string, RouteCheck>;
+  cardCrews: Record<string, CardCrew>;
+  /** Crews that could be sent to the selected report, fastest first (null = not computed). */
+  candidates: Candidate[] | null;
+  /** Reports waiting for a crew, as targets for redirecting one that is en route. */
+  awaiting: { id: string; label: string }[];
+  labelOf: (reportId: string) => string;
   canRoute: boolean;
   onSelect: (id: string | null) => void;
   onTake: (c: CallerReport) => void;
   onConfirm: (c: CallerReport, urgency: Urgency) => void;
-  onDispatch: (c: CallerReport) => void;
+  onDispatch: (c: CallerReport, crewId?: string) => void;
   onReroute: (c: CallerReport) => void;
+  onReassign: (from: CallerReport, toReportId: string) => void;
 }
 
 const btn = 'rounded px-2.5 py-1 text-xs font-bold text-ink-950 hover:brightness-110';
+const mins = (m: number) => `${Math.max(1, Math.ceil(m))} min`;
 
-function fmtRoute(r: RoutePlan): string {
-  return `${Math.max(1, Math.round(r.minutes))} min · ${r.km.toFixed(1)} km`
-    + (r.trackKm >= 0.5 ? ` (${r.trackKm.toFixed(1)} km on forest tracks)` : '');
+function candidateLabel(k: Candidate, labelOf: Props['labelOf']): string {
+  const where = k.state.status === 'available' ? 'at station'
+    : k.state.status === 'returning' ? 'returning'
+      : `en route to ${labelOf(k.state.mission!.reportId).split(' (')[0]}`;
+  return `${k.crew.name} · ETA ${mins(k.minutes)} · ${k.leg.km.toFixed(1)} km · ${where}`;
 }
 
-function Actions({ c, cs, check, now, timeZone, canRoute, onTake, onConfirm, onDispatch, onReroute }: {
-  c: CallerReport; cs: CaseState; check?: RouteCheck; now: number; timeZone: string; canRoute: boolean;
-} & Pick<Props, 'onTake' | 'onConfirm' | 'onDispatch' | 'onReroute'>) {
+function DispatchControls({ c, cs, selected, candidates, canRoute, labelOf, onDispatch, timeZone }: {
+  c: CallerReport; cs: CaseState; selected: boolean;
+} & Pick<Props, 'candidates' | 'canRoute' | 'labelOf' | 'onDispatch' | 'timeZone'>) {
+  const [choice, setChoice] = useState<string>('');
+  const list = selected ? candidates : null;
+  const suggested = list?.find((k) => !k.needsApproval) ?? null;
+  const picked = list?.find((k) => k.crew.id === choice) ?? suggested;
+  const stop = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn(); };
+  return (
+    <>
+      {cs.stage === 'unassigned' && (
+        <p className="mb-1 rounded border border-rose-500 bg-rose-950/60 px-2 py-1 text-xs font-semibold text-rose-200" data-unassigned>
+          ⚠ Unassigned: {cs.unassignedNote ?? 'the crew was redirected'}. This incident has no crew.
+        </p>
+      )}
+      {list && list.length > 0 && (
+        <div className="mb-1 rounded border border-ink-600 bg-ink-900 p-2 text-xs" data-candidates>
+          <div>
+            {suggested
+              ? <>Suggested: <b>{suggested.crew.name}</b> · <b>ETA {mins(suggested.minutes)}</b> · {suggested.leg.km.toFixed(1)} km</>
+              : <span className="text-amber-200">No crew is free. A crew en route elsewhere can be redirected:</span>}
+          </div>
+          <select aria-label="Crew" value={picked?.crew.id ?? ''} onChange={(e) => setChoice(e.target.value)}
+            onClick={(e) => e.stopPropagation()} className="mt-1 w-full rounded bg-ink-700 px-1 py-1 text-xs text-ink-50">
+            {list.map((k) => (
+              <option key={k.crew.id} value={k.crew.id}>
+                {k.needsApproval ? '⚠ ' : ''}{candidateLabel(k, labelOf)}{k === suggested ? ' (suggested)' : ''}
+              </option>
+            ))}
+          </select>
+          {picked?.needsApproval && (
+            <div className="mt-1 text-amber-200">
+              {picked.crew.name} is on its way to another incident. Sending it here leaves that incident without a crew.
+            </div>
+          )}
+        </div>
+      )}
+      <button className={`${btn} ${picked?.needsApproval ? 'bg-amber-300' : 'bg-cyan-300'} disabled:opacity-40`} disabled={!canRoute}
+        onClick={stop(() => onDispatch(c, picked?.crew.id))}>
+        {picked ? (picked.needsApproval ? `Reassign ${picked.crew.name} here` : `Dispatch ${picked.crew.name}`)
+          : cs.noAccessAt != null || cs.noCrewAt != null ? 'Try dispatch again' : 'Dispatch'}
+      </button>
+      {!canRoute && <span className="ml-2 text-[11px] text-ink-400">no response points in this scenario</span>}
+      {!selected && <span className="ml-2 text-[11px] text-ink-400">nearest free crew · select the card to choose</span>}
+      {cs.noAccessAt != null && (
+        <p className="mt-1 rounded border border-rose-500 bg-rose-950/60 px-2 py-1 text-xs font-semibold text-rose-200">
+          ⚠ No access by road at this time ({fmtTime(cs.noAccessAt, timeZone)}). Every route is cut by blocked streets.
+        </p>
+      )}
+      {cs.noCrewAt != null && (
+        <p className="mt-1 rounded border border-amber-500 bg-amber-950/60 px-2 py-1 text-xs font-semibold text-amber-100" data-no-crew>
+          ⚠ No crew free at {fmtTime(cs.noCrewAt, timeZone)}{cs.noCrewNote ? `: ${cs.noCrewNote}` : ''}.
+        </p>
+      )}
+    </>
+  );
+}
+
+function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign }: {
+  c: CallerReport; cs: CaseState; crew: CardCrew; now: number;
+} & Pick<Props, 'timeZone' | 'awaiting' | 'onReroute' | 'onReassign'>) {
+  const targets = awaiting.filter((a) => a.id !== c.id);
+  const [to, setTo] = useState('');
+  const target = targets.find((a) => a.id === to) ?? targets[0];
+  const stop = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn(); };
+  const moving = crew.status === 'en_route' || crew.status === 'holding';
+  return (
+    <div className="rounded border border-cyan-700 bg-cyan-950/40 p-2 text-xs" data-crew-box={crew.status}>
+      <div className="flex items-center gap-2">
+        <span className="rounded px-1.5 py-0.5 text-[10px] font-bold text-ink-950" style={{ background: CREW_STATUS_COLOUR[crew.status] }}>
+          {CREW_STATUS_LABEL[crew.status].toUpperCase()}
+        </span>
+        <span>
+          <b>{crew.crewName}</b> → caller
+          {crew.status === 'en_route' && crew.etaMin != null && <> · <b data-eta>ETA {mins(crew.etaMin)}</b></>}
+          {' '}· {crew.km.toFixed(1)} km{crew.trackKm >= 0.5 ? ` (${crew.trackKm.toFixed(1)} km on forest tracks)` : ''}
+        </span>
+      </div>
+      <div className="mt-0.5 text-ink-400">
+        {crew.status === 'en_route' && <>sent {fmtTime(crew.sentAt, timeZone)} · free-flow drive time, blocked streets avoided</>}
+        {crew.status === 'on_scene' && (crew.cutOff
+          ? <>on scene since {fmtTime(crew.arrivedAt!, timeZone)} · <span className="text-amber-200">no road back to the station at this time</span></>
+          : <>on scene since {fmtTime(crew.arrivedAt!, timeZone)} · leaves in {mins(crew.etaMin ?? 0)}</>)}
+        {crew.status === 'returning' && <>left the scene {fmtTime(crew.leftAt!, timeZone)} · back at the station in {mins(crew.etaMin ?? 0)}</>}
+        {crew.status === 'available' && <>arrived {crew.arrivedAt ? fmtTime(crew.arrivedAt, timeZone) : '—'}, left {crew.leftAt ? fmtTime(crew.leftAt, timeZone) : '—'} · crew is back at its station</>}
+      </div>
+      {crew.lastStretchBlocked && crew.status !== 'holding' && (
+        <div className="mt-1 text-amber-200">
+          ⚠ The caller's street is blocked: the crew stops {Math.round(crew.lastStretchM)} m away.
+        </div>
+      )}
+      {crew.status === 'holding' && (
+        <div className="mt-1 rounded border border-amber-500 bg-amber-950/60 p-1.5 text-amber-100">
+          ⚠ Route cut at {fmtTime(crew.holdFrom ?? now, timeZone)}{crew.cutStreet ? `: ${crew.cutStreet} now blocked` : ''}.
+          The vehicle is holding where it was.
+          {crew.alternative ? (
+            <div className="mt-1">
+              <div>New route from the vehicle's position: <b>{mins(crew.alternative.minutes)} · {crew.alternative.km.toFixed(1)} km</b></div>
+              <button className={`${btn} mt-1 bg-amber-300`} onClick={stop(() => onReroute(c))}>Use new route</button>
+            </div>
+          ) : (
+            <div className="mt-1 font-semibold text-rose-200">No access by road at this time.</div>
+          )}
+        </div>
+      )}
+      {moving && targets.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 border-t border-cyan-900 pt-1.5" onClick={(e) => e.stopPropagation()}>
+          <span className="text-ink-400">Redirect to</span>
+          <select aria-label="Redirect crew to" value={target?.id ?? ''} onChange={(e) => setTo(e.target.value)}
+            className="min-w-0 flex-1 rounded bg-ink-700 px-1 py-1 text-xs text-ink-50">
+            {targets.map((a) => <option key={a.id} value={a.id}>{a.label.split(' (')[0]}</option>)}
+          </select>
+          <button className={`${btn} bg-amber-300`} data-reassign onClick={stop(() => target && onReassign(c, target.id))}>Reassign</button>
+        </div>
+      )}
+      {cs.noAccessAt != null && (
+        <p className="mt-1 rounded border border-rose-500 bg-rose-950/60 px-2 py-1 font-semibold text-rose-200">
+          ⚠ No access by road at this time ({fmtTime(cs.noAccessAt, timeZone)}).
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Actions(props: { c: CallerReport; cs: CaseState; selected: boolean } & Props) {
+  const { c, cs, onTake, onConfirm } = props;
   const [choice, setChoice] = useState<Urgency>(cs.urgency ?? c.urgency);
   const stop = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn(); };
-  const noAccess = cs.noAccessAt != null && (
-    <p className="mt-1 rounded border border-rose-500 bg-rose-950/60 px-2 py-1 text-xs font-semibold text-rose-200">
-      ⚠ No access by road at this time ({fmtTime(cs.noAccessAt, timeZone)}). Every route is cut by blocked streets.
-    </p>
-  );
+  const crew = props.cardCrews[c.id];
   return (
     <div className="mt-2" onClick={(e) => e.stopPropagation()}>
       {cs.stage === 'new' && (
         <button className={`${btn} bg-slate-200`} onClick={stop(() => onTake(c))}>Take</button>
       )}
       {cs.stage === 'taken' && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <select aria-label="Urgency" value={choice} onChange={(e) => setChoice(e.target.value as Urgency)}
             className="rounded bg-ink-700 px-1 py-1 text-xs text-ink-50">
             {(Object.keys(URGENCY_LABEL) as Urgency[]).map((u) => <option key={u} value={u}>{URGENCY_LABEL[u]}</option>)}
@@ -68,48 +220,20 @@ function Actions({ c, cs, check, now, timeZone, canRoute, onTake, onConfirm, onD
           {choice !== c.urgency && <span className="text-[11px] text-ink-400">agent suggested {URGENCY_LABEL[c.urgency]}</span>}
         </div>
       )}
-      {cs.stage === 'confirmed' && (
-        <>
-          <button className={`${btn} bg-cyan-300 disabled:opacity-40`} disabled={!canRoute}
-            onClick={stop(() => onDispatch(c))}>{cs.noAccessAt != null ? 'Try dispatch again' : 'Dispatch'}</button>
-          {!canRoute && <span className="ml-2 text-[11px] text-ink-400">no response points in this scenario</span>}
-          {noAccess}
-        </>
+      {(cs.stage === 'confirmed' || cs.stage === 'unassigned') && (
+        <DispatchControls c={c} cs={cs} selected={props.selected} candidates={props.candidates} canRoute={props.canRoute}
+          labelOf={props.labelOf} onDispatch={props.onDispatch} timeZone={props.timeZone} />
       )}
-      {cs.stage === 'dispatched' && cs.route && (
-        <div className="rounded border border-cyan-700 bg-cyan-950/40 p-2 text-xs">
-          <div><b>{cs.route.responderName}</b> → caller · <b>{fmtRoute(cs.route)}</b></div>
-          <div className="text-ink-400">
-            drive time at free-flow speeds, blocked streets avoided · computed for {fmtTime(cs.route.computedAt, timeZone)}
-          </div>
-          {cs.route.lastStretchBlocked && (
-            <div className="mt-1 text-amber-200">
-              ⚠ The caller's street is blocked: the crew stops {Math.round(cs.route.lastStretchM)} m away.
-            </div>
-          )}
-          {check && check.cut.length > 0 && (
-            <div className="mt-1 rounded border border-amber-500 bg-amber-950/60 p-1.5 text-amber-100">
-              ⚠ Route cut at {fmtTime(now, timeZone)}: {streetLabel(check.cut[0].properties)}
-              {check.cut.length > 1 ? ` and ${check.cut.length - 1} more` : ''} now blocked.
-              {check.alternative ? (
-                <div className="mt-1">
-                  <div>New route: <b>{check.alternative.responderName}</b>, {fmtRoute(check.alternative)}</div>
-                  <button className={`${btn} mt-1 bg-amber-300`} onClick={stop(() => onReroute(c))}>Use new route</button>
-                </div>
-              ) : (
-                <div className="mt-1 font-semibold text-rose-200">No access by road at this time.</div>
-              )}
-            </div>
-          )}
-          {noAccess}
-        </div>
+      {cs.stage === 'dispatched' && crew && (
+        <CrewBox c={c} cs={cs} crew={crew} now={props.now} timeZone={props.timeZone} awaiting={props.awaiting}
+          onReroute={props.onReroute} onReassign={props.onReassign} />
       )}
     </div>
   );
 }
 
 export function CallerList(props: Props) {
-  const { callers, streets, now, timeZone, synthetic, selectedId, cases, routeChecks, onSelect } = props;
+  const { callers, streets, now, timeZone, synthetic, selectedId, cases, onSelect } = props;
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-ink-700 px-3 py-2">
@@ -125,11 +249,11 @@ export function CallerList(props: Props) {
           const near = selected ? streetsNear(streets, c, NEAR_RADIUS_M) : [];
           const count = (s: string) => near.filter((n) => statusAt(n.street.properties, now) === s).length;
           return (
-            <div key={c.id} role="button" tabIndex={0} data-report={c.id}
+            <div key={c.id} role="button" tabIndex={0} data-report={c.id} data-stage={cs.stage}
               onClick={() => onSelect(selected ? null : c.id)}
               onKeyDown={(e) => { if (e.key === 'Enter') onSelect(selected ? null : c.id); }}
               className={`cursor-pointer border-b border-ink-800 px-3 py-2 text-left hover:bg-ink-850 ${selected ? 'bg-ink-800' : ''}`}
-              style={{ borderLeft: `4px solid ${URGENCY_COLOUR[urgency]}` }}>
+              style={{ borderLeft: `4px solid ${cs.stage === 'unassigned' ? STAGE_COLOUR.unassigned : URGENCY_COLOUR[urgency]}` }}>
               <div className="flex items-center gap-2">
                 <span className="whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold text-ink-950" style={{ background: URGENCY_COLOUR[urgency] }}>
                   {URGENCY_LABEL[urgency]}
@@ -148,8 +272,7 @@ export function CallerList(props: Props) {
                   : 'urgency suggested by the agent'}</span>
                 {c.synthetic && <span className="synthetic-tag">SYNTHETIC</span>}
               </div>
-              <Actions c={c} cs={cs} check={routeChecks[c.id]} now={now} timeZone={timeZone} canRoute={props.canRoute}
-                onTake={props.onTake} onConfirm={props.onConfirm} onDispatch={props.onDispatch} onReroute={props.onReroute} />
+              <Actions {...props} c={c} cs={cs} selected={selected} />
               {selected && (
                 <div className="mt-2 rounded border border-ink-600 bg-ink-900 p-2 text-xs">
                   {c.summary_en && <p className="mb-1 italic text-ink-200">“{c.summary}”</p>}

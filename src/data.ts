@@ -144,11 +144,13 @@ export function modelLabel(meta: FileMeta): string {
 }
 
 /** Reports received up to `now`, most urgent first (operator-confirmed urgency wins), then newest first. */
-export function visibleCallers(callers: CallerReport[], now: number, urgencyOf?: (c: CallerReport) => Urgency): CallerReport[] {
+export function visibleCallers(callers: CallerReport[], now: number, urgencyOf?: (c: CallerReport) => Urgency,
+  first?: (c: CallerReport) => boolean): CallerReport[] {
   const u = urgencyOf ?? ((c: CallerReport) => c.urgency);
+  const top = (c: CallerReport) => (first?.(c) ? 0 : 1);       // e.g. incidents that lost their crew
   return callers
     .filter((c) => Date.parse(c.reported_at) <= now)
-    .sort((a, b) => URGENCY_ORDER[u(a)] - URGENCY_ORDER[u(b)]
+    .sort((a, b) => top(a) - top(b) || URGENCY_ORDER[u(a)] - URGENCY_ORDER[u(b)]
       || Date.parse(b.reported_at) - Date.parse(a.reported_at));
 }
 
@@ -162,8 +164,8 @@ export function streetLabel(p: StreetAccess): string {
   return kind + where + at;
 }
 
-export const STAGE_LABEL = { new: 'NEW', taken: 'TAKEN', confirmed: 'CONFIRMED', dispatched: 'DISPATCHED' } as const;
-export const STAGE_COLOUR = { new: '#8a9bb3', taken: '#e2e8f0', confirmed: '#a7f3d0', dispatched: '#22d3ee' } as const;
+export const STAGE_LABEL = { new: 'NEW', taken: 'TAKEN', confirmed: 'CONFIRMED', dispatched: 'DISPATCHED', unassigned: 'UNASSIGNED' } as const;
+export const STAGE_COLOUR = { new: '#8a9bb3', taken: '#e2e8f0', confirmed: '#a7f3d0', dispatched: '#22d3ee', unassigned: '#fb7185' } as const;
 
 function metres(lon1: number, lat1: number, lon2: number, lat2: number): number {
   const k = Math.PI / 180;

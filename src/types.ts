@@ -114,7 +114,7 @@ export interface Responder extends Provenance {
 }
 
 /** What the operator has done with a report on this screen. */
-export type Stage = 'new' | 'taken' | 'confirmed' | 'dispatched';
+export type Stage = 'new' | 'taken' | 'confirmed' | 'dispatched' | 'unassigned';
 
 export interface Decision {
   seq: number;
@@ -123,7 +123,8 @@ export interface Decision {
   scenario_time: string;
   operator: string;
   report_id: string;
-  action: 'take' | 'confirm_urgency' | 'dispatch' | 'dispatch_no_access' | 'reroute' | 'reroute_no_access';
+  action: 'take' | 'confirm_urgency' | 'dispatch' | 'dispatch_no_access' | 'dispatch_no_crew' | 'reroute' | 'reroute_no_access'
+    | 'reassign' | 'unassigned' | 'settings';
   previous: string | null;
   new: string | null;
   note?: string;

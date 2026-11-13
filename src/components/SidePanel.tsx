@@ -1,6 +1,7 @@
 import { HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, closureAt, currentForecast, fileKind, fireNearby, fmtAge, fmtTime, modelLabel, statusAt } from '../data';
 import type { ScenarioData, StreetStatus } from '../types';
 import type { LayerKey } from './MapView';
+import { CREWS_PER_STATION, CREW_STATUS_COLOUR, CREW_STATUS_LABEL, type CrewState } from '../crews';
 
 const LAYER_LABEL: Record<LayerKey, string> = {
   forecast: 'Fire front: latest forecast',
@@ -17,6 +18,12 @@ interface Props {
   timeZone: string;
   layers: Record<LayerKey, boolean>;
   onToggle: (key: LayerKey) => void;
+  crewStates: CrewState[];
+  /** Short label of a report (what a crew is assigned to). */
+  labelOf: (reportId: string) => string;
+  onSceneMin: number;
+  onSceneChange: (minutes: number) => void;
+  onFocusCrew: (state: CrewState) => void;
 }
 
 type Kind = 'synthetic' | 'model' | 'real';
@@ -39,7 +46,7 @@ function Section({ title, kind, label, children }: { title: string; kind?: Kind;
   );
 }
 
-export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
+export function SidePanel({ data, now, timeZone, layers, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew }: Props) {
   const fire = data.fire.features.map((f) => f.properties);
   const cur = currentForecast(fire, now);
   const hasUpdates = cur?.set === 'update';
@@ -75,6 +82,46 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
           </label>
         ))}
       </Section>
+
+      {crewStates.length > 0 && (
+        <Section title={`Crews · ${crewStates.filter((s) => s.status === 'available').length} of ${crewStates.length} available`}>
+          <div data-crews>
+            {crewStates.map((s) => {
+              const m = s.mission;
+              const eta = s.etaMin != null ? `${Math.max(1, Math.ceil(s.etaMin))} min` : '';
+              const where = s.status === 'available' ? `at ${s.crew.stationName}`
+                : s.status === 'en_route' ? `→ ${labelOf(m!.reportId)} · ETA ${eta}`
+                  : s.status === 'holding' ? `→ ${labelOf(m!.reportId)} · stopped, route cut`
+                    : s.status === 'on_scene' ? `${labelOf(m!.reportId)} · ${s.cutOff ? 'no road back' : `leaves in ${eta}`}`
+                      : `→ ${s.crew.stationName} · back in ${eta}`;
+              return (
+                <button key={s.crew.id} data-crew={s.crew.id} data-crew-status={s.status} onClick={() => onFocusCrew(s)}
+                  className="block w-full rounded px-1 py-1 text-left hover:bg-ink-800" title="Show on the map">
+                  <span className="flex items-center gap-2">
+                    <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CREW_STATUS_COLOUR[s.status] }} />
+                    <b>{s.crew.name}</b>
+                    <span className="ml-auto whitespace-nowrap text-xs" style={{ color: CREW_STATUS_COLOUR[s.status] }}>{CREW_STATUS_LABEL[s.status]}</span>
+                  </span>
+                  <span className="block pl-[18px] text-xs text-ink-400">{where}</span>
+                  <span className="block pl-[18px] font-mono text-[10px] text-ink-400">{s.position[1].toFixed(4)}° N, {s.position[0].toFixed(4)}° E</span>
+                </button>
+              );
+            })}
+          </div>
+          <label className="mt-2 flex items-center gap-2 text-xs text-ink-200">
+            Time on scene
+            <input type="number" min={5} max={480} step={5} defaultValue={onSceneMin} aria-label="Minutes on scene" key={onSceneMin}
+              onBlur={(e) => onSceneChange(Number(e.target.value))}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+              className="w-16 rounded bg-ink-800 px-2 py-1 text-sm text-ink-50" />
+            min
+          </label>
+          <p className="mt-1 text-xs text-ink-400">
+            Assumptions: {CREWS_PER_STATION} crews per response point; a crew stays on scene for the time above
+            (new dispatches), then drives back. Click a crew to find it on the map.
+          </p>
+        </Section>
+      )}
 
       <Section title="Fire front" kind={data.fireMeta.synthetic === true ? 'synthetic' : undefined}>
         {cur ? (

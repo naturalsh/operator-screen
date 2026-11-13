@@ -35,7 +35,7 @@ export function TimeBar({ start, end, now, playing, speed, timeZone, marks, onSe
             <span key={i} className="pointer-events-none absolute -top-0.5 -translate-x-1/2 text-[9px]"
               style={{ left: `${(100 * (m.t - start)) / (end - start)}%`, color: m.colour }}>▼</span>
           ))}
-          <input type="range" className="touch-range w-full" min={start} max={end} step={600000} value={now}
+          <input type="range" className="touch-range w-full" min={start} max={end} step={60000} value={now}
             aria-label="Scenario time" onChange={(e) => onSeek(Number(e.target.value))} />
         </div>
         <select value={speed} onChange={(e) => onSpeed(Number(e.target.value))} aria-label="Playback speed"
@@ -56,7 +56,7 @@ export function TimeBar({ start, end, now, playing, speed, timeZone, marks, onSe
             <span key={i} className={`absolute top-0 whitespace-nowrap text-[10px] ${m.label && i === 0 ? '' : '-translate-x-1/2'}`}
               style={{ left: `${(100 * (m.t - start)) / (end - start)}%`, color: m.colour }}>▼{m.label ? ` ${m.label}` : ''}</span>
           ))}
-          <input type="range" className="touch-range w-full" min={start} max={end} step={600000} value={now}
+          <input type="range" className="touch-range w-full" min={start} max={end} step={60000} value={now}
             aria-label="Scenario time" onChange={(e) => onSeek(Number(e.target.value))} />
         </div>
         <div className="flex items-center gap-2">
@@ -93,7 +93,7 @@ export function TimeBar({ start, end, now, playing, speed, timeZone, marks, onSe
           <span key={i} className={`absolute top-0 whitespace-nowrap text-[10px] ${m.label && i === 0 ? '' : '-translate-x-1/2'}`}
             style={{ left: `${(100 * (m.t - start)) / (end - start)}%`, color: m.colour }}>▼{m.label ? ` ${m.label}` : ''}</span>
         ))}
-        <input type="range" className="w-full" min={start} max={end} step={600000} value={now}
+        <input type="range" className="w-full" min={start} max={end} step={60000} value={now}
           aria-label="Scenario time" onChange={(e) => onSeek(Number(e.target.value))} />
       </div>
       <label className="text-xs text-ink-400">
