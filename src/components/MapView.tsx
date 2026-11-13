@@ -18,7 +18,12 @@ export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'nearby
 export type MapMode = 'simple' | 'detailed';
 
 /** Layers that only exist in Detailed mode. */
-const DETAILED_ONLY = ['initial-pending', 'initial-reached', 'initial-label', 'streets-sat', 'streets-nearby', 'burned-area'];
+const DETAILED_ONLY = ['initial-pending', 'initial-reached', 'initial-label', 'streets-sat', 'streets-nearby', 'burned-area',
+  'forecast-pending', 'forecast-reached', 'forecast-label'];
+/** Layers that only exist in Simple mode: the forecast drawn as an area instead of lines. */
+const SIMPLE_ONLY = ['forecast-fill', 'forecast-fill-edge', 'forecast-outline', 'forecast-tag'];
+/** Simple-mode forecast: an orange area with a thin white edge, unlike any road colour. */
+export const FORECAST_FILL_COLOUR = '#f97316';
 
 /** Satellite detections in Simple mode: one colour for every sensor. */
 const SIMPLE_FIRE_COLOUR = '#fb7185';
@@ -26,7 +31,8 @@ const SIMPLE_FIRE_COLOUR = '#fb7185';
 const NEARBY_RADIUS_M = 1000;
 
 const LAYER_GROUPS: Record<LayerKey, string[]> = {
-  forecast: ['forecast-pending', 'forecast-reached', 'forecast-label'],
+  forecast: ['forecast-pending', 'forecast-reached', 'forecast-label',
+    'forecast-fill', 'forecast-fill-edge', 'forecast-outline', 'forecast-tag'],
   initial: ['initial-pending', 'initial-reached', 'initial-label'],
   observed: ['hotspots', 'burned-area', 'flame-front'],
   streets: ['streets-near', 'streets', 'streets-sat'],
@@ -128,6 +134,14 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.setFilter('forecast-reached', ['all', inForce, upTo]);
     map.setFilter('forecast-label', inForce);
     map.setFilter('forecast-pending', ['all', inForce, ['>', ['get', 't'], t]]);
+    // Simple: only the next horizon not reached yet is a filled area (the last one once all are reached);
+    // the other horizons of the same forecast are thin, faint outlines. Each carries a "+4 h" tag.
+    const next = cur?.contours.find((p) => p.t > t) ?? cur?.contours[cur.contours.length - 1];
+    const isNext: ExpressionSpecification = ['==', ['get', 'id'], next?.id ?? ''];
+    map.setFilter('forecast-fill', ['all', inForce, isNext]);
+    map.setFilter('forecast-fill-edge', ['all', inForce, isNext]);
+    map.setFilter('forecast-outline', ['all', inForce, ['!', isNext]]);
+    map.setFilter('forecast-tag', inForce);
     // Optional: the single forecast made at ignition, for comparison (only when updates exist).
     const initial: ExpressionSpecification = ['all', kind('forecast'), ['==', ['get', 'set'], cur?.set === 'update' ? 'initial' : 'none']];
     map.setFilter('initial-reached', ['all', initial, upTo]);
@@ -195,7 +209,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     }
     for (const [key, ids] of Object.entries(LAYER_GROUPS) as [LayerKey, string[]][]) {
       for (const id of ids) {
-        const shownHere = on[key] && !(simple && DETAILED_ONLY.includes(id));
+        const shownHere = on[key] && !(simple ? DETAILED_ONLY.includes(id) : SIMPLE_ONLY.includes(id));
         map.setLayoutProperty(id, 'visibility', shownHere ? 'visible' : 'none');
       }
     }
@@ -247,6 +261,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       map.addLayer({ id: 'flame-front', type: 'fill', source: 'fire',
         paint: { 'fill-color': '#fde047', 'fill-opacity': 0.95, 'fill-outline-color': '#fef08a' } });
 
+      // Simple-mode forecast area: under the streets, so roads stay readable on top of it.
+      map.addLayer({ id: 'forecast-fill', type: 'fill', source: 'fire',
+        paint: { 'fill-color': FORECAST_FILL_COLOUR, 'fill-opacity': 0.28 } });
+
       map.addLayer({ id: 'streets-near', type: 'line', source: 'streets',
         layout: { 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.9 } });
       // "Fire nearby (satellite)": an amber halo under streets a 1 km pixel covers but nothing has closed.
@@ -297,6 +315,15 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         layout: { 'symbol-placement': 'line', 'text-field': ['concat', 'forecast +', ['to-string', ['get', 'horizon_hours']], ' h'],
           'text-font': ['Noto Sans Regular'], 'text-size': 11, 'symbol-spacing': 400 },
         paint: { 'text-color': '#fde68a', 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
+      map.addLayer({ id: 'forecast-outline', type: 'line', source: 'fire',
+        paint: { 'line-color': '#fdba74', 'line-width': 1, 'line-opacity': 0.45 } });
+      map.addLayer({ id: 'forecast-fill-edge', type: 'line', source: 'fire',
+        paint: { 'line-color': '#ffffff', 'line-width': 1.4, 'line-opacity': 0.9 } });
+      map.addLayer({ id: 'forecast-tag', type: 'symbol', source: 'fire',
+        layout: { 'symbol-placement': 'line', 'text-field': ['concat', '+', ['to-string', ['get', 'horizon_hours']], ' h'],
+          'text-font': ['Noto Sans Regular'], 'text-size': 11, 'symbol-spacing': ['interpolate', ['linear'], ['zoom'], 10, 100, 12, 130, 15, 320], 'text-max-angle': 80,
+          'text-keep-upright': true, 'text-allow-overlap': true, 'text-ignore-placement': true },
+        paint: { 'text-color': '#ffffff', 'text-halo-color': '#7c2d12', 'text-halo-width': 1.6 } });
 
       map.addLayer({ id: 'responders', type: 'circle', source: 'responders',
         paint: { 'circle-radius': 8, 'circle-color': '#0e7490', 'circle-stroke-color': '#a5f3fc', 'circle-stroke-width': 2.5 } });
@@ -477,17 +504,18 @@ function DotKey({ fill, ring }: { fill: string; ring?: string }) {
   );
 }
 
-function AreaKey({ fill, opacity }: { fill: string; opacity: number }) {
+function AreaKey({ fill, opacity, edge }: { fill: string; opacity: number; edge?: string }) {
   return (
     <svg width="26" height="12" aria-hidden="true" className="shrink-0">
-      <rect x="3" y="1" width="20" height="10" fill={fill} fillOpacity={opacity} stroke={fill} strokeOpacity={0.6} />
+      <rect x="3" y="1" width="20" height="10" fill={fill} fillOpacity={opacity} stroke={edge ?? fill}
+        strokeOpacity={edge ? 0.95 : 0.6} strokeWidth={edge ? 1.2 : 1} />
     </svg>
   );
 }
 
-/** Small collapsible legend in the bottom-left corner of the map; open on desktop, closed on phones. */
+/** Small legend under the zoom buttons; starts as a "Legend" button so it never hides callers. */
 function Legend({ mode, nearby }: { mode: MapMode; nearby: boolean }) {
-  const [open, setOpen] = useState(() => !window.matchMedia('(max-width: 767px), (max-height: 500px)').matches);
+  const [open, setOpen] = useState(false);
   const simple = mode === 'simple';
   const row = (key: React.ReactNode, text: string) => (
     <div className="flex items-center gap-1.5 whitespace-nowrap">{key}<span>{text}</span></div>
@@ -495,7 +523,7 @@ function Legend({ mode, nearby }: { mode: MapMode; nearby: boolean }) {
   return (
     <div className="ns-legend" data-legend={open ? 'open' : 'closed'}>
       <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex w-full items-center gap-1 font-bold">
-        Legend <span className="ml-auto text-ink-400">{open ? '▾' : '▸'}</span>
+        Legend <span className="ml-auto text-ink-400">{open ? '✕' : '▸'}</span>
       </button>
       {open && (
         <div className="mt-1 space-y-0.5">
@@ -508,8 +536,13 @@ function Legend({ mode, nearby }: { mode: MapMode; nearby: boolean }) {
           {!simple && nearby && row(<LineKey colour="#fbbf24" halo />, 'Fire nearby (satellite, 1 km pixel)')}
           {row(<LineKey colour="#22d3ee" casing="#083344" />, 'Crew route')}
           {row(<LineKey colour="#fbbf24" dashed casing="#083344" />, 'Route cut')}
-          {row(<LineKey colour={HORIZON_COLOURS[0]} />, 'Fire forecast (+4 / +8 / +12 h)')}
-          {row(<LineKey colour={HORIZON_COLOURS[0]} dashed />, 'Forecast, time not reached yet')}
+          {simple ? <>
+            {row(<AreaKey fill={FORECAST_FILL_COLOUR} opacity={0.4} edge="#ffffff" />, 'Fire forecast, next horizon')}
+            {row(<LineKey colour="#fdba74" />, 'Later horizons (+8 / +12 h)')}
+          </> : <>
+            {row(<LineKey colour={HORIZON_COLOURS[0]} />, 'Fire forecast (+4 / +8 / +12 h)')}
+            {row(<LineKey colour={HORIZON_COLOURS[0]} dashed />, 'Forecast, time not reached yet')}
+          </>}
           {!simple && row(<LineKey colour={INITIAL_FORECAST_COLOUR} />, 'Initial forecast (at ignition)')}
           {simple ? row(<AreaKey fill={SIMPLE_FIRE_COLOUR} opacity={0.35} />, 'Fire seen by satellite')
             : <>
