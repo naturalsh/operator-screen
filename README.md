@@ -171,6 +171,17 @@ name are in the Layers tab. The desktop layout is unchanged.
 |---|---|---|---|---|
 | ![map](docs/phone_iphone_390x844_1_map.png) | ![reports](docs/phone_iphone_390x844_2_reports.png) | ![card](docs/phone_iphone_390x844_3_card_tapped.png) | ![layers](docs/phone_iphone_390x844_4_layers.png) | ![log](docs/phone_iphone_390x844_5_log.png) |
 
+Held sideways (height of 500 px or less) the header is one line with the three tabs in it, the time bar is a
+single thin row, and the tabs open a panel from the right that never covers more than half of the map.
+Rotating the phone switches between the two layouts without reloading.
+
+| Landscape 844 × 390 | Reports panel | Card tapped |
+|---|---|---|
+| ![map](docs/phone_landscape_844x390_1_map.png) | ![reports](docs/phone_landscape_844x390_2_reports.png) | ![card](docs/phone_landscape_844x390_3_card_tapped.png) |
+
+Landscape 800 × 360: [map](docs/phone_landscape_800x360_1_map.png), [reports](docs/phone_landscape_800x360_2_reports.png),
+[card tapped](docs/phone_landscape_800x360_3_card_tapped.png), [layers](docs/phone_landscape_800x360_4_layers.png).
+
 Android 360 × 800: [map](docs/phone_android_360x800_1_map.png), [reports](docs/phone_android_360x800_2_reports.png),
 [card tapped](docs/phone_android_360x800_3_card_tapped.png), [layers](docs/phone_android_360x800_4_layers.png),
 [decision log](docs/phone_android_360x800_5_log.png).

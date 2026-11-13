@@ -33,7 +33,10 @@ export function App() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [tab, setTab] = useState<'overview' | 'log'>('overview');
   // Phone layout (below 768 px): full-screen map, a bottom drawer with three tabs, a fixed time bar.
-  const phone = useMediaQuery('(max-width: 767px)');
+  const narrow = useMediaQuery('(max-width: 767px)');
+  // A phone held sideways: little height, so one header line, a thin time bar and a panel from the right.
+  const landscape = useMediaQuery('(max-height: 500px)');
+  const phone = narrow || landscape;
   const [drawer, setDrawer] = useState<'reports' | 'layers' | 'log' | null>(null);
   const mainRef = useRef<HTMLElement>(null);
 
@@ -176,18 +179,32 @@ export function App() {
   );
 
   if (phone) {
-    const DRAWER_OPEN = 0.5;                 // share of the map area the open drawer covers
+    const DRAWER_OPEN = 0.5;                 // share of the map the open drawer (portrait) may cover
+    const SIDE_PANEL_PX = 360;               // landscape: panel from the right, never more than half the width
     const TAB_BAR_PX = 44;
-    const inset = () => (drawer ? (mainRef.current?.clientHeight ?? 0) * DRAWER_OPEN : TAB_BAR_PX);
+    const main = mainRef.current;
+    const sideWidth = Math.min(SIDE_PANEL_PX, (main?.clientWidth ?? window.innerWidth) * 0.5);
+    const insetBottom = landscape ? 0 : drawer ? (main?.clientHeight ?? 0) * DRAWER_OPEN : TAB_BAR_PX;
+    const insetRight = landscape && drawer ? sideWidth : 0;
     const tabs = [
-      ['reports', `Reports (${callers.length})`], ['layers', 'Layers'], ['log', `Decision log (${decisions.length})`],
+      ['reports', `Reports (${callers.length})`], ['layers', 'Layers'],
+      ['log', `${landscape ? 'Log' : 'Decision log'} (${decisions.length})`],
     ] as const;
+    const tabButtons = tabs.map(([k, label]) => (
+      <button key={k} role="tab" aria-selected={drawer === k} data-drawer-tab={k}
+        onClick={() => setDrawer(drawer === k ? null : k)}
+        className={`${landscape ? 'h-9 whitespace-nowrap rounded px-3' : 'flex-1 px-1'} ${drawer === k
+          ? (landscape ? 'bg-ink-700 text-ink-50' : 'border-b-2 border-sky-400 text-ink-50') : 'text-ink-400'}`}>
+        {label}{drawer === k ? (landscape ? ' ✕' : ' ▾') : ''}
+      </button>
+    ));
     return (
-      <div className="flex flex-col" style={{ height: '100dvh' }} data-layout="phone">
-        <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-ink-700 bg-ink-900 px-2 py-1.5">
+      <div className="flex flex-col" style={{ height: '100dvh' }} data-layout={landscape ? 'phone-landscape' : 'phone'}>
+        <header className={`flex items-center gap-x-2 gap-y-1 border-b border-ink-700 bg-ink-900 px-2 ${landscape ? 'h-10 flex-nowrap' : 'flex-wrap py-1.5'}`}>
           <h1 className="whitespace-nowrap text-sm font-bold">Nature Shield</h1>
           {syntheticLayers.length > 0 && <span className="synthetic-tag">SYNTHETIC calls</span>}
-          {modelStreets && <span className="model-tag">{modelLabel(data!.streetsMeta)} streets</span>}
+          {modelStreets && <span className="model-tag truncate">{modelLabel(data!.streetsMeta)} streets</span>}
+          {landscape && <div className="ml-auto flex shrink-0 gap-1 text-xs font-bold" role="tablist">{tabButtons}</div>}
         </header>
         {error && <p className="p-4 text-rose-400">Could not load the scenario: {error}</p>}
         {!data && !error && <p className="p-4 text-ink-400">Loading scenario…</p>}
@@ -196,18 +213,15 @@ export function App() {
             <main ref={mainRef} className="relative min-h-0 flex-1 overflow-hidden">
               <MapView data={data} now={now} layers={layers} selectedId={selected?.id ?? null}
                 nearIds={nearIds} stages={stages} routes={routes} urgencyOf={urgencyOf} onSelect={setSelectedId}
-                bottomInset={inset()} fitFire />
-              <div className="absolute inset-x-0 bottom-0 z-10 flex flex-col rounded-t-xl border-t border-ink-600 bg-ink-900 shadow-2xl"
-                style={{ height: drawer ? `${DRAWER_OPEN * 100}%` : TAB_BAR_PX }} data-drawer={drawer ?? 'closed'}>
-                <div className="flex shrink-0 text-xs font-bold" style={{ height: TAB_BAR_PX }} role="tablist">
-                  {tabs.map(([k, label]) => (
-                    <button key={k} role="tab" aria-selected={drawer === k} data-drawer-tab={k}
-                      onClick={() => setDrawer(drawer === k ? null : k)}
-                      className={`flex-1 px-1 ${drawer === k ? 'border-b-2 border-sky-400 text-ink-50' : 'text-ink-400'}`}>
-                      {label}{drawer === k ? ' ▾' : ''}
-                    </button>
-                  ))}
-                </div>
+                insetBottom={insetBottom} insetRight={insetRight} fitFire />
+              <div data-drawer={drawer ?? 'closed'}
+                className={landscape
+                  ? `absolute inset-y-0 right-0 z-10 flex flex-col border-l border-ink-600 bg-ink-900 shadow-2xl ${drawer ? '' : 'hidden'}`
+                  : 'absolute inset-x-0 bottom-0 z-10 flex flex-col rounded-t-xl border-t border-ink-600 bg-ink-900 shadow-2xl'}
+                style={landscape ? { width: sideWidth } : { height: drawer ? `${DRAWER_OPEN * 100}%` : TAB_BAR_PX }}>
+                {!landscape && (
+                  <div className="flex shrink-0 text-xs font-bold" style={{ height: TAB_BAR_PX }} role="tablist">{tabButtons}</div>
+                )}
                 {drawer && (
                   <div className="min-h-0 flex-1 overflow-y-auto">
                     {drawer === 'reports' && (
@@ -236,7 +250,7 @@ export function App() {
                 )}
               </div>
             </main>
-            <TimeBar compact start={start} end={end} now={now} playing={playing} speed={speed} timeZone={timeZone} marks={marks}
+            <TimeBar compact thin={landscape} start={start} end={end} now={now} playing={playing} speed={speed} timeZone={timeZone} marks={marks}
               onSeek={setNow} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
           </>
         )}
