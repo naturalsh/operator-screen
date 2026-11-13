@@ -6,7 +6,7 @@ import {
   CREW_STATUS_LABEL, DEFAULT_ON_SCENE_MIN, candidatesFor, crewStateAt, makeCrews, missionTimes, withReturn,
   type Candidate, type Mission,
 } from './crews';
-import { buildGraph, planLegs } from './routing';
+import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
 import type { CallerReport, Decision, ScenarioData, ScenarioEntry, StreetFeature, Urgency } from './types';
 import { CallerList, NEAR_RADIUS_M, type CardCrew, type CaseState } from './components/CallerList';
 import { DecisionLog } from './components/DecisionLog';
@@ -144,6 +144,10 @@ export function App() {
         sentAt: m.createdAt, arrivedAt: times.arriveAt, leftAt: times.leaveAt,
         lastStretchBlocked: m.lastStretchBlocked, lastStretchM: m.lastStretchM, cutOff: mine && state.cutOff,
         holdFrom: times.holdFrom, cutStreet, alternative,
+        snapWarnings: [
+          (m.originSnapM ?? 0) > SNAP_WARN_M ? `${crew.stationName} is ${Math.round(m.originSnapM!)} m from the nearest mapped road (straight connector assumed in the ETA)` : '',
+          (m.targetSnapM ?? 0) > SNAP_WARN_M ? `the caller is ${Math.round(m.targetSnapM!)} m from the nearest mapped road; the route ends there` : '',
+        ].filter(Boolean),
       };
     }
     return out;
@@ -186,6 +190,7 @@ export function App() {
     const mission = withReturn(graph, {
       id, crewId: k.crew.id, reportId: c.id, createdAt: now, legs: [k.leg], target: [c.place.lon, c.place.lat],
       lastStretchBlocked: k.lastStretchBlocked, lastStretchM: k.lastStretchM, onSceneMin, back: null,
+      originSnapM: k.state.status === 'available' ? k.originSnapM : 0, targetSnapM: k.targetSnapM,
     }, k.crew, streetById);
     // Whatever the crew was doing (driving elsewhere, or driving home) ends now.
     setMissions((all) => [...all.map((m) => (old && m.id === old.id ? { ...m, cancelledAt: now } : m)), mission]);

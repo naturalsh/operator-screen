@@ -78,20 +78,6 @@ function metresBetween(a: [number, number], b: [number, number]): number {
   return Math.hypot((a[0] - b[0]) * k, a[1] - b[1]) * 111195;
 }
 
-/** Index of the street nearest to a point (by vertex distance), optionally only among passable streets. */
-function nearestEdge(g: Graph, p: [number, number], usable?: (edge: number) => boolean): number {
-  let best = -1, bestD = Infinity;
-  g.streets.forEach((s, i) => {
-    if (s.geometry.type !== 'LineString' || s.properties.u == null) return;
-    if (usable && !usable(i)) return;
-    for (const c of s.geometry.coordinates) {
-      const d = metresBetween(p, c as [number, number]);
-      if (d < bestD) { bestD = d; best = i; }
-    }
-  });
-  return best;
-}
-
 /** Minimal binary heap of [cost, node]. */
 class Heap {
   private a: [number, number][] = [];
@@ -144,88 +130,6 @@ function reach(g: Graph, sources: number[], blocked: (edge: number) => boolean) 
   return { dist, via };
 }
 
-/**
- * Fastest crew to a caller at scenario time `now`, avoiding blocked streets.
- * Returns null when no responder can reach the caller's street by road.
- */
-export function planRoute(g: Graph, caller: CallerReport, responders: Responder[], now: number): RoutePlan | null {
-  const blocked = (edge: number) => statusAt(g.streets[edge].properties, now) === 'blocked';
-  const callerXY: [number, number] = [caller.place.lon, caller.place.lat];
-  const target = nearestEdge(g, callerXY);
-  if (target < 0) return null;
-  const tp = g.streets[target].properties;
-  const lastStretchBlocked = blocked(target);
-
-  const { dist, via } = reach(g, [tp.u!, tp.v!], blocked);
-  const options = stationOptions(g, responders, dist, via, blocked);
-  if (!options.length) return null;
-  // Every option ends with the same final stretch, so the fastest drive to the street is the fastest overall.
-  const o = options.reduce((a, b) => (b.minutes < a.minutes ? b : a));
-  let { minutes, km } = o;
-  const edgeIds = [...o.edgeIds];
-  let lastStretchM = metresBetween(g.nodeXY.get(o.endNode) ?? callerXY, callerXY);
-  if (!lastStretchBlocked) {
-    // Drive the final stretch along the caller's own street.
-    edgeIds.push(tp.id);
-    km += lastStretchM / 1000;
-    minutes += (lastStretchM / 1000 / (SPEED_KMH[tp.highway ?? ''] ?? DEFAULT_SPEED_KMH)) * 60;
-    if (tp.highway === 'track') o.trackKm += lastStretchM / 1000;
-    lastStretchM = 0;
-  }
-  return { responderId: o.responder.id, responderName: o.responder.name, edgeIds, minutes, km, trackKm: o.trackKm,
-    computedAt: now, lastStretchBlocked, lastStretchM };
-}
-
-interface StationOption { responder: Responder; minutes: number; km: number; trackKm: number; edgeIds: string[]; endNode: number }
-
-/** Drive from every response point to the caller's street (to its nearer reachable end), blocked streets avoided. */
-function stationOptions(g: Graph, responders: Responder[], dist: Map<number, number>,
-  via: Map<number, Arc & { from: number }>, blocked: (edge: number) => boolean): StationOption[] {
-  const out: StationOption[] = [];
-  for (const r of responders) {
-    // A station leaves by the nearest street that is passable now and connected to the caller.
-    const startEdge = nearestEdge(g, [r.place.lon, r.place.lat],
-      (e) => !blocked(e) && (dist.has(g.streets[e].properties.u!) || dist.has(g.streets[e].properties.v!)));
-    if (startEdge < 0) continue;
-    const sp = g.streets[startEdge].properties;
-    const start = [sp.u!, sp.v!].filter((n) => dist.has(n)).sort((a, b) => dist.get(a)! - dist.get(b)!)[0];
-    if (start == null) continue;
-    const edgeIds: string[] = [];
-    let km = 0, trackKm = 0;
-    for (let n = start; via.has(n); n = via.get(n)!.from) {
-      const s = g.streets[via.get(n)!.edge].properties;
-      edgeIds.push(s.id);
-      km += (s.length_m ?? 0) / 1000;
-      if (s.highway === 'track') trackKm += (s.length_m ?? 0) / 1000;
-    }
-    out.push({ responder: r, minutes: dist.get(start)!, km, trackKm, edgeIds, endNode: lastNode(via, start) });
-  }
-  return out;
-}
-
-/**
- * Drive time (minutes) from every response point to a caller's street at `now`; null = no access by road.
- * The final stretch along the caller's own street is not included. Used for the station/caller table.
- */
-export function stationTimes(g: Graph, caller: CallerReport, responders: Responder[], now: number):
-  { name: string; minutes: number | null; km: number | null; trackKm: number | null }[] {
-  const blocked = (edge: number) => statusAt(g.streets[edge].properties, now) === 'blocked';
-  const target = nearestEdge(g, [caller.place.lon, caller.place.lat]);
-  const tp = g.streets[target].properties;
-  const { dist, via } = reach(g, [tp.u!, tp.v!], blocked);
-  const options = stationOptions(g, responders, dist, via, blocked);
-  return responders.map((r) => {
-    const o = options.find((x) => x.responder.id === r.id);
-    return { name: r.name, minutes: o ? o.minutes : null, km: o ? o.km : null, trackKm: o ? o.trackKm : null };
-  });
-}
-
-function lastNode(via: Map<number, Arc & { from: number }>, start: number): number {
-  let n = start;
-  while (via.has(n)) n = via.get(n)!.from;
-  return n;
-}
-
 /** Streets of a route that are blocked at `now` (empty = the route is still passable). */
 export function cutStreets(route: RoutePlan, now: number, byId: Map<string, StreetFeature>): StreetFeature[] {
   const out: StreetFeature[] = [];
@@ -265,42 +169,117 @@ export interface LegPlan {
   /** The target's own street is blocked: the leg ends at its nearest reachable end. */
   lastStretchBlocked: boolean;
   lastStretchM: number;
+  /** Metres from a station to its road, and from the target to its road (warned on the card above SNAP_WARN_M). */
+  originSnapM: number;
+  targetSnapM: number;
+}
+
+/** Above this distance from the nearest mapped road a station or caller gets a warning on the card. */
+export const SNAP_WARN_M = 300;
+/** Speed for the straight connector between a station and the road it is next to (not in the map data). */
+const CONNECTOR_KMH = 20;
+
+/** Nearest point on a polyline: the point, its distance from `p` and the distance along the line to it. */
+function projectOnLine(coords: [number, number][], p: [number, number]) {
+  const k = Math.cos((p[1] * Math.PI) / 180);
+  let best = { point: coords[0], dist: Infinity, along: 0, seg: 0 };
+  let along = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const a = coords[i - 1], b = coords[i];
+    const ax = (a[0] - p[0]) * k, ay = a[1] - p[1], dx = (b[0] - a[0]) * k, dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    const u = len2 === 0 ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2));
+    const point: [number, number] = [a[0] + u * (b[0] - a[0]), a[1] + u * (b[1] - a[1])];
+    const d = metresBetween(p, point);
+    const segM = metresBetween(a, b);
+    if (d < best.dist) best = { point, dist: d, along: along + u * segM, seg: i - 1 };
+    along += segM;
+  }
+  return { ...best, total: along };
+}
+
+/** The street nearest to a point (projected onto its geometry), optionally only among some streets. */
+function snapToStreet(g: Graph, p: [number, number], usable?: (edge: number) => boolean) {
+  let best: { edge: number; proj: ReturnType<typeof projectOnLine> } | null = null;
+  g.streets.forEach((s, i) => {
+    if (s.geometry.type !== 'LineString' || s.properties.u == null || s.geometry.coordinates.length < 2) return;
+    if (usable && !usable(i)) return;
+    const proj = projectOnLine(s.geometry.coordinates as [number, number][], p);
+    if (!best || proj.dist < best.proj.dist) best = { edge: i, proj };
+  });
+  return best as { edge: number; proj: ReturnType<typeof projectOnLine> } | null;
 }
 
 /**
  * Legs from each origin to `target` at scenario time `now`, blocked streets avoided, fastest first.
- * Origins that cannot reach the target are left out. With `targetMustBeOpen` the target is approached by
- * the nearest passable street (a station to return to); otherwise by its nearest street, blocked or not (a caller).
+ *
+ * Reachability is decided from the target: a search over passable streets from the target's street. An origin
+ * whose own street is not reached cannot get there ("No access by road"); an origin is never moved to some other
+ * street that happens to be connected to the target.
+ * - A station is attached to the nearest point of its nearest street; the straight connector (CONNECTOR_KMH) and
+ *   the drive along that street to its junction are part of the leg. If that street is blocked, the station is out.
+ * - A vehicle (origin with a junction node) starts from that node.
+ * - With `targetMustBeOpen` the target is approached by its nearest passable street (a station to return to);
+ *   otherwise by its nearest street, blocked or not (a caller); the last stretch is then walked if blocked.
  */
 export function planLegs(g: Graph, target: [number, number], origins: Origin[], now: number, targetMustBeOpen = false): LegPlan[] {
   const blocked = (edge: number) => statusAt(g.streets[edge].properties, now) === 'blocked';
-  const tEdge = nearestEdge(g, target, targetMustBeOpen ? (e) => !blocked(e) : undefined);
-  if (tEdge < 0) return [];
+  const tSnap = snapToStreet(g, target, targetMustBeOpen ? (e) => !blocked(e) : undefined);
+  if (!tSnap) return [];
+  const tEdge = tSnap.edge;
   const tp = g.streets[tEdge].properties;
   const lastStretchBlocked = blocked(tEdge);
   const { dist, via } = reach(g, [tp.u!, tp.v!], blocked);
+  const speedOf = (e: number) => SPEED_KMH[g.streets[e].properties.highway ?? ''] ?? DEFAULT_SPEED_KMH;
   const out: LegPlan[] = [];
   for (const origin of origins) {
-    let start = origin.node;
-    if (start == null) {
-      if (!origin.place) continue;
-      const e = nearestEdge(g, origin.place,
-        (i) => !blocked(i) && (dist.has(g.streets[i].properties.u!) || dist.has(g.streets[i].properties.v!)));
-      if (e < 0) continue;
-      const sp = g.streets[e].properties;
-      start = [sp.u!, sp.v!].filter((n) => dist.has(n)).sort((a, b) => dist.get(a)! - dist.get(b)!)[0];
-    }
-    if (start == null || !dist.has(start)) continue;
-
     const path: [number, number][] = [];
     const cum: number[] = [];
     const spans: Leg['spans'] = [];
+    let minutes = 0, km = 0, trackKm = 0, originSnapM = 0;
+    let start = origin.node;
+    if (start == null) {
+      if (!origin.place) continue;
+      const sSnap = snapToStreet(g, origin.place);
+      if (!sSnap || blocked(sSnap.edge)) continue;               // the station's own road is closed
+      const sp = g.streets[sSnap.edge].properties;
+      // Leave by whichever end of the street is the quicker way to the target.
+      const ends = [
+        { node: sp.u!, along: sSnap.proj.along },
+        { node: sp.v!, along: sSnap.proj.total - sSnap.proj.along },
+      ].filter((x) => dist.has(x.node));
+      if (!ends.length) continue;                                 // not connected to the target: no access
+      const speed = speedOf(sSnap.edge);
+      const cost = (x: { node: number; along: number }) => (x.along / 1000 / speed) * 60 + dist.get(x.node)!;
+      const end = ends.reduce((a, b) => (cost(b) < cost(a) ? b : a));
+      originSnapM = sSnap.proj.dist;
+      const connector = (originSnapM / 1000 / CONNECTOR_KMH) * 60;
+      const coords = g.streets[sSnap.edge].geometry.coordinates as [number, number][];
+      const partial = end.node === sp.u
+        ? [sSnap.proj.point, ...coords.slice(0, sSnap.proj.seg + 1).reverse()]
+        : [sSnap.proj.point, ...coords.slice(sSnap.proj.seg + 1)];
+      const partialMin = (end.along / 1000 / speed) * 60;
+      path.push(origin.place); cum.push(0);
+      minutes = connector;
+      path.push(sSnap.proj.point); cum.push(minutes);
+      let done = 0;
+      for (let i = 1; i < partial.length; i++) {
+        done += metresBetween(partial[i - 1], partial[i]);
+        path.push(partial[i]);
+        cum.push(minutes + (end.along > 0 ? (partialMin * Math.min(done, end.along)) / end.along : 0));
+      }
+      spans.push({ edgeId: sp.id, from: minutes, to: minutes + partialMin });
+      minutes += partialMin;
+      km += (originSnapM + end.along) / 1000;
+      if (sp.highway === 'track') trackKm += end.along / 1000;
+      start = end.node;
+    } else {
+      if (!dist.has(start)) continue;
+      const startXY = g.nodeXY.get(start);
+      if (startXY) { path.push(startXY); cum.push(0); }
+    }
     const nodes = [start];
-    const nodeMin = [0];
-    let minutes = 0, km = 0, trackKm = 0;
-    const startXY = g.nodeXY.get(start);
-    if (origin.place) { path.push(origin.place); cum.push(0); }
-    if (startXY) { path.push(startXY); cum.push(0); }
+    const nodeMin = [minutes];
     for (let n = start; via.has(n);) {
       const arc = via.get(n)!;
       const s = g.streets[arc.edge];
@@ -327,7 +306,7 @@ export function planLegs(g: Graph, target: [number, number], origins: Origin[], 
     let lastStretchM = metresBetween(end, target);
     if (!lastStretchBlocked) {
       // Drive the final stretch along the target's own street.
-      const extra = (lastStretchM / 1000 / (SPEED_KMH[tp.highway ?? ''] ?? DEFAULT_SPEED_KMH)) * 60;
+      const extra = (lastStretchM / 1000 / speedOf(tEdge)) * 60;
       spans.push({ edgeId: tp.id, from: minutes, to: minutes + extra });
       minutes += extra;
       km += lastStretchM / 1000;
@@ -336,9 +315,31 @@ export function planLegs(g: Graph, target: [number, number], origins: Origin[], 
       cum.push(minutes);
       lastStretchM = 0;
     }
-    out.push({ origin, leg: { path, cum, spans, nodes, nodeMin, minutes, km, trackKm, startAt: now }, lastStretchBlocked, lastStretchM });
+    out.push({ origin, leg: { path, cum, spans, nodes, nodeMin, minutes, km, trackKm, startAt: now }, lastStretchBlocked, lastStretchM,
+      originSnapM, targetSnapM: tSnap.proj.dist });
   }
   return out.sort((a, b) => a.leg.minutes - b.leg.minutes);
+}
+
+/** Fastest crew from a station to a caller (used by the route table script). */
+export function planRoute(g: Graph, caller: CallerReport, responders: Responder[], now: number): RoutePlan | null {
+  const plans = planLegs(g, [caller.place.lon, caller.place.lat],
+    responders.map((r) => ({ id: r.id, name: r.name, place: [r.place.lon, r.place.lat] as [number, number] })), now);
+  const p = plans[0];
+  if (!p) return null;
+  return { responderId: p.origin.id, responderName: p.origin.name, edgeIds: p.leg.spans.map((x) => x.edgeId), minutes: p.leg.minutes,
+    km: p.leg.km, trackKm: p.leg.trackKm, computedAt: now, lastStretchBlocked: p.lastStretchBlocked, lastStretchM: p.lastStretchM };
+}
+
+/** Drive time from every station to a caller at `now` (null = no access by road). */
+export function stationTimes(g: Graph, caller: CallerReport, responders: Responder[], now: number):
+  { name: string; minutes: number | null; km: number | null; trackKm: number | null }[] {
+  const plans = planLegs(g, [caller.place.lon, caller.place.lat],
+    responders.map((r) => ({ id: r.id, name: r.name, place: [r.place.lon, r.place.lat] as [number, number] })), now);
+  return responders.map((r) => {
+    const p = plans.find((x) => x.origin.id === r.id);
+    return { name: r.name, minutes: p ? p.leg.minutes : null, km: p ? p.leg.km : null, trackKm: p ? p.leg.trackKm : null };
+  });
 }
 
 /** Position on a leg `minutes` after its start (clamped to the leg). */

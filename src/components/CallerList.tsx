@@ -41,6 +41,8 @@ export interface CardCrew {
   holdFrom: number | null;
   cutStreet: string | null;
   alternative: { minutes: number; km: number } | null;
+  /** Station or caller far from a mapped road. */
+  snapWarnings: string[];
 }
 
 interface Props {
@@ -162,6 +164,9 @@ function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign }
         {crew.status === 'returning' && <>left the scene {fmtTime(crew.leftAt!, timeZone)} · back at the station in {mins(crew.etaMin ?? 0)}</>}
         {crew.status === 'available' && <>arrived {crew.arrivedAt ? fmtTime(crew.arrivedAt, timeZone) : '—'}, left {crew.leftAt ? fmtTime(crew.leftAt, timeZone) : '—'} · crew is back at its station</>}
       </div>
+      {crew.snapWarnings.map((w) => (
+        <div key={w} className="mt-1 text-amber-200" data-snap-warning>⚠ {w}.</div>
+      ))}
       {crew.lastStretchBlocked && crew.status !== 'holding' && (
         <div className="mt-1 text-amber-200">
           ⚠ The caller's street is blocked: the crew stops {Math.round(crew.lastStretchM)} m away.

@@ -26,6 +26,8 @@ jobs:
       - run: npm ci
       - name: Check the data files against the schemas
         run: npm run validate
+      - name: Tests
+        run: npm run typecheck && npm test
       - name: Build
         # GitHub Pages serves the site under /<repository name>/.
         run: npm run build

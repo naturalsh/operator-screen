@@ -36,6 +36,9 @@ export interface Mission {
   target: [number, number];
   lastStretchBlocked: boolean;
   lastStretchM: number;
+  /** Metres from the station to its road and from the caller to theirs (warned above SNAP_WARN_M). */
+  originSnapM?: number;
+  targetSnapM?: number;
   onSceneMin: number;
   /** Drive back to the station, planned for the time the crew leaves the scene (null: none found, or not arrived). */
   back: Leg | null;
@@ -152,6 +155,8 @@ export interface Candidate {
   minutes: number;
   lastStretchBlocked: boolean;
   lastStretchM: number;
+  originSnapM: number;
+  targetSnapM: number;
   /** The crew is on its way to another incident: sending it here needs the operator's explicit choice. */
   needsApproval: boolean;
 }
@@ -167,6 +172,6 @@ export function candidatesFor(g: Graph, target: [number, number], states: CrewSt
   return planLegs(g, target, origins, now).map((p) => {
     const state = usable.find((s) => s.crew.id === p.origin.id)!;
     return { crew: state.crew, state, leg: p.leg, minutes: p.leg.minutes, lastStretchBlocked: p.lastStretchBlocked,
-      lastStretchM: p.lastStretchM, needsApproval: state.status === 'en_route' || state.status === 'holding' };
+      lastStretchM: p.lastStretchM, originSnapM: p.originSnapM, targetSnapM: p.targetSnapM, needsApproval: state.status === 'en_route' || state.status === 'holding' };
   });
 }

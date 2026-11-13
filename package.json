@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc",
     "validate": "node scripts/validate.mjs",
-    "routes": "tsx scripts/route_table.ts"
+    "routes": "tsx scripts/route_table.ts",
+    "test": "tsx tests/routing.test.ts"
   },
   "dependencies": {
     "maplibre-gl": "^4.7.1",
