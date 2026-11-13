@@ -47,20 +47,25 @@ Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_over
 
 The switch in the header changes how much the map shows (add `?mode=detailed` to a link to open in Detailed).
 
-- **Simple** (default): the forecast in force, everything satellites have seen so far in one light colour,
-  closed roads in one solid red, callers, crews and their routes.
+- **Simple** (default): the forecast in force as an area (the next horizon not reached yet filled in orange with a
+  white edge, later horizons as thin outlines, each tagged "+4 h / +8 h / +12 h"), everything satellites have
+  seen so far in one light colour, closed roads in one solid red, callers, crews and their routes.
 - **Detailed**: adds the satellite sensors in their own colours (VIIRS, MODIS, SLSTR, Sentinel-2 flame front and
   burned area), closed roads split into model (solid) and satellite only (dashed), the initial forecast made at
   ignition and the "fire nearby" warning.
 
-The **legend** in the bottom-left corner of the map lists the lines and colours of the mode shown; it can be
-folded away and starts folded on phones. "Fire nearby (satellite)" is a separate layer, off by default; when on,
+The **legend** is a small button under the zoom buttons; it opens there, on a translucent panel, and lists the
+lines and colours of the mode shown. "Fire nearby (satellite)" is a separate layer, off by default; when on,
 it is drawn only within 1 km of the selected caller and of active crew routes. Streets 3 km or more from the
 fire, mostly the town of Marmaris, are drawn at 7 % opacity; crew routes over them stay fully visible.
 
 | 22 June 04:30 | 23 June 11:51 |
 |---|---|
-| ![Simple vs Detailed, 22 June 04:30](docs/simple_vs_detailed_0430.png) | ![Simple vs Detailed, 23 June 11:51](docs/simple_vs_detailed_1151.png) |
+| ![Simple, 22 June 04:30](docs/simple_0430.png) | ![Simple, 23 June 11:51](docs/simple_1151.png) |
+
+Side by side with Detailed (before the forecast area was added to Simple):
+[22 June 04:30](docs/simple_vs_detailed_0430.png), [23 June 11:51](docs/simple_vs_detailed_1151.png).
+Legend opened: [docs/simple_legend_open.png](docs/simple_legend_open.png).
 
 ## What the labels mean
 
