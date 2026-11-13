@@ -43,6 +43,25 @@ The eastern cluster at 22 June 04:10 before and after the repeated-detection rul
 Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_overview.png),
 [zoomed](docs/14_labels_zoomed.png).
 
+## Simple and Detailed
+
+The switch in the header changes how much the map shows (add `?mode=detailed` to a link to open in Detailed).
+
+- **Simple** (default): the forecast in force, everything satellites have seen so far in one light colour,
+  closed roads in one solid red, callers, crews and their routes.
+- **Detailed**: adds the satellite sensors in their own colours (VIIRS, MODIS, SLSTR, Sentinel-2 flame front and
+  burned area), closed roads split into model (solid) and satellite only (dashed), the initial forecast made at
+  ignition and the "fire nearby" warning.
+
+The **legend** in the bottom-left corner of the map lists the lines and colours of the mode shown; it can be
+folded away and starts folded on phones. "Fire nearby (satellite)" is a separate layer, off by default; when on,
+it is drawn only within 1 km of the selected caller and of active crew routes. Streets 3 km or more from the
+fire, mostly the town of Marmaris, are drawn at 7 % opacity; crew routes over them stay fully visible.
+
+| 22 June 04:30 | 23 June 11:51 |
+|---|---|
+| ![Simple vs Detailed, 22 June 04:30](docs/simple_vs_detailed_0430.png) | ![Simple vs Detailed, 23 June 11:51](docs/simple_vs_detailed_1151.png) |
+
 ## What the labels mean
 
 | Label on screen | Meaning |
