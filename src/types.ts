@@ -89,6 +89,15 @@ export interface FireFront extends Provenance {
   horizon_hours?: number;
   probability?: number;
   model_run_at?: string;
+  /** When the forecast was issued and what it was started from ("VIIRS perimeter", "ignition point"). */
+  issued_at?: string;
+  initialised_from?: string;
+  /** "update" = re-initialised from the latest observed fire area; "initial" = the single run at ignition. */
+  forecast_set?: 'initial' | 'update';
+  /** Added on load: issue time as epoch ms, the set, and the rank of the horizon within its issue (0, 1, 2). */
+  issue_t?: number;
+  set?: 'initial' | 'update';
+  rank?: number;
   observation_type?: 'hotspots' | 'flame_front' | 'burned_area';
   instrument?: string;
   satellite?: string;

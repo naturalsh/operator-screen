@@ -40,6 +40,27 @@
       "format": "date-time",
       "description": "forecast: start time of the model run."
     },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "forecast: when the forecast was issued. The screen shows the latest issued forecast."
+    },
+    "forecast_set": {
+      "enum": [
+        "initial",
+        "update"
+      ],
+      "description": "forecast: 'update' = re-initialised from the latest observed fire area; 'initial' = the single run at ignition (default)."
+    },
+    "initialised_from": {
+      "type": "string",
+      "description": "forecast: what the run was started from, e.g. 'VIIRS perimeter' or 'ignition point'."
+    },
+    "last_observation_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "forecast: time of the latest observation used."
+    },
     "observation_type": {
       "enum": [
         "hotspots",

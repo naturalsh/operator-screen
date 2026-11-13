@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { URGENCY_LABEL, fileKind, loadIndex, loadScenario, modelLabel, streetsNear, visibleCallers } from './data';
+import { HORIZON_COLOURS, URGENCY_LABEL, fileKind, loadIndex, loadScenario, modelLabel, streetsNear, visibleCallers } from './data';
 import { buildGraph, cutStreets, planRoute, type RoutePlan } from './routing';
 import type { CallerReport, Decision, ScenarioData, ScenarioEntry, StreetFeature, Urgency } from './types';
 import { CallerList, NEAR_RADIUS_M, type CaseState, type RouteCheck } from './components/CallerList';
@@ -26,7 +26,7 @@ export function App() {
   const [speed, setSpeed] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(params.get('call'));
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>({
-    forecast: true, observed: true, streets: true, callers: true, crews: true,
+    forecast: true, initial: false, observed: true, streets: true, callers: true, crews: true,
   });
   const [operator, setOperator] = useState('operator-1');
   const [cases, setCases] = useState<Record<string, CaseState>>({});
@@ -146,10 +146,16 @@ export function App() {
     }
   };
 
-  const marks = useMemo(() => (data ? data.fire.features.filter((f) => f.properties.kind === 'forecast').map((f) => ({
-    t: f.properties.t, label: `+${f.properties.horizon_hours} h`,
-    colour: f.properties.horizon_hours === 8 ? '#fde047' : f.properties.horizon_hours === 20 ? '#fb923c' : '#f97316',
-  })) : []), [data]);
+  // Time-bar marks: when each forecast was issued (or, without updates, when the initial horizons are reached).
+  const marks = useMemo(() => {
+    if (!data) return [];
+    const fc = data.fire.features.map((f) => f.properties).filter((p) => p.kind === 'forecast');
+    if (!fc.some((p) => p.set === 'update')) {
+      return fc.map((p) => ({ t: p.t, label: `+${p.horizon_hours} h`, colour: HORIZON_COLOURS[p.rank ?? 0] as string }));
+    }
+    return [...new Set(fc.filter((p) => p.set === 'update').map((p) => p.issue_t!))].sort((a, b) => a - b)
+      .map((t, i) => ({ t, label: i === 0 ? 'forecast issued' : '', colour: '#fde047' }));
+  }, [data]);
 
   const routes = useMemo(() => Object.entries(cases).filter(([, cs]) => cs.route).map(([id, cs]) => ({
     reportId: id, edgeIds: cs.route!.edgeIds, cut: (routeChecks[id]?.cut.length ?? 0) > 0,

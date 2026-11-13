@@ -3,22 +3,23 @@ import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map 
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL, URGENCY_ORDER,
-  closureAt, closureSource, fireNearby, modelLabel, fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
+  HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, closureAt, closureSource, currentForecast, fireNearby, modelLabel, fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
 } from '../data';
 import { resolveBasemap } from '../basemap';
 import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
 
-export type LayerKey = 'forecast' | 'observed' | 'streets' | 'callers' | 'crews';
+export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'callers' | 'crews';
 
 const LAYER_GROUPS: Record<LayerKey, string[]> = {
   forecast: ['forecast-pending', 'forecast-reached', 'forecast-label'],
+  initial: ['initial-pending', 'initial-reached', 'initial-label'],
   observed: ['hotspots', 'burned-area', 'flame-front'],
   streets: ['streets-near', 'streets-nearby', 'streets', 'streets-sat'],
   callers: ['callers-selected', 'callers', 'callers-label'],
   crews: ['routes-casing', 'routes', 'routes-cut', 'responders', 'responders-label'],
 };
 
-const HORIZON_COLOUR = ['match', ['get', 'horizon_hours'], 8, '#fde047', 20, '#fb923c', '#f97316'] as unknown as string;
+const HORIZON_COLOUR = ['match', ['get', 'rank'], 0, HORIZON_COLOURS[0], 1, HORIZON_COLOURS[1], HORIZON_COLOURS[2]] as unknown as string;
 const INSTRUMENT_COLOUR = ['match', ['get', 'instrument'], 'MODIS', '#a855f7', 'SLSTR', '#14b8a6', '#ef4444'] as unknown as string;
 
 function callersFc(callers: CallerReport[], stages: Record<string, Stage>,
@@ -73,9 +74,18 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     const upTo: ExpressionSpecification = ['<=', ['get', 't'], t];
     const kind = (k: string): ExpressionSpecification => ['==', ['get', 'kind'], k];
     const obs = (o: string): ExpressionSpecification => ['==', ['get', 'observation_type'], o];
-    map.setFilter('forecast-reached', ['all', kind('forecast'), upTo]);
-    map.setFilter('forecast-label', ['all', kind('forecast'), upTo]);
-    map.setFilter('forecast-pending', ['all', kind('forecast'), ['>', ['get', 't'], t]]);
+    // The forecast in force: the latest update issued by now (dashed until each horizon is reached).
+    const cur = currentForecast(d.fire.features.map((f) => f.properties), t);
+    const inForce: ExpressionSpecification = ['all', kind('forecast'), ['==', ['get', 'set'], cur?.set ?? 'none'],
+      ['==', ['get', 'issue_t'], cur?.issuedAt ?? -1]];
+    map.setFilter('forecast-reached', ['all', inForce, upTo]);
+    map.setFilter('forecast-label', inForce);
+    map.setFilter('forecast-pending', ['all', inForce, ['>', ['get', 't'], t]]);
+    // Optional: the single forecast made at ignition, for comparison (only when updates exist).
+    const initial: ExpressionSpecification = ['all', kind('forecast'), ['==', ['get', 'set'], cur?.set === 'update' ? 'initial' : 'none']];
+    map.setFilter('initial-reached', ['all', initial, upTo]);
+    map.setFilter('initial-label', ['all', initial, upTo]);
+    map.setFilter('initial-pending', ['all', initial, ['>', ['get', 't'], t]]);
     map.setFilter('hotspots', ['all', obs('hotspots'), upTo]);
     map.setFilter('flame-front', ['all', obs('flame_front'), upTo]);
     map.setFilter('burned-area', ['all', obs('burned_area'), upTo]);
@@ -181,6 +191,14 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       map.addLayer({ id: 'routes-cut', type: 'line', source: 'streets',
         paint: { 'line-color': '#fbbf24', 'line-width': 5, 'line-dasharray': [1.2, 1.2] } });
 
+      map.addLayer({ id: 'initial-pending', type: 'line', source: 'fire',
+        paint: { 'line-color': INITIAL_FORECAST_COLOUR, 'line-width': 1.2, 'line-dasharray': [2, 3], 'line-opacity': 0.6 } });
+      map.addLayer({ id: 'initial-reached', type: 'line', source: 'fire',
+        paint: { 'line-color': INITIAL_FORECAST_COLOUR, 'line-width': 2.2 } });
+      map.addLayer({ id: 'initial-label', type: 'symbol', source: 'fire',
+        layout: { 'symbol-placement': 'line', 'text-field': ['concat', 'initial +', ['to-string', ['get', 'horizon_hours']], ' h'],
+          'text-font': ['Noto Sans Regular'], 'text-size': 11, 'symbol-spacing': 400 },
+        paint: { 'text-color': INITIAL_FORECAST_COLOUR, 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
       map.addLayer({ id: 'forecast-pending', type: 'line', source: 'fire',
         paint: { 'line-color': HORIZON_COLOUR, 'line-width': 1.4, 'line-dasharray': [3, 3], 'line-opacity': 0.55 } });
       map.addLayer({ id: 'forecast-reached', type: 'line', source: 'fire',
@@ -221,7 +239,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       }
 
       // One click handler, most specific feature first: caller, response point, street, fire front.
-      const CLICKABLE = ['callers', 'responders', 'streets', 'streets-sat', 'flame-front', 'forecast-reached', 'forecast-pending', 'hotspots', 'burned-area'];
+      const CLICKABLE = ['callers', 'responders', 'streets', 'streets-sat', 'flame-front', 'forecast-reached', 'forecast-pending',
+        'initial-reached', 'initial-pending', 'hotspots', 'burned-area'];
       const muted = (text: string) => `<div class="ns-muted">${text}</div>`;
       const tag = (p: { synthetic?: boolean; basis?: string }) => (p.synthetic ? '<span class="synthetic-tag">SYNTHETIC</span>'
         : p.basis === 'fire_model' ? '<span class="model-tag">MODEL OUTPUT</span>'
@@ -277,7 +296,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           const p = hit.properties as FireFront & { t: number };
           const when = `${fmtTime(p.t, tz)} local`;
           if (p.kind === 'forecast') {
-            html = `<b>Forecast +${p.horizon_hours} h</b><div>Modelled fire extent, P ≥ ${Math.round((p.probability ?? 0.5) * 100)} %`
+            const issued = Date.parse(String(p.issued_at ?? p.model_run_at ?? p.valid_at));
+            html = `<b>${p.forecast_set === 'initial' ? 'Initial forecast' : 'Forecast'} +${p.horizon_hours} h</b>`
+              + `<div>Issued ${fmtTime(issued, tz)} from ${p.initialised_from ?? 'ignition point'}</div>`
+              + `<div>Modelled fire extent, P ≥ ${Math.round((p.probability ?? 0.5) * 100)} %`
               + `${p.area_km2 != null ? ` · ${Number(p.area_km2).toFixed(1)} km²` : ''}</div>`
               + `<div>${p.t <= t ? 'Valid since' : 'Valid from'} ${when}</div>` + muted(p.source);
           } else {

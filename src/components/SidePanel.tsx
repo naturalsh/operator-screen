@@ -1,9 +1,10 @@
-import { STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, closureAt, fileKind, fireNearby, fmtAge, fmtTime, modelLabel, statusAt } from '../data';
+import { HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, closureAt, currentForecast, fileKind, fireNearby, fmtAge, fmtTime, modelLabel, statusAt } from '../data';
 import type { ScenarioData, StreetStatus } from '../types';
 import type { LayerKey } from './MapView';
 
 const LAYER_LABEL: Record<LayerKey, string> = {
-  forecast: 'Fire front: forecast',
+  forecast: 'Fire front: latest forecast',
+  initial: 'Fire front: initial forecast (at ignition)',
   observed: 'Fire front: observed',
   streets: 'Street access',
   callers: 'Caller reports',
@@ -40,7 +41,10 @@ function Section({ title, kind, label, children }: { title: string; kind?: Kind;
 
 export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
   const fire = data.fire.features.map((f) => f.properties);
-  const forecasts = fire.filter((p) => p.kind === 'forecast').sort((a, b) => a.t - b.t);
+  const cur = currentForecast(fire, now);
+  const hasUpdates = cur?.set === 'update';
+  const forecasts = cur?.contours ?? [];
+  const initial = fire.filter((p) => p.kind === 'forecast' && p.set === 'initial').sort((a, b) => a.t - b.t);
   const seen = fire.filter((p) => p.kind === 'observed' && p.t <= now).sort((a, b) => b.t - a.t);
   const last = seen[0];
   const streets = data.streets.features.map((f) => f.properties);
@@ -64,7 +68,7 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
   return (
     <div className="h-full overflow-y-auto text-sm">
       <Section title="Layers">
-        {(Object.keys(LAYER_LABEL) as LayerKey[]).map((k) => (
+        {(Object.keys(LAYER_LABEL) as LayerKey[]).filter((k) => k !== 'initial' || hasUpdates).map((k) => (
           <label key={k} className="flex cursor-pointer items-center gap-2 py-0.5">
             <input type="checkbox" checked={layers[k]} onChange={() => onToggle(k)} />
             {LAYER_LABEL[k]}
@@ -73,17 +77,36 @@ export function SidePanel({ data, now, timeZone, layers, onToggle }: Props) {
       </Section>
 
       <Section title="Fire front" kind={data.fireMeta.synthetic === true ? 'synthetic' : undefined}>
-        <p className="mb-1 text-xs text-ink-400">Forecast (model, P ≥ 50 %)</p>
+        {cur ? (
+          <p className="mb-1 text-xs" data-forecast-issued>
+            <b>Forecast issued {fmtTime(cur.issuedAt, timeZone)}</b> from {cur.from}
+            <span className="text-ink-400"> · model, P ≥ 50 %{hasUpdates ? ` · update ${cur.index} of ${cur.count}` : ''}</span>
+          </p>
+        ) : <p className="mb-1 text-xs text-ink-400">No forecast issued yet.</p>}
         {forecasts.map((p) => (
           <div key={p.id} className="flex items-center gap-2 py-0.5">
             <span className="inline-block h-1 w-5 rounded"
-              style={{ background: p.horizon_hours === 8 ? '#fde047' : p.horizon_hours === 20 ? '#fb923c' : '#f97316', opacity: p.t <= now ? 1 : 0.4 }} />
+              style={{ background: HORIZON_COLOURS[p.rank ?? 0], opacity: p.t <= now ? 1 : 0.4 }} />
             <span>+{p.horizon_hours} h · {p.area_km2?.toFixed(1)} km²</span>
             <span className="ml-auto text-xs text-ink-400">
               {p.t <= now ? `since ${fmtTime(p.t, timeZone)}` : `in ${fmtAge(p.t - now)}`}
             </span>
           </div>
         ))}
+        {hasUpdates && layers.initial && (
+          <div className="mt-1" data-initial-forecast>
+            <p className="mb-1 text-xs text-ink-400">Initial forecast, issued at ignition ({fmtTime(initial[0]?.issue_t ?? 0, timeZone)})</p>
+            {initial.map((p) => (
+              <div key={p.id} className="flex items-center gap-2 py-0.5">
+                <span className="inline-block h-0.5 w-5" style={{ background: INITIAL_FORECAST_COLOUR, opacity: p.t <= now ? 1 : 0.4 }} />
+                <span>+{p.horizon_hours} h · {p.area_km2?.toFixed(1)} km²</span>
+                <span className="ml-auto text-xs text-ink-400">
+                  {p.t <= now ? `since ${fmtTime(p.t, timeZone)}` : `in ${fmtAge(p.t - now)}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         <p className="mb-1 mt-2 text-xs text-ink-400">Observed (satellite)</p>
         {last ? (
           <div>

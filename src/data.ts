@@ -1,4 +1,4 @@
-import type { CallerReport, FileMeta, FireMeta, Responder, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
+import type { CallerReport, FileMeta, FireFront, FireMeta, Responder, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
 
 const BASE = `${import.meta.env?.BASE_URL ?? '/'}scenarios/`;
 
@@ -22,7 +22,7 @@ export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> 
       : Promise.resolve({ metadata: {} as FileMeta, records: [] as Responder[] }),
   ]);
   // MapLibre filters compare numbers, so each fire feature gets its time as epoch ms.
-  for (const f of fire.features) f.properties.t = Date.parse(f.properties.valid_at);
+  prepareFire(fire.features.map((f) => f.properties));
   prepareStreets(streets.features);
   return {
     entry,
@@ -65,6 +65,44 @@ export function closureSource(p: StreetAccess, c: Closure): string {
 export function fireNearby(p: StreetAccess, now: number): boolean {
   return (p.tn ?? NEVER) <= now && statusAt(p, now) !== 'blocked';
 }
+
+/** Adds the derived fields of fire-front records: times as epoch ms, the forecast set and horizon rank. */
+export function prepareFire(props: (FireFront & { t: number })[]): void {
+  const byIssue = new Map<string, FireFront[]>();
+  for (const p of props) {
+    p.t = Date.parse(p.valid_at);
+    if (p.kind !== 'forecast') continue;
+    p.set = p.forecast_set ?? 'initial';
+    p.issue_t = Date.parse(p.issued_at ?? p.model_run_at ?? p.valid_at);
+    const key = `${p.set}|${p.issue_t}`;
+    byIssue.set(key, [...(byIssue.get(key) ?? []), p]);
+  }
+  for (const group of byIssue.values()) {
+    group.sort((a, b) => (a.horizon_hours ?? 0) - (b.horizon_hours ?? 0)).forEach((p, i) => { p.rank = Math.min(i, 2); });
+  }
+}
+
+export interface CurrentForecast { issuedAt: number; from: string; set: 'initial' | 'update'; index: number; count: number;
+  contours: (FireFront & { t: number })[] }
+
+/**
+ * The forecast in force at `now`: the latest update issued so far. A scenario without updates falls back
+ * to its initial forecast.
+ */
+export function currentForecast(props: (FireFront & { t: number })[], now: number): CurrentForecast | null {
+  const forecasts = props.filter((p) => p.kind === 'forecast');
+  const set = forecasts.some((p) => p.set === 'update') ? 'update' : 'initial';
+  const issues = [...new Set(forecasts.filter((p) => p.set === set).map((p) => p.issue_t!))].sort((a, b) => a - b);
+  const past = issues.filter((t) => t <= now);
+  if (!past.length) return null;
+  const issuedAt = past[past.length - 1];
+  const contours = forecasts.filter((p) => p.set === set && p.issue_t === issuedAt)
+    .sort((a, b) => (a.horizon_hours ?? 0) - (b.horizon_hours ?? 0));
+  return { issuedAt, from: contours[0]?.initialised_from ?? 'ignition point', set, index: past.length, count: issues.length, contours };
+}
+
+export const HORIZON_COLOURS = ['#fde047', '#fb923c', '#f97316'] as const;
+export const INITIAL_FORECAST_COLOUR = '#93c5fd';
 
 /** Adds the derived fields the screen works with: `t` (valid_at as epoch ms) and `before`. */
 export function prepareStreets(features: StreetFeature[]): StreetFeature[] {

@@ -55,7 +55,7 @@ Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_over
 
 | Layer | File | Status |
 |---|---|---|
-| Fire front | `public/scenarios/marmaris_2022/firefront.geojson` | **Real.** Fire-model contours (8 / 20 / 40 h) and satellite observations (NASA FIRMS VIIRS and MODIS, Copernicus Sentinel-3 SLSTR, Sentinel-2), exported by the fire tool. |
+| Fire front | `public/scenarios/marmaris_2022/firefront.geojson` | **Real observations + model forecasts.** Fire-model contours (the initial 8 / 20 / 40 h forecast and 16 forecast updates of +4 / +8 / +12 h) and satellite observations (NASA FIRMS VIIRS and MODIS, Copernicus Sentinel-3 SLSTR, Sentinel-2), exported by the fire tool. |
 | Street access | `public/scenarios/marmaris_2022/street_access.geojson` | **Model + satellite.** Real OpenStreetMap streets (© OpenStreetMap contributors, ODbL). A street is `blocked` from its `valid_at` when the modelled fire reaches it (the fire repository's road-closure calculation: P ≥ 50 % contour every 2 h, 150 m safety buffer) **or** a satellite saw fire on it (a VIIRS 375 m pixel footprint crosses it, or the Sentinel-2 flame front or burned area is within 150 m, or MODIS/SLSTR 1 km pixels cover it in two separate overpasses at least 30 minutes apart: "satellite (repeated MODIS/SLSTR)"). A single MODIS or SLSTR pixel does not close a street; it raises a "fire nearby (satellite)" warning, drawn as an amber halo. Not a road survey: no width was measured. |
 | Caller reports | `public/scenarios/marmaris_2022/caller_reports.json` | **SYNTHETIC.** Invented reports, placed on streets the modelled fire reaches and timed around its arrival, so calls increase as the fire grows. |
 
@@ -131,6 +131,33 @@ box the offline map is empty. The three data layers are always local files.
   (free width ≥ 3 m), special access (2 m to under 3 m) and blocked (under 2 m). A status can start at a time
   (`valid_at`): in the sample scenario a street turns red when the modelled fire reaches it. Click a street for details.
 - **Right panel**: layer toggles, forecast and latest satellite pass, street counts, and which files are real.
+
+## Forecast updates
+
+The fire model does not run once. A forecast is issued at ignition, at every new VIIRS overpass or Sentinel-2
+image (started from the union of everything those sensors have seen so far) and at least every 6 hours in
+between; each has contours for +4, +8 and +12 hours. The screen shows the forecast in force at the current
+time, with its issue time and what it was started from ("Forecast issued 22 Jun, 04:02 from VIIRS perimeter");
+contours are dashed until their hour is reached. The yellow ticks on the time bar are the issue times.
+The layer "Fire front: initial forecast (at ignition)" adds the single 8 / 20 / 40 h forecast made at ignition,
+in blue, for comparison. A street's model closure comes from the forecast that is in force when its contour
+reaches the street.
+
+![Latest and initial forecast](docs/22_latest_and_initial_forecast.png)
+
+Share of satellite hotspots inside the forecast, updated forecasts against the single forecast at ignition
+(16 updates; hotspots acquired between the issue time and issue + horizon, summed over the updates;
+"new ground" = hotspots outside the perimeter the update started from):
+
+| Horizon | Hotspots | Inside updated forecast | Inside one-shot forecast | On new ground | New ground inside updated | New ground inside one-shot |
+|---:|---:|---:|---:|---:|---:|---:|
+| +4 h | 807 | 74.5 % | 8.9 % | 331 | 37.8 % | 3.3 % |
+| +8 h | 1267 | 63.0 % | 11.4 % | 706 | 33.6 % | 6.4 % |
+| +12 h | 1741 | 71.6 % | 13.4 % | 974 | 49.3 % | 7.9 % |
+
+The updates are computed by `tools/build_marmaris_scenario.py` with the fire repository's model, on its
+reconstruction grid (forecasts stop at that grid's edge) and its cached weather, which ends on 23 June:
+the last update is issued on 23 June at 14:14 local. The model has no suppression, so late updates over-predict.
 
 ## On a phone
 
@@ -215,7 +242,7 @@ All three share the same provenance fields: `schema_version`, `source`, `source_
 |---|---|---|
 | `CallerReport` | `id`, `reported_at`, `place` (`lon`, `lat`, `label`), `language` (`el`/`tr`/`en`/`fr`), `urgency` (`life_threat`/`urgent`/`routine`), `urgency_reasons[]`, `hazard`, `people_at_risk`, `summary`, `confirmed_by_operator` | `summary_en`, `channel` |
 | `StreetAccess` | `id`, `osm_way_id`, `status` (`open`/`special_access`/`blocked`), `confirmed_by_operator`; with `basis: "imagery"` also `free_width_m` and `imagery_date` | `valid_at` + `status_before` (status that starts at a time), `basis` (`imagery`/`fire_model`/`satellite`/`fire_model_and_satellite`/`operator`), `reason`, per-source closure: `blocked_by`, `first_blocked_by`, `model_blocked_at`, `satellite_blocked_at`, `satellite_source`; warning: `fire_nearby_at`, `fire_nearby_source`; `edge_id`, `name`, `highway`, `confidence`, `imagery_source`; for routing and labels: `u`, `v`, `length_m`, `near_place`, `label_point`, `fire_distance_km` |
-| `FireFront` | `id`, `kind` (`forecast`/`observed`), `valid_at`; forecast: `horizon_hours`, `model_run_at`; observed: `observation_type`, `instrument` | `probability`, `area_km2`, `satellite`, `detections`, `frp_mw` |
+| `FireFront` | `id`, `kind` (`forecast`/`observed`), `valid_at`; forecast: `horizon_hours`, `model_run_at`; observed: `observation_type`, `instrument` | forecast updates: `issued_at`, `forecast_set` (`initial`/`update`), `initialised_from`; `probability`, `area_km2`, `satellite`, `detections`, `frp_mw` |
 | `Responder` (optional file) | `id`, `name`, `kind` (`fire_station`/`gendarmerie`/`police`/`other`), `place` (`lon`, `lat`) | |
 
 ## Layout

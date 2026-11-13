@@ -21,9 +21,9 @@ export function TimeBar({ start, end, now, playing, speed, timeZone, marks, onSe
       <div className="border-t border-ink-700 bg-ink-900 px-3 pt-1.5" data-timebar="compact"
         style={{ paddingBottom: 'max(6px, env(safe-area-inset-bottom))' }}>
         <div className="relative pt-3">
-          {marks.map((m) => (
-            <span key={m.label} className="absolute top-0 -translate-x-1/2 text-[10px]"
-              style={{ left: `${(100 * (m.t - start)) / (end - start)}%`, color: m.colour }}>▼ {m.label}</span>
+          {marks.map((m, i) => (
+            <span key={i} className={`absolute top-0 whitespace-nowrap text-[10px] ${m.label && i === 0 ? '' : '-translate-x-1/2'}`}
+              style={{ left: `${(100 * (m.t - start)) / (end - start)}%`, color: m.colour }}>▼{m.label ? ` ${m.label}` : ''}</span>
           ))}
           <input type="range" className="touch-range w-full" min={start} max={end} step={600000} value={now}
             aria-label="Scenario time" onChange={(e) => onSeek(Number(e.target.value))} />
@@ -58,9 +58,9 @@ export function TimeBar({ start, end, now, playing, speed, timeZone, marks, onSe
         <div className="text-[11px] text-ink-400">{fmtTime(now, 'UTC')} UTC</div>
       </div>
       <div className="relative flex-1 pt-3">
-        {marks.map((m) => (
-          <span key={m.label} className="absolute top-0 -translate-x-1/2 text-[10px]"
-            style={{ left: `${(100 * (m.t - start)) / (end - start)}%`, color: m.colour }}>▼ {m.label}</span>
+        {marks.map((m, i) => (
+          <span key={i} className={`absolute top-0 whitespace-nowrap text-[10px] ${m.label && i === 0 ? '' : '-translate-x-1/2'}`}
+            style={{ left: `${(100 * (m.t - start)) / (end - start)}%`, color: m.colour }}>▼{m.label ? ` ${m.label}` : ''}</span>
         ))}
         <input type="range" className="w-full" min={start} max={end} step={600000} value={now}
           aria-label="Scenario time" onChange={(e) => onSeek(Number(e.target.value))} />

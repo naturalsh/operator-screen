@@ -115,13 +115,186 @@ def _compact(line: LineString) -> LineString:
     return out if not out.is_empty and len(out.coords) >= 2 else line
 
 
+def _markdown(df: pd.DataFrame) -> str:
+    """A DataFrame as a Markdown table (no extra dependency)."""
+    rows = [[("" if pd.isna(v) else f"{v:g}" if isinstance(v, float) else str(v)) for v in r] for r in df.itertuples(index=False)]
+    head = "| " + " | ".join(map(str, df.columns)) + " |"
+    return "\n".join([head, "|" + "---|" * len(df.columns)] + ["| " + " | ".join(r) + " |" for r in rows])
+
+
 def _unit(key: str) -> float:
     """Deterministic pseudo-random number in [0, 1) from a string."""
     return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16) / 0x100000000
 
 
+# --------------------------------------------------------------------------- forecast updates
+UPDATE_STEP_H = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0]     # contours computed per update (street closures use all)
+UPDATE_SHOWN_H = (4.0, 8.0, 12.0)                    # contours written to firefront.geojson
+MAX_GAP_H = 6.0                                      # re-issue at least this often when no satellite passes
+SAME_PASS_MIN = 20                                   # observations closer than this are one update
+
+
+def build_forecast_updates(fire_root: Path, cfg: dict, end: datetime):
+    """Forecasts re-initialised from the latest observed fire area, with the fire repo's own model.
+
+    An update is issued at ignition (from the ignition point), at every new VIIRS overpass or Sentinel-2
+    image (from the union of everything VIIRS and Sentinel-2 have seen so far), and at least every
+    MAX_GAP_H hours in between (same perimeter, new start time and weather). Each update runs the same
+    Monte Carlo spread model, on the same grid, fuel, terrain and weather as the fire repo's reconstruction.
+
+    Returns ``(updates, grid, t0)``; each update is a dict with ``issued``, ``source``, ``perimeter``
+    (metric geometry or None), ``contours`` (GeoDataFrame, EPSG:4326, one row per UPDATE_STEP_H) and ``next``.
+    """
+    from rasterio.features import rasterize
+
+    from fireproj.data.dem import fetch_dem
+    from fireproj.data.grid import make_grid
+    from fireproj.data.landcover import fetch_landcover
+    from fireproj.data.weather import fetch_weather
+    from fireproj.fuel import map_landcover_to_fuel
+    from fireproj.reconstruction import ReconstructionSpec
+    from fireproj.spread.montecarlo import run_monte_carlo
+
+    spec = ReconstructionSpec.from_config(cfg, EVENT)
+    t0 = spec.ignition_utc
+    img_grid = make_grid(spec.view_bbox, spec.image_resolution_m, buffer_km=0.0)
+    grid = make_grid(spec.view_bbox, spec.model_resolution_m, buffer_km=0.0, crs=img_grid.crs)
+    # Same model settings as fireproj.reconstruction.run_reconstruction.
+    run_cfg = copy.deepcopy(cfg)
+    run_cfg["spread"]["time_horizons_hours"] = UPDATE_STEP_H
+    run_cfg["spread"]["probability_thresholds"] = [0.5]
+    run_cfg["spread"]["wind_dir_sigma_deg"] = float(spec.wind_dir_sigma_deg)
+    run_cfg["spread"]["use_gust_fraction"] = float(spec.use_gust_fraction)
+    run_cfg["spread"]["max_lb_ratio"] = float(spec.max_lb_ratio)
+    for fc in run_cfg["fuel"]["classes"].values():
+        if float(fc.get("R0_m_per_min", 0.0)) > 0.0:
+            fc["R0_m_per_min"] = round(float(fc["R0_m_per_min"]) * float(spec.r0_multiplier), 4)
+    dem = fetch_dem(cfg, grid)
+    fuel = map_landcover_to_fuel(fetch_landcover(cfg, grid), run_cfg)
+    wx = fetch_weather(cfg, spec.view_bbox, t0.date(), (t0 + timedelta(hours=max(spec.horizons_hours) + 2)).date())
+    wx_end = pd.Timestamp(wx["time"].max()).to_pydatetime()
+
+    ff = gpd.read_file(fire_root / "exports" / f"{EVENT}_firefront.geojson").to_crs(grid.crs)
+    ff["_t"] = pd.to_datetime(ff["valid_at"], utc=True)
+    fine = ff[(ff["kind"] == "observed") & ((ff["instrument"] == "VIIRS") | (ff["observation_type"] == "burned_area"))]
+    fine = fine.sort_values("_t")
+
+    # Issue times: ignition, each new fine-resolution observation, and fills so that no gap exceeds MAX_GAP_H.
+    obs_times = [t.to_pydatetime() for t in fine["_t"] if t0 < t.to_pydatetime() <= end]
+    issues: list[tuple[datetime, bool]] = [(t0, True)]
+    for t in obs_times:
+        if (t - issues[-1][0]).total_seconds() < SAME_PASS_MIN * 60 and issues[-1][1] and issues[-1][0] != t0:
+            issues[-1] = (t, True)
+            continue
+        while (t - issues[-1][0]).total_seconds() > MAX_GAP_H * 3600:
+            issues.append((issues[-1][0] + timedelta(hours=MAX_GAP_H), False))
+        issues.append((t, True))
+    while (end - issues[-1][0]).total_seconds() > MAX_GAP_H * 3600:
+        issues.append((issues[-1][0] + timedelta(hours=MAX_GAP_H), False))
+    # The cached weather ends with the reconstruction window; later updates would run on repeated last hours.
+    issues = [i for i in issues if i[0] <= wx_end - timedelta(hours=max(UPDATE_STEP_H) - 1)]
+
+    from pyproj import Transformer
+    ign_x, ign_y = Transformer.from_crs("EPSG:4326", grid.crs, always_xy=True).transform(spec.ignition_lon, spec.ignition_lat)
+    updates = []
+    for k, (issued, new_obs) in enumerate(issues):
+        seen = fine[fine["_t"] <= pd.Timestamp(issued)]
+        if seen.empty:
+            perimeter, start, source = None, Point(ign_x, ign_y).buffer(spec.ignition_radius_m), "ignition point"
+        else:
+            perimeter = start = unary_union(list(seen.geometry))
+            has_s2 = (seen["observation_type"] == "burned_area").any()
+            source = ("VIIRS + Sentinel-2 perimeter" if has_s2 else "VIIRS perimeter") + ("" if new_obs else " (no new pass)")
+        mask = rasterize([(start, 1)], out_shape=grid.shape, transform=grid.transform, fill=0, all_touched=True,
+                         dtype=np.uint8).astype(bool)
+        mc = run_monte_carlo(mask, fuel, dem["slope_deg"], dem["aspect_deg"], grid, run_cfg, weather_df=wx,
+                             t0_utc=issued, n_runs=int(spec.mc_runs), seed=int(cfg["spread"]["seed"]))
+        contours = mc.contours_gdf.sort_values("horizon_hours").reset_index(drop=True)
+        contours["geometry"] = contours.to_crs(grid.crs).geometry.buffer(60).buffer(-60).simplify(30).to_crs("EPSG:4326")
+        updates.append({"issued": issued, "source": source, "perimeter": perimeter, "contours": contours,
+                        "next": issues[k + 1][0] if k + 1 < len(issues) else end, "new_obs": new_obs,
+                        "last_obs": None if seen.empty else seen["_t"].max().to_pydatetime()})
+    return updates, grid, t0, run_cfg
+
+
+def forecast_features(updates: list[dict]) -> list[dict]:
+    """FireFront features (kind forecast, forecast_set update) for the contours shown on the screen."""
+    feats = []
+    for u in updates:
+        utm = u["contours"].estimate_utm_crs()
+        areas = u["contours"].to_crs(utm).area / 1e6
+        for (_, c), km2 in zip(u["contours"].iterrows(), areas):
+            h = float(c["horizon_hours"])
+            if h not in UPDATE_SHOWN_H or c.geometry.is_empty:
+                continue
+            valid = u["issued"] + timedelta(hours=h)
+            feats.append({
+                "type": "Feature",
+                "geometry": mapping(shapely.set_precision(c.geometry, 1e-5)),
+                "properties": {
+                    "schema_version": SCHEMA_VERSION,
+                    "id": f"{EVENT}-forecast-{u['issued']:%Y%m%dT%H%MZ}-h{h:g}",
+                    "kind": "forecast", "forecast_set": "update",
+                    "issued_at": _iso(u["issued"]), "model_run_at": _iso(u["issued"]),
+                    "initialised_from": u["source"],
+                    **({"last_observation_at": _iso(u["last_obs"])} if u["last_obs"] else {}),
+                    "valid_at": _iso(valid), "horizon_hours": h, "probability": 0.5, "area_km2": round(float(km2), 3),
+                    "source": "nature-shield-fire model, re-initialised from the latest observed fire area",
+                    "source_url": FIRE_REPO_URL, "license": "MIT",
+                    "fetched_at": GENERATED_AT, "observed_at": _iso(valid), "received_at": _iso(u["issued"]),
+                },
+            })
+    return feats
+
+
+def forecast_skill(fire_root: Path, cfg: dict, updates: list[dict], initial: gpd.GeoDataFrame, t0: datetime) -> pd.DataFrame:
+    """Share of satellite hotspots inside the forecast, updated forecasts vs. the single forecast at ignition.
+
+    For every update and horizon h, the hotspots (FIRMS VIIRS and MODIS centres, low confidence dropped)
+    acquired between the issue time and issue + h are counted; "new ground" are those outside the perimeter
+    the update started from. The one-shot forecast is the ignition run's contour for the same clock time.
+    """
+    from fireproj.data.firms_timeline import load_timeline
+
+    det, _ = load_timeline(cfg, EVENT)
+    utm = initial.estimate_utm_crs()
+    det = det.to_crs(utm)
+    init = initial.to_crs(utm).sort_values("horizon_hours")
+    rows = []
+    for u in updates:
+        con = u["contours"].to_crs(utm)
+        perim = None if u["perimeter"] is None else gpd.GeoSeries([u["perimeter"]], crs=u["contours"].estimate_utm_crs()).to_crs(utm).iloc[0]
+        for h in UPDATE_SHOWN_H:
+            valid = u["issued"] + timedelta(hours=h)
+            pts = det[(det["acq_datetime"] > pd.Timestamp(u["issued"])) & (det["acq_datetime"] <= pd.Timestamp(valid))]
+            if pts.empty:
+                continue
+            new_geom = con[np.isclose(con["horizon_hours"], h)].geometry.iloc[0]
+            old = init[init["horizon_hours"] <= (valid - t0).total_seconds() / 3600.0]
+            old_geom = old.geometry.iloc[-1] if len(old) else None
+            fresh = pts if perim is None else pts[~pts.within(perim)]
+            rows.append({
+                "horizon": h, "hotspots": len(pts),
+                "in_updated": int(pts.within(new_geom).sum()),
+                "in_one_shot": int(pts.within(old_geom).sum()) if old_geom is not None else 0,
+                "new_ground": len(fresh),
+                "new_in_updated": int(fresh.within(new_geom).sum()),
+                "new_in_one_shot": int(fresh.within(old_geom).sum()) if old_geom is not None else 0,
+            })
+    df = pd.DataFrame(rows).groupby("horizon").sum()
+    pct = lambda a, b: (100.0 * a / b.where(b > 0)).round(1)
+    return pd.DataFrame({
+        "hotspots": df["hotspots"],
+        "inside updated forecast %": pct(df["in_updated"], df["hotspots"]),
+        "inside one-shot forecast %": pct(df["in_one_shot"], df["hotspots"]),
+        "hotspots on new ground": df["new_ground"],
+        "new ground inside updated %": pct(df["new_in_updated"], df["new_ground"]),
+        "new ground inside one-shot %": pct(df["new_in_one_shot"], df["new_ground"]),
+    })
+
+
 # --------------------------------------------------------------------------- street access (model output)
-def build_street_access(fire_root: Path):
+def build_street_access(fire_root: Path, updates: list[dict], updates_cfg: dict):
     from fireproj.config import load_config
     from fireproj.reconstruction import run_reconstruction
     from fireproj.road_closure import evaluate_road_closures
@@ -137,10 +310,27 @@ def build_street_access(fire_root: Path):
     edges, places, responders, osm_fetched_at = load_osm()
     # The ignition locality is not a named place in OSM; the fire repo's config gives its position.
     places["Bördübet"] = (res.spec.ignition_lon, res.spec.ignition_lat)
-    status_gdf, _ = evaluate_road_closures(
-        edges, None, res.modelled_gdf, None, res.model_grid, run_cfg,
-        selected_horizon_hours=max(HORIZONS_H), selected_prob_threshold=0.5,
-    )
+    # Model source of a closure = the forecast that is current at the time. For each update, the fire repo's
+    # road-closure calculation gives the first horizon at which its contour reaches a street; that closure
+    # counts if the update is still the latest one when the horizon is reached.
+    upd_cfg = copy.deepcopy(updates_cfg)
+    model_h = np.full(len(edges), np.nan)
+    status_gdf = None
+    for u in updates:
+        out, _ = evaluate_road_closures(
+            edges, None, u["contours"], None, res.model_grid, upd_cfg,
+            selected_horizon_hours=max(UPDATE_STEP_H), selected_prob_threshold=0.5,
+        )
+        status_gdf = out if status_gdf is None else status_gdf
+        hours = out["earliest_horizon_hours"].to_numpy(dtype=float)
+        reach = np.array([(u["issued"] + timedelta(hours=float(h)) - t0).total_seconds() / 3600.0 if np.isfinite(h) else np.nan
+                          for h in hours])
+        current = reach <= (u["next"] - t0).total_seconds() / 3600.0 + 1e-9
+        better = np.isfinite(reach) & current & (np.isnan(model_h) | (reach < model_h))
+        model_h[better] = reach[better]
+    status_gdf = status_gdf.copy()
+    status_gdf["earliest_horizon_hours"] = model_h
+    status_gdf["status"] = np.where(np.isfinite(model_h), "closed", "open")
     status_gdf["_uv"] = [tuple(sorted((int(u), int(v)))) for u, v in zip(status_gdf["u"], status_gdf["v"])]
     status_gdf = status_gdf.sort_values(["_uv", "earliest_horizon_hours"]).drop_duplicates(["_uv", "osmid"])
     # Distance to the fire extent (modelled 40 h contour + observed burned area), for de-emphasising far streets.
@@ -208,8 +398,8 @@ def build_street_access(fire_root: Path):
         first_by = None if not reached else "satellite" if sat and (not model_at or sat <= model_at) else "model"
         reasons = []
         if model_at:
-            reasons.append(f"modelled fire (P ≥ 50 %, {buffer_m:.0f} m safety buffer) reaches this street "
-                           f"{float(r['earliest_horizon_hours']):g} h after ignition")
+            reasons.append(f"latest forecast (P ≥ 50 %, {buffer_m:.0f} m safety buffer) reaches this street "
+                           f"{float(r['earliest_horizon_hours']):.0f} h after ignition")
         if sat:
             reasons.append(f"two separate overpasses saw fire in 1 km pixels over this street ({sat_source[22:]})"
                            if sat_source.startswith("repeated") else f"{sat_source} saw fire on this street"
@@ -261,6 +451,7 @@ def build_street_access(fire_root: Path):
                     "MODIS/SLSTR 1 km pixels in two separate overpasses). A single MODIS/SLSTR detection only "
                     "raises a 'fire nearby' warning. Not a road survey.",
             "model_run_at": _iso(t0), "contour_step_hours": 2, "safety_buffer_m": buffer_m,
+            "model_source": "latest forecast update (re-initialised from the observed fire area)",
             "far_from_fire_km": FAR_FROM_FIRE_KM, "osm_fetched_at": osm_fetched_at,
         },
         "features": feats,
@@ -277,7 +468,7 @@ def build_street_access(fire_root: Path):
             "observed_at": osm_fetched_at, "received_at": osm_fetched_at,
         } for r in sorted(responders, key=lambda r: r["name"])],
     }
-    return fc, status_gdf, t0, places, resp
+    return fc, status_gdf, t0, places, resp, res
 
 
 # --------------------------------------------------------------------------- caller reports (synthetic)
@@ -342,7 +533,7 @@ def build_caller_reports(status_gdf: gpd.GeoDataFrame, t0: datetime, places: dic
         picks = grp.assign(_r=[_unit(f"pick{uv}") / w for uv, w in zip(grp["_uv"], grp["_w"])]).sort_values("_r")
         for _, r in picks.iterrows():
             pt = r.geometry.interpolate(0.5, normalized=True)
-            if any(pt.distance(p) < 0.006 for p in used):      # keep calls ~600 m apart
+            if any(pt.distance(p) < 0.012 for p in used):      # keep calls ~1.2 km apart
                 continue
             used.append(pt)
             key = str(r["_uv"])
@@ -399,8 +590,38 @@ def build_caller_reports(status_gdf: gpd.GeoDataFrame, t0: datetime, places: dic
 def main() -> int:
     fire_root = Path(sys.argv[1]).resolve()
     OUT.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(fire_root / "exports" / f"{EVENT}_firefront.geojson", OUT / "firefront.geojson")
-    streets, status_gdf, t0, places, responders = build_street_access(fire_root)
+    from fireproj.config import load_config
+
+    cfg = load_config(fire_root / "config.yaml")
+    index = json.loads((OUT.parent / "index.json").read_text(encoding="utf-8"))
+    end = datetime.fromisoformat(next(s for s in index["scenarios"] if s["id"] == EVENT)["end"].replace("Z", "+00:00"))
+    updates, _, _, updates_cfg = build_forecast_updates(fire_root, cfg, end)
+    streets, status_gdf, t0, places, responders, res = build_street_access(fire_root, updates, updates_cfg)
+
+    # FireFront = the fire tool's export (observations + the single forecast made at ignition, kept as the
+    # "initial" set) + the forecast updates computed here with the same model.
+    firefront = json.loads((fire_root / "exports" / f"{EVENT}_firefront.geojson").read_text(encoding="utf-8"))
+    for f in firefront["features"]:
+        if f["properties"]["kind"] == "forecast":
+            f["properties"].update({"forecast_set": "initial", "issued_at": f["properties"]["model_run_at"],
+                                    "initialised_from": "ignition point"})
+    firefront["features"] += forecast_features(updates)
+    firefront["features"].sort(key=lambda f: (f["properties"]["valid_at"], f["properties"]["kind"], f["properties"]["id"]))
+    firefront["metadata"]["forecast_updates"] = {
+        "count": len(updates), "horizons_hours": list(UPDATE_SHOWN_H), "max_gap_hours": MAX_GAP_H,
+        "note": "Forecast updates are re-initialised from the union of VIIRS and Sentinel-2 observations so far, "
+                "computed by tools/build_marmaris_scenario.py with the fire repository's model on its "
+                "reconstruction grid (forecasts end at that grid's edge).",
+    }
+    (OUT / "firefront.geojson").write_text(json.dumps(firefront, ensure_ascii=False, separators=(",", ":")) + "\n",
+                                           encoding="utf-8")
+    skill = forecast_skill(fire_root, cfg, updates, res.modelled_gdf, t0)
+    print("forecast updates:", len(updates), [f"{u['issued']:%d %H:%M}{'' if u['new_obs'] else '*'}" for u in updates])
+    print(skill.to_string())
+    (OUT.parent.parent.parent / "docs" / "forecast_skill.md").write_text(
+        "Share of satellite hotspots inside the forecast (Marmaris 2022; hotspots acquired between the issue "
+        "time and issue + horizon; 'new ground' = outside the perimeter the update started from).\n\n"
+        + _markdown(skill.reset_index()) + "\n", encoding="utf-8")
     callers = build_caller_reports(status_gdf, t0, places)
     for name, data in (("street_access.geojson", streets), ("caller_reports.json", callers),
                        ("responders.json", responders)):
