@@ -235,3 +235,128 @@ export function cutStreets(route: RoutePlan, now: number, byId: Map<string, Stre
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------------------------------
+// Crew legs: a drive from any position (a station, or a junction a vehicle has reached) to a target,
+// with the polyline and timing needed to move a vehicle along it.
+
+/** Where a leg starts: a place (station) or a junction node a vehicle is at. */
+export interface Origin { id: string; name: string; place?: [number, number]; node?: number }
+
+export interface Leg {
+  /** Polyline driven, in order, and the minutes since the start of the leg at each vertex. */
+  path: [number, number][];
+  cum: number[];
+  /** Streets used, in order, each with the minutes at which the vehicle enters and leaves it. */
+  spans: { edgeId: string; from: number; to: number }[];
+  /** Junction nodes passed, in order, with the minutes at each. */
+  nodes: number[];
+  nodeMin: number[];
+  minutes: number;
+  km: number;
+  trackKm: number;
+  /** Scenario time (epoch ms) the leg starts. */
+  startAt: number;
+}
+
+export interface LegPlan {
+  origin: Origin;
+  leg: Leg;
+  /** The target's own street is blocked: the leg ends at its nearest reachable end. */
+  lastStretchBlocked: boolean;
+  lastStretchM: number;
+}
+
+/**
+ * Legs from each origin to `target` at scenario time `now`, blocked streets avoided, fastest first.
+ * Origins that cannot reach the target are left out. With `targetMustBeOpen` the target is approached by
+ * the nearest passable street (a station to return to); otherwise by its nearest street, blocked or not (a caller).
+ */
+export function planLegs(g: Graph, target: [number, number], origins: Origin[], now: number, targetMustBeOpen = false): LegPlan[] {
+  const blocked = (edge: number) => statusAt(g.streets[edge].properties, now) === 'blocked';
+  const tEdge = nearestEdge(g, target, targetMustBeOpen ? (e) => !blocked(e) : undefined);
+  if (tEdge < 0) return [];
+  const tp = g.streets[tEdge].properties;
+  const lastStretchBlocked = blocked(tEdge);
+  const { dist, via } = reach(g, [tp.u!, tp.v!], blocked);
+  const out: LegPlan[] = [];
+  for (const origin of origins) {
+    let start = origin.node;
+    if (start == null) {
+      if (!origin.place) continue;
+      const e = nearestEdge(g, origin.place,
+        (i) => !blocked(i) && (dist.has(g.streets[i].properties.u!) || dist.has(g.streets[i].properties.v!)));
+      if (e < 0) continue;
+      const sp = g.streets[e].properties;
+      start = [sp.u!, sp.v!].filter((n) => dist.has(n)).sort((a, b) => dist.get(a)! - dist.get(b)!)[0];
+    }
+    if (start == null || !dist.has(start)) continue;
+
+    const path: [number, number][] = [];
+    const cum: number[] = [];
+    const spans: Leg['spans'] = [];
+    const nodes = [start];
+    const nodeMin = [0];
+    let minutes = 0, km = 0, trackKm = 0;
+    const startXY = g.nodeXY.get(start);
+    if (origin.place) { path.push(origin.place); cum.push(0); }
+    if (startXY) { path.push(startXY); cum.push(0); }
+    for (let n = start; via.has(n);) {
+      const arc = via.get(n)!;
+      const s = g.streets[arc.edge];
+      const p = s.properties;
+      const coords = (p.u === n ? s.geometry.coordinates : [...s.geometry.coordinates].reverse()) as [number, number][];
+      // Spread the street's drive time along its geometry by length.
+      const seg = coords.map((c, i) => (i ? metresBetween(coords[i - 1], c) : 0));
+      const total = seg.reduce((a, b) => a + b, 0) || 1;
+      let done = 0;
+      for (let i = 1; i < coords.length; i++) {
+        done += seg[i];
+        path.push(coords[i]);
+        cum.push(minutes + (arc.minutes * done) / total);
+      }
+      spans.push({ edgeId: p.id, from: minutes, to: minutes + arc.minutes });
+      minutes += arc.minutes;
+      km += (p.length_m ?? total) / 1000;
+      if (p.highway === 'track') trackKm += (p.length_m ?? total) / 1000;
+      n = arc.from;
+      nodes.push(n);
+      nodeMin.push(minutes);
+    }
+    const end = g.nodeXY.get(nodes[nodes.length - 1]) ?? target;
+    let lastStretchM = metresBetween(end, target);
+    if (!lastStretchBlocked) {
+      // Drive the final stretch along the target's own street.
+      const extra = (lastStretchM / 1000 / (SPEED_KMH[tp.highway ?? ''] ?? DEFAULT_SPEED_KMH)) * 60;
+      spans.push({ edgeId: tp.id, from: minutes, to: minutes + extra });
+      minutes += extra;
+      km += lastStretchM / 1000;
+      if (tp.highway === 'track') trackKm += lastStretchM / 1000;
+      path.push(target);
+      cum.push(minutes);
+      lastStretchM = 0;
+    }
+    out.push({ origin, leg: { path, cum, spans, nodes, nodeMin, minutes, km, trackKm, startAt: now }, lastStretchBlocked, lastStretchM });
+  }
+  return out.sort((a, b) => a.leg.minutes - b.leg.minutes);
+}
+
+/** Position on a leg `minutes` after its start (clamped to the leg). */
+export function positionOnLeg(leg: Leg, minutes: number): [number, number] {
+  const { path, cum } = leg;
+  if (!path.length) return [0, 0];
+  if (minutes <= 0) return path[0];
+  if (minutes >= cum[cum.length - 1]) return path[path.length - 1];
+  let i = 1;
+  while (i < cum.length && cum[i] < minutes) i++;
+  const span = cum[i] - cum[i - 1];
+  const f = span > 0 ? (minutes - cum[i - 1]) / span : 0;
+  return [path[i - 1][0] + f * (path[i][0] - path[i - 1][0]), path[i - 1][1] + f * (path[i][1] - path[i - 1][1])];
+}
+
+/** The last junction passed on a leg `minutes` after its start: where a vehicle re-routes from. */
+export function nodeOnLeg(leg: Leg, minutes: number): number {
+  let i = 0;
+  while (i + 1 < leg.nodes.length && leg.nodeMin[i + 1] <= minutes) i++;
+  return leg.nodes[i];
+}
