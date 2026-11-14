@@ -373,7 +373,7 @@ export function App() {
     const withReports = newest ? precomputed.withConfirmed(newest, confirmedNow) : null;
     let blockedNote: string | null = null;
     if (now > precomputed.lastIssueAt && (!newer || (lastNew && (newer.lastObsAt ?? 0) < lastNew.at))) {
-      blockedNote = `No forecast can be issued after ${fmtTime(precomputed.lastIssueAt, tz)}: the weather data end 12 h later.`;
+      blockedNote = `No forecast can be issued after ${fmtTime(precomputed.lastIssueAt, tz)} (end of the precomputed forecasts).`;
     } else if (!newObs.length && !newer && !newReports) {
       blockedNote = `The newest run is loaded; the next one can be issued at ${fmtTime(
         (precomputed.runs.find((r) => r.issuedAt > now)?.issuedAt ?? precomputed.lastIssueAt), tz)}.`;

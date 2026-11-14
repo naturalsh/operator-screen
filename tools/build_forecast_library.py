@@ -109,7 +109,10 @@ def main() -> int:
     fire_root = Path(sys.argv[1]).resolve()
     cfg = load_config(fire_root / "config.yaml")
     r = B.forecast_runner(fire_root, cfg)
-    last = B.last_issue_time(r["wx_end"])
+    index_file = json.loads((B.OUT.parent / "index.json").read_text(encoding="utf-8"))
+    end = datetime.fromisoformat(next(s for s in index_file["scenarios"] if s["id"] == B.EVENT)["end"].replace("Z", "+00:00"))
+    # Until the end of the scenario, as long as the weather covers the longest horizon.
+    last = min(B.last_issue_time(r["wx_end"]), end)
     issues = library_issue_times(r["fine"], r["t0"], last)
     edges, ids = street_edges()
     runs = []
@@ -129,10 +132,12 @@ def main() -> int:
             "step_minutes": STEP_MIN, "horizons_hours": list(B.UPDATE_SHOWN_H),
             "reach_horizons_hours": B.UPDATE_STEP_H, "probability": 0.5,
             "first_issue_at": B._iso(issues[0][0]), "last_issue_at": B._iso(last),
+            "weather_until": B._iso(r["wx_end"]),
             "note": "Forecasts the operator can load with 'Update forecast'. Each one starts from the VIIRS and "
                     "Sentinel-2 burned-area observations acquired by its issue time (the ignition point before "
                     "the first) and uses the weather from then on (archived Open-Meteo historical forecast). "
-                    "No forecast can be issued after last_issue_at: the cached weather ends 12 h later.",
+                    "Forecasts are issued until the end of the scenario (last_issue_at); the weather data run "
+                    f"until {B._iso(r['wx_end'])}.",
             "no_hindsight": "issued_at >= last_observation_at for every forecast (tools/test_no_hindsight.py).",
             "source": "nature-shield-fire model (tools/build_forecast_library.py)", "source_url": B.FIRE_REPO_URL,
         },

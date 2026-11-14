@@ -53,6 +53,10 @@ EVENT = "marmaris_2022"
 HORIZONS_H = [float(h) for h in range(2, 41, 2)]     # modelled contour every 2 h up to 40 h
 FIRE_REPO_URL = "https://github.com/ismailefe45-m/GreekTurkeyHackhatonFire"
 OSM_EXTRACT = Path(__file__).resolve().parent / "osm" / "marmaris_osm.json"
+#: Hourly weather for the forecasts (Open-Meteo historical forecast, 21-25 June 2022). The fire repo's own cache
+#: ends on 23 June; this copy is the same request extended to 25 June, so forecasts can be issued until the end
+#: of the scenario. Same values as the fire repo's cache for the overlapping hours.
+WEATHER = Path(__file__).resolve().parent / "weather" / "marmaris_2022_open_meteo.json"
 #: OSM elements used as response points (two fire stations, one gendarmerie post).
 RESPONDERS = {("node", 6622303971): "fire_station", ("node", 12349466130): "fire_station",
               ("way", 1518696480): "gendarmerie"}
@@ -161,7 +165,7 @@ def forecast_runner(fire_root: Path, cfg: dict) -> dict:
     from fireproj.data.dem import fetch_dem
     from fireproj.data.grid import make_grid
     from fireproj.data.landcover import fetch_landcover
-    from fireproj.data.weather import fetch_weather
+    from fireproj.data.weather import parse_open_meteo_json
     from fireproj.fuel import map_landcover_to_fuel
     from fireproj.reconstruction import ReconstructionSpec
     from fireproj.spread.montecarlo import run_monte_carlo
@@ -183,7 +187,7 @@ def forecast_runner(fire_root: Path, cfg: dict) -> dict:
             fc["R0_m_per_min"] = round(float(fc["R0_m_per_min"]) * float(spec.r0_multiplier), 4)
     dem = fetch_dem(cfg, grid)
     fuel = map_landcover_to_fuel(fetch_landcover(cfg, grid), run_cfg)
-    wx = fetch_weather(cfg, spec.view_bbox, t0.date(), (t0 + timedelta(hours=max(spec.horizons_hours) + 2)).date())
+    wx = parse_open_meteo_json(WEATHER.read_text(encoding="utf-8"), mode="historical_forecast")
     wx_end = pd.Timestamp(wx["time"].max()).to_pydatetime()
 
     ff = gpd.read_file(fire_root / "exports" / f"{EVENT}_firefront.geojson").to_crs(grid.crs)
