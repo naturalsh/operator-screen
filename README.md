@@ -159,12 +159,13 @@ box the offline map is empty. The three data layers are always local files.
 
 The built site (`npm run build`, `npm run preview`, GitHub Pages) installs a service worker
 ([vite-plugin-pwa](https://vite-pwa-org.netlify.app/), config in `vite.config.ts`). On the first visit it
-stores the page, the scenario data and the packaged basemap (961 files, about 20 MB, a few seconds on a normal
-connection). After that the screen opens, reloads and routes crews with no network at all, at any deep link
+stores the page, the scenario data and the packaged basemap (961 files, about 20 MB). From GitHub Pages this
+took about 2.5 minutes in our test (a few seconds from a local `npm run preview`); the header shows
+**✓ Offline ready** when it is done. After that the screen opens, reloads and routes crews with no network at all, at any deep link
 (`?demo=1`, `?t=…`), with the offline basemap. A new deployment replaces the stored copy on the next online visit.
 
-Before a presentation: open the site once on the presenting laptop (and on each tablet) while online. To check,
-switch the network off and reload. `npm run dev` does not use the service worker.
+Before a presentation: open the site once on the presenting laptop (and on each tablet) while online and wait for
+**✓ Offline ready**. To check, switch the network off and reload. `npm run dev` does not use the service worker.
 
 ## Using the screen
 

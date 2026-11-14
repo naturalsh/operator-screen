@@ -57,6 +57,13 @@ export function App() {
   // From 1600 px both side panels at full width; between 1280 and 1599 px they are narrower.
   const roomy = useMediaQuery('(min-width: 1600px)');
   const [drawer, setDrawer] = useState<'reports' | 'layers' | 'log' | null>(null);
+  // True once the service worker has stored the whole site (built site only): it then opens without a network.
+  const [offlineReady, setOfflineReady] = useState(false);
+  useEffect(() => {
+    navigator.serviceWorker?.getRegistration().then((reg) => {
+      if (reg) navigator.serviceWorker.ready.then(() => setOfflineReady(true));
+    }).catch(() => {});
+  }, []);
   const mainRef = useRef<HTMLElement>(null);
   const missionSeq = useRef(0);
 
@@ -484,6 +491,12 @@ export function App() {
           <input value={operator} onChange={(e) => setOperator(e.target.value)} aria-label="Operator name"
             className="w-28 rounded bg-ink-800 px-2 py-1 text-sm text-ink-50" />
         </label>
+        {offlineReady && (
+          <span data-offline-ready className="whitespace-nowrap text-xs text-emerald-400"
+            title="Page, scenario data and the packaged basemap are stored in this browser: the screen opens without a network.">
+            ✓ Offline ready
+          </span>
+        )}
         {roomy && (
           <span className="whitespace-nowrap text-xs text-ink-400" title="Decision-support prototype. A human confirms every decision.">
             A human confirms every decision
