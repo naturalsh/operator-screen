@@ -166,6 +166,30 @@ for (const l of autos) {
   if (!withLate.some((l) => l.at > late && l.run.reports.includes(cand.id))) fail('no automatic update after the confirmation uses the confirmed report');
 }
 
+// 9. The three lines: the observed edge is the starting area of the latest observation-started forecast issued by
+// the time shown (never a later pass); the look-ahead horizons include +30 min; small separate parts are marks.
+let lines = 0;
+for (let at = pre.first!.issuedAt; at <= pre.lastIssueAt; at += 37 * 60e3) {
+  const obsRun = pre.runs.filter((r) => r.trigger === 'observation' && r.issuedAt <= at).pop() ?? null;
+  const nc = nowcastAt(pre.latest(at), at, obsRun);
+  if (!nc) continue;
+  lines++;
+  const obs = nc.fc.features.find((f) => f.properties.role === 'obs');
+  if (obs && (obs.properties.valid_t > at || obs.properties.issue_t > at)) fail(`observed edge from after ${new Date(at).toISOString()}`);
+  if (obsRun && !obs) fail(`no observed edge at ${new Date(at).toISOString()} though a pass happened`);
+  if (!nc.horizons.includes(0.5) && !nc.beyond.includes(0.5)) fail('no +30 min horizon');
+  for (const f of nc.fc.features) {
+    if (f.properties.role === 'spot' && f.geometry.type !== 'Point') fail('a small part is not a point');
+    if (f.properties.role === 'now' && f.geometry.type === 'MultiPolygon' && f.geometry.coordinates.length > 1) {
+      const small = f.geometry.coordinates.filter((p) => {
+        const r = p[0]; const k = Math.cos(r[0][1] * Math.PI / 180) * 111.32 * 110.57;
+        return Math.abs(r.reduce((a, q, i) => a + q[0] * r[(i + 1) % r.length][1] - r[(i + 1) % r.length][0] * q[1], 0)) / 2 * k < 0.29;
+      });
+      if (small.length) fail(`fire-now front drawn around ${small.length} part(s) under 0.3 km²`);
+    }
+  }
+}
+
 console.log(`forecast: ${pre.runs.length} forecasts checked; ${compared} causality comparisons; closures by 23 Jun 08:40: `
-  + `${a} without updates, ${b} updating at every pass; ${conceptChecked} concept cluster states; ${nowcasts} nowcasts; ${failures} failures`);
+  + `${a} without updates, ${b} updating at every pass; ${conceptChecked} concept cluster states; ${nowcasts} nowcasts; ${lines} observed / estimate / look-ahead states; ${failures} failures`);
 process.exit(failures ? 1 : 0);

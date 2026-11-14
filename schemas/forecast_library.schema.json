@@ -19,7 +19,7 @@
         "type": "object", "required": ["horizon_hours", "valid_at", "area_km2", "geometry"],
         "properties": {
           "horizon_hours": { "type": "number", "minimum": 0, "description": "0: the area the forecast started from; then every 30 minutes up to 12 h" },
-          "shown": { "type": "boolean", "description": "one of the horizons shown and scored (+1 / +2 / +3 / +6 h)" },
+          "shown": { "type": "boolean", "description": "one of the horizons shown and scored (+30 min / +1 / +2 / +3 / +6 h)" },
           "valid_at": { "type": "string", "format": "date-time" },
           "area_km2": { "type": "number", "minimum": 0 },
           "geometry": { "type": "object", "required": ["type", "coordinates"], "properties": { "type": { "enum": ["Polygon", "MultiPolygon"] } } }

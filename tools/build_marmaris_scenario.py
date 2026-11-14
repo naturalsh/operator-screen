@@ -141,7 +141,7 @@ def _unit(key: str) -> float:
 #: closures are timed to the half hour. 12 h is longer than the longest gap between two fine-resolution passes
 #: (11.5 h), so the forecast in force always covers "now".
 UPDATE_STEP_H = [0.5 * k for k in range(1, 25)]
-UPDATE_SHOWN_H = (1.0, 2.0, 3.0, 6.0)                # horizons shown and scored
+UPDATE_SHOWN_H = (0.5, 1.0, 2.0, 3.0, 6.0)           # horizons shown and scored (the screen's "Look ahead")
 MAX_GAP_H = 12.0                                     # re-issue at least this often when no satellite passes
 SAME_PASS_MIN = 20                                   # observations closer than this are one update
 #: Triggers of forecasts started from the observations (or the ignition point); all others are re-runs, started
@@ -150,6 +150,11 @@ OBS_TRIGGERS = ("ignition", "observation")
 
 
 SAT_NAME = {"N": "S-NPP", "N20": "N20", "N21": "N21"}
+
+
+def hours_label(h: float) -> str:
+    """"+30 min", "+1 h"."""
+    return f"+{h * 60:g} min" if h < 1 else f"+{h:g} h"
 
 
 def obs_label(row) -> str:
@@ -423,7 +428,7 @@ def forecast_skill(fire_root: Path, cfg: dict, updates: list[dict], initial: gpd
             if g.empty:
                 continue
             out.append({
-                "updates": label, "horizon": f"+{h:g} h", "n updates": g["update"].nunique(),
+                "updates": label, "horizon": hours_label(h), "n updates": g["update"].nunique(),
                 "hotspot detections (counted per update)": int(g["hotspots"].sum()),
                 "distinct hotspots": len(set().union(*g["ids"])),
                 "inside updated %": pct(g["in_updated"].sum(), g["hotspots"].sum()),

@@ -218,7 +218,7 @@ export interface LibraryForecast {
   last_observation_at?: string;
   last_observation_label?: string;
   start_area_km2: number;
-  /** Horizon 0 = the area the forecast started from, then every 30 minutes to 12 h; `shown`: +1 / +2 / +3 / +6 h. */
+  /** Horizon 0 = the area the forecast started from, then every 30 minutes to 12 h; `shown`: +30 min / +1 / +2 / +3 / +6 h. */
   contours: { horizon_hours: number; valid_at: string; area_km2: number; shown?: boolean; geometry: unknown }[];
   /** [street index in ForecastLibrary.streets (or street id from a live server), hours after issued_at]. */
   reach: [number | string, number][];

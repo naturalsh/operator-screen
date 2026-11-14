@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import { NOWCAST_COLOUR, NOWCAST_EDGE, ZONE_COLOUR } from './MapView';
-import { nowcastSource, type Nowcast } from '../forecast';
+import { LOOK_COLOUR, NOWCAST_COLOUR, NOWCAST_EDGE } from './MapView';
+import { lookLabel, nowcastSource, type Nowcast } from '../forecast';
 import { HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, aheadContours, closureAt, currentForecast, inPolygon, fileKind, fireNearby, fmtAge, fmtTime, modelLabel, statusAt } from '../data';
 import type { ScenarioData, StreetStatus } from '../types';
 import type { LayerKey, MapMode } from './MapView';
@@ -160,14 +160,16 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
         ) : <p className="mb-1 text-xs text-ink-400">No forecast issued yet.</p>}
         {nowcast ? (
           <div data-nowcast-list>
-            {nowcast.fc.features.slice().reverse().map(({ properties: f }) => (
-              <div key={f.role} className="flex items-center gap-2 py-0.5">
+            {[...nowcast.fc.features].filter(({ properties: f }) => f.role !== 'spot')
+              .sort((x, y) => (x.properties.role === 'obs' ? -1 : y.properties.role === 'obs' ? 1 : x.properties.h - y.properties.h))
+              .map(({ properties: f }) => (
+              <div key={f.role} className="flex items-center gap-2 py-0.5" data-nowcast-row={f.role}>
                 <span className="inline-block w-5 rounded-sm"
                   style={f.role === 'now' ? { height: 10, background: NOWCAST_COLOUR, border: `2px solid ${NOWCAST_EDGE}` }
-                    : { height: 0, borderTop: `${f.role === 'h1' ? 2 : 1.5}px ${f.role === 'h6' ? 'dotted' : 'solid'} ${ZONE_COLOUR[f.role as 'h1' | 'h2' | 'h3' | 'h6']}`,
-                      opacity: f.role === 'h1' ? 1 : f.role === 'h6' ? 0.6 : 0.7 }} />
-                <span>{f.role === 'now' ? 'Fire now (est.)' : `+${f.h} h`} · {f.area_km2.toFixed(1)} km²</span>
-                <span className="ml-auto text-xs text-ink-400">{f.role === 'now' ? `for ${fmtTime(f.valid_t, timeZone)}` : `by ${fmtTime(f.valid_t, timeZone)}`}</span>
+                    : f.role === 'obs' ? { height: 0, borderTop: '2px solid #ffffff' }
+                      : { height: 0, borderTop: `2px dashed ${LOOK_COLOUR}`, opacity: 0.8 }} />
+                <span>{f.role === 'obs' ? 'Seen by satellite' : f.role === 'now' ? 'Fire now (model estimate)' : `Expected ${lookLabel(f.h)}`} · {f.area_km2.toFixed(1)} km²</span>
+                <span className="ml-auto text-xs text-ink-400">{f.role === 'obs' ? fmtTime(f.valid_t, timeZone) : f.role === 'now' ? `for ${fmtTime(f.valid_t, timeZone)}` : `by ${fmtTime(f.valid_t, timeZone)}`}</span>
               </div>
             ))}
             <p className="mt-0.5 text-[11px] text-ink-400">{nowcastSource(nowcast.run, (x) => fmtTime(x, timeZone))}.</p>

@@ -10,7 +10,7 @@ import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
 import { routeRisk, saferRoute, streetNamer } from './routeRisk';
 import {
   LiveForecasts, PrecomputedForecasts, applyForecastClosures, autoLabel, autoLoads, forecastClosures, forecastInForce, loadAt,
-  nowcastAt, type ForecastLoad, type ForecastSource,
+  NOWCAST_HORIZONS, lookLabel, nowcastAt, type ForecastLoad, type ForecastSource,
 } from './forecast';
 import { ForecastControl } from './components/ForecastControl';
 import { ConceptPanel } from './components/ConceptPanel';
@@ -54,6 +54,9 @@ export function App() {
   });
   // Simple (default) shows what a newcomer needs; Detailed shows every source. `?mode=detailed` deep-links.
   const [mode, setMode] = useState<MapMode>(params.get('mode') === 'detailed' ? 'detailed' : 'simple');
+  // "Look ahead": the one forecast horizon drawn (hours from the time shown; 0 = none). +6 h only in Detailed.
+  const [lookPick, setLookPick] = useState(1);
+  const lookAhead = mode === 'simple' && lookPick > 3 ? 3 : lookPick;
   const [operator, setOperator] = useState('operator-1');
   const [cases, setCases] = useState<Record<string, CaseState>>({});
   const [missions, setMissions] = useState<Mission[]>([]);
@@ -177,8 +180,11 @@ export function App() {
     return () => clearTimeout(id);
   }, [toast]);
   const forecastRunId: string | null | undefined = precomputed ? inForce?.run.id ?? null : undefined;
-  // "Fire now (estimated)": the forecast in force advanced to the time shown, and the horizons from there.
-  const nowcast = useMemo(() => nowcastAt(inForce?.run ?? null, now), [inForce, now]);
+  // "Fire now (model estimate)": the forecast in force advanced to the time shown, the horizons from there, and the
+  // fire edge the satellites last saw (the latest observation-started forecast by now, without concept reports).
+  const observedRun = useMemo(() => precomputed?.runs.filter((r) => r.trigger === 'observation' && r.issuedAt <= now).pop() ?? null,
+    [precomputed, now]);
+  const nowcast = useMemo(() => nowcastAt(inForce?.run ?? null, now, observedRun), [inForce, now, observedRun]);
   const streetById = useMemo(
     () => new Map<string, StreetFeature>((data?.streets.features ?? []).map((s) => [s.properties.id, s])), [data]);
   const timeZone = data?.entry.timezone ?? 'UTC';
@@ -576,11 +582,23 @@ export function App() {
   );
   const mapProps = data && {
     data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
-    forecastRunId, streetsVersion, fireVersion, concept: clusterStates, nowcast,
+    forecastRunId, streetsVersion, fireVersion, concept: clusterStates, nowcast, lookAhead,
   };
+  const lookSwitch = (compact: boolean, style: React.CSSProperties) => nowcast && (
+    <div role="group" aria-label="Look ahead" data-look-ahead={lookAhead} style={style}
+      className="absolute z-10 flex items-center overflow-hidden rounded-lg border border-ink-600 bg-ink-900/90 text-[11px] font-bold shadow">
+      {!compact && <span className="px-2 text-ink-400">Look ahead</span>}
+      {[0, ...NOWCAST_HORIZONS.filter((h) => mode === 'detailed' || h <= 3)].map((h) => (
+        <button key={h} data-look={h} aria-pressed={lookAhead === h} onClick={() => setLookPick(h)}
+          className={`whitespace-nowrap ${compact ? 'h-8 px-1.5' : 'px-2 py-1'} ${lookAhead === h ? 'bg-yellow-400 text-ink-950' : 'text-ink-200 hover:bg-ink-800'}`}>
+          {h === 0 ? 'Now' : lookLabel(h)}
+        </button>
+      ))}
+    </div>
+  );
   // CONCEPT DEMO: the full label stays on the map while the synthetic reports are shown.
   const conceptBanner = conceptOn && (
-    <div data-concept-banner className="pointer-events-none absolute bottom-8 left-2 z-10 max-w-[calc(100%-140px)] rounded border border-dashed border-violet-400 bg-ink-900/85 px-2 py-1 text-[11px] font-bold text-violet-200">
+    <div data-concept-banner className="pointer-events-none absolute bottom-12 left-2 z-10 max-w-[calc(100%-140px)] rounded border border-dashed border-violet-400 bg-ink-900/85 px-2 py-1 text-[11px] font-bold text-violet-200">
       {CONCEPT_LABEL}
     </div>
   );
@@ -594,7 +612,7 @@ export function App() {
         <div key={toast.key} role="status" data-forecast-toast
           className="ns-toast pointer-events-none absolute z-20 rounded-lg border border-amber-300 bg-ink-900/95 px-3 py-1.5 text-xs font-bold text-amber-100 shadow-lg"
           // Beside the forecast box on wide screens, under its closed button on phones.
-          style={compact ? { left: 8, top: 52, maxWidth: 'calc(100% - 64px)' } : { left: 318, top: 8, maxWidth: 'calc(100% - 380px)' }}>
+          style={compact ? { left: 8, top: 52, maxWidth: 'calc(100% - 64px)' } : { left: 318, top: 44, maxWidth: 'calc(100% - 380px)' }}>
           {toast.text}
         </div>
       )}
@@ -672,6 +690,7 @@ export function App() {
             <main ref={mainRef} className="relative min-h-0 flex-1 overflow-hidden">
               <MapView {...mapProps} insetBottom={insetBottom} insetRight={insetRight} fitFire />
               {forecastControl(true)}
+              {!drawer && lookSwitch(true, landscape ? { left: 8, bottom: 8 } : { left: '50%', transform: 'translateX(-50%)', bottom: TAB_BAR_PX + 8 })}
               {conceptBanner}
               <div data-drawer={drawer ?? 'closed'}
                 className={landscape
@@ -774,6 +793,7 @@ export function App() {
               <main className="relative min-w-0 flex-1">
                 <MapView {...mapProps} />
                 {forecastControl(false)}
+                {lookSwitch(true, { left: 8, bottom: 8 })}
                 {conceptBanner}
               </main>
             </div>
@@ -783,6 +803,7 @@ export function App() {
               <main className="relative min-w-0 flex-1">
                 <MapView {...mapProps} />
                 {forecastControl(false)}
+                {lookSwitch(false, { left: 318, top: 8 })}
                 {conceptBanner}
               </main>
               <aside className={`flex ${roomy ? 'w-[310px]' : 'w-[260px]'} shrink-0 flex-col border-l border-ink-700 bg-ink-900`}>

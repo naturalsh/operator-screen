@@ -53,7 +53,7 @@ Rules the server must keep (the screen rejects an answer issued after `at`):
   `evaluate_road_closures` with the 150 m safety buffer, every 30 minutes to 12 h. The screen computes forecast
   closures and the route warnings from it.
 - `contours`: horizon 0 (the area the forecast started from), then the P ≥ 50 % contour every 30 minutes to 12 h,
-  GeoJSON in EPSG:4326; `shown: true` on +1, +2, +3 and +6 h.
+  GeoJSON in EPSG:4326; `shown: true` on +30 min, +1, +2, +3 and +6 h.
 
 A server can be a thin FastAPI wrapper around `forecast_runner(...)["run"](issued)` and `reach_hours(...)` in
 `tools/build_marmaris_scenario.py` / `tools/build_forecast_library.py`. One forecast takes about 0.5 s on a

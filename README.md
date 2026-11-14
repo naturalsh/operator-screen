@@ -48,13 +48,16 @@ Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_over
 The switch in the header changes how much the map shows (add `?mode=detailed` to a link to open in Detailed).
 
 - **Simple** (default):
-  - **Fire now (estimated)**: the forecast in force advanced from its issue time to the time shown (its last
-    30-minute contour not after it). Inside it is drawn as burned ground, dark and quiet (#2a1a14 at 50 %); along
-    its edge the **active front** is a 300 m band in one red-orange with thin light edges, half inside and half
-    outside the estimated edge: the first thing the eye finds. It is a model estimate, and the forecast box, the
-    legend and the popup say so: "estimated from last satellite pass at 04:02 (VIIRS N20) + model".
-  - The horizons from the time shown, as lines only: **+1 h** a clear yellow line (2 px), **+2 h** and **+3 h**
-    thinner and fainter, **+6 h** dotted. Each is tagged on the map.
+  Three kinds of line, kept apart:
+  - **Observed** (real): the fire edge VIIRS and Sentinel-2 have seen up to the last pass, a plain white line
+    tagged "Seen by satellite 04:02". It moves at every new pass.
+  - **Fire now (model estimate)**: the forecast in force advanced from its issue time to the time shown (its last
+    30-minute contour not after it). Inside, burned ground, dark and quiet (#2a1a14 at 50 %); along its edge the
+    active front, a 300 m band in one red-orange with thin light edges. Parts under 0.3 km² apart from the main
+    fire get no band, only a small mark. The legend, the forecast box and the popup say "estimate, not observed".
+  - **Forecast**: one line at a time, dashed yellow, tagged "Expected by 04:55 (+1 h)". The **Look ahead** switch
+    on the map picks it: Now (none) · +30 min · +1 h · +2 h · +3 h (default +1 h; Detailed adds +6 h and draws the
+    other horizons faintly). Parts under 0.3 km² are left out of this line too.
   - Satellite detections: only VIIRS pixels of the **last 3 hours**, faint (30 %) and without edges; older ones are
     not drawn (the burned ground covers them), nor the large 1 km MODIS / SLSTR squares.
   - Callers have a thin white edge and a soft dark shadow, so they stay readable on the fire.
@@ -77,6 +80,14 @@ force or a satellite pass closes it; before that the only note is what the forec
 by then, the faint/bright street styling uses only forecasts issued so far, and the time bar marks only
 forecasts already issued. `tools/test_no_hindsight.py` recomputes every street closure from the data available
 at 88 cut-off times and checks that the result matches the full scenario up to that time.
+
+Observed / model estimate / forecast kept apart, before and after (desktop; phone versions next to them in
+`docs/lines_*_phone.png`):
+
+| | 22 June 09:00 | 23 June 23:16 | 24 June 04:00 |
+|---|---|---|---|
+| before | ![](docs/lines_before_22-0900_desktop.png) | ![](docs/lines_before_23-2316_desktop.png) | ![](docs/lines_before_24-0400_desktop.png) |
+| after | ![](docs/lines_after_22-0900_desktop.png) | ![](docs/lines_after_23-2316_desktop.png) | ![](docs/lines_after_24-0400_desktop.png) |
 
 Calmer fire styling in Simple, before and after (desktop; phone:
 [before](docs/calm_before_0900_phone.png) / [after](docs/calm_after_0900_phone.png) at 22 June 09:00,
@@ -107,7 +118,7 @@ Legend opened: [docs/simple_legend_open.png](docs/simple_legend_open.png).
 
 | Layer | File | Status |
 |---|---|---|
-| Fire front | `public/scenarios/marmaris_2022/firefront.geojson` | **Real observations + model forecasts.** Fire-model contours (the initial 8 / 20 / 40 h forecast and 15 forecast updates of +1 / +2 / +3 / +6 h) and satellite observations (NASA FIRMS VIIRS and MODIS, Copernicus Sentinel-3 SLSTR, Sentinel-2), exported by the fire tool. |
+| Fire front | `public/scenarios/marmaris_2022/firefront.geojson` | **Real observations + model forecasts.** Fire-model contours (the initial 8 / 20 / 40 h forecast and 15 forecast updates of +30 min / +1 / +2 / +3 / +6 h) and satellite observations (NASA FIRMS VIIRS and MODIS, Copernicus Sentinel-3 SLSTR, Sentinel-2), exported by the fire tool. |
 | Street access | `public/scenarios/marmaris_2022/street_access.geojson` | **Model + satellite.** Real OpenStreetMap streets (© OpenStreetMap contributors, ODbL). A street is `blocked` from its `valid_at` when the forecast in force reaches it (forecast closure: the fire repository's road-closure calculation on that forecast's P ≥ 50 % contour, 150 m safety buffer) **or** a satellite saw fire on it (observed closure) (a VIIRS 375 m pixel footprint crosses it, or the Sentinel-2 flame front or burned area is within 150 m, or MODIS/SLSTR 1 km pixels cover it in two separate overpasses between 30 minutes and 6 hours apart and a VIIRS or Sentinel-2 detection made by then lies within 1 km of it: "satellite (repeated MODIS/SLSTR)")"). A single MODIS or SLSTR pixel does not close a street; it raises a "fire nearby (satellite)" warning, drawn as an amber halo. Not a road survey: no width was measured. |
 | Caller reports | `public/scenarios/marmaris_2022/caller_reports.json` | **SYNTHETIC.** Invented reports generated from the fire scenario: placed on streets that close (by forecast or satellite) and timed around that closure, so calls increase as the fire grows. Their urgency comes from a rule in the build script, not from the voice agent; cards say "synthetic, generated from the fire scenario". They never enter any measurement. |
 
@@ -258,7 +269,7 @@ those sensors have seen so far; passes less than 20 minutes apart are one update
 **Horizons and contours.** Every forecast is a Monte Carlo ensemble of the fire repository's spread model; each run
 gives an arrival-time map. The P ≥ 50 % contour at time h is where at least half of the runs have the fire by h.
 It is stored every 30 minutes up to 12 hours, so the screen can show the fire at any time in between, and street
-closures are timed to the half hour. The horizons shown and scored are **+1, +2, +3 and +6 hours**. 12 hours is
+closures are timed to the half hour. The horizons offered by "Look ahead" and scored are **+30 minutes, +1, +2, +3 and +6 hours**. 12 hours is
 longer than the longest gap between two fine-resolution passes (11.5 h), so the forecast in force always covers
 the time shown.
 The layer "Fire front: initial forecast (at ignition)" adds the single 8 / 20 / 40 h forecast made at ignition,
@@ -275,14 +286,17 @@ its starting area, the share that any VIIRS or Sentinel-2 observation of the who
 
 | Updates | Horizon | Hotspot detections (distinct) | Inside updated | Inside one-shot | New ground: detections (distinct) | New ground inside updated | New ground inside one-shot | Forecast new area seen burning (updated / one-shot) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all 15 | +30 min | 26 (26) | 84.6 % | 0.0 % | 6 (6) | 33.3 % | 0.0 % | 39.5 % / 19.8 % |
 | all 15 | +1 h | 383 (367) | 88.0 % | 5.5 % | 85 (80) | 45.9 % | 3.5 % | 41.6 % / 20.2 % |
 | all 15 | +2 h | 531 (385) | 91.1 % | 7.9 % | 121 (95) | 61.2 % | 4.1 % | 42.1 % / 21.6 % |
 | all 15 | +3 h | 554 (385) | 93.9 % | 9.2 % | 124 (96) | 72.6 % | 4.0 % | 41.1 % / 22.0 % |
 | all 15 | +6 h | 589 (396) | 96.3 % | 12.7 % | 144 (107) | 84.7 % | 7.6 % | 35.1 % / 25.0 % |
+| 1 started from the ignition point | +30 min | 0 (0) | – | – | 0 (0) | – | – | 100 % / – |
 | 1 started from the ignition point | +1 h | 0 (0) | – | – | 0 (0) | – | – | 100 % / – |
 | 1 started from the ignition point | +2 h | 0 (0) | – | – | 0 (0) | – | – | 100 % / 100 % |
 | 1 started from the ignition point | +3 h | 0 (0) | – | – | 0 (0) | – | – | 100 % / 100 % |
 | 1 started from the ignition point | +6 h | 11 (11) | 0.0 % | 0.0 % | 11 (11) | 0.0 % | 0.0 % | 100 % / 100 % |
+| 14 started from a satellite perimeter | +30 min | 26 (26) | 84.6 % | 0.0 % | 6 (6) | 33.3 % | 0.0 % | 39.4 % / 19.8 % |
 | 14 started from a satellite perimeter | +1 h | 383 (367) | 88.0 % | 5.5 % | 85 (80) | 45.9 % | 3.5 % | 41.5 % / 20.2 % |
 | 14 started from a satellite perimeter | +2 h | 531 (385) | 91.1 % | 7.9 % | 121 (95) | 61.2 % | 4.1 % | 42.0 % / 21.2 % |
 | 14 started from a satellite perimeter | +3 h | 554 (385) | 93.9 % | 9.2 % | 124 (96) | 72.6 % | 4.0 % | 40.9 % / 21.6 % |
@@ -498,7 +512,9 @@ the previous and the new value. **Download JSON** saves the log
   fire in ~X min"**, with the street and when. The screen then looks for a route that avoids every street the
   forecast reaches within the drive time plus 2 hours and still brings the crew as close to the caller; if one
   exists the card offers it ("Safer route: ETA 7 min (+2 min)", **Send via safer route**, or **Use safer route**
-  for a crew already on its way), otherwise it says there is none. Only the forecast in force is used: a cut that
+  for a crew already on its way), otherwise it says there is none. The screen draws only one or two forecast
+  lines, but the route checks do not use the drawn lines: they use each street's reach time from the forecast's
+  arrival-time contours (every 30 minutes, so to the half hour, with the 150 m buffer). Only the forecast in force is used: a cut that
   comes from a later satellite pass is not foreseen (the demo call is such a case: the route is cut at 08:46 by a
   new Sentinel-2 image). `tests/routeRisk.test.ts` checks every call at five times: each warning comes from the
   forecast in force; each "before the crew gets there" warning comes true at the warned minute when nothing new
