@@ -402,18 +402,19 @@ export function App() {
         data.fire.features.push(...run.features);
         setFireVersion((v) => v + 1);
       }
-      const samePerimeter = run.lastObsAt === inForce.run.lastObsAt && run.from.replace(' (no new pass)', '') === inForce.run.from.replace(' (no new pass)', '');
+      // No observation newer than the forecast in force: a re-run from the estimated fire with new weather.
+      const samePerimeter = run.lastObsAt === inForce.run.lastObsAt;
       const withReports = run.reports.length
         ? `with ${run.reports.length} confirmed report${run.reports.length > 1 ? 's' : ''} (CONCEPT DEMO)` : '';
       const label = (samePerimeter && !withReports ? 'same perimeter, new weather' : withReports) || undefined;
       const load: ForecastLoad = { seq: ++loadSeq.current, at, run, kind, label };
       setLoads((all) => loadAt(all, load));
-      const twelve = (r: typeof run) => r.contours.find((c) => c.horizon === 12)?.areaKm2;
+      const six = (r: typeof run) => r.contours.find((c) => c.horizon === 6)?.areaKm2;
       record({ id: 'forecast' }, 'update_forecast', describeRun(inForce.run), describeRun(run),
         [kind === 'rerun' ? 'Re-run with current weather' : [newObs.length ? `${newObs.length} new observation${newObs.length === 1 ? '' : 's'}` : '',
           forecastOptions.newReports ? `${forecastOptions.newReports} confirmed report${forecastOptions.newReports === 1 ? '' : 's'}` : ''].filter(Boolean).join(', '),
           label, run.source === 'live' ? 'live model' : 'precomputed', run.sourceNote,
-          twelve(run) != null && twelve(inForce.run) != null ? `+12 h ${twelve(run)!.toFixed(1)} km² (was ${twelve(inForce.run)!.toFixed(1)})` : '',
+          six(run) != null && six(inForce.run) != null ? `+6 h ${six(run)!.toFixed(1)} km² (was ${six(inForce.run)!.toFixed(1)})` : '',
         ].filter(Boolean).join('; '));
     } finally {
       setForecastBusy(false);

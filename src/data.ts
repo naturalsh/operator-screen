@@ -90,7 +90,7 @@ export function prepareFire(props: (FireFront & { t: number })[]): void {
     byIssue.set(key, [...(byIssue.get(key) ?? []), p]);
   }
   for (const group of byIssue.values()) {
-    group.sort((a, b) => (a.horizon_hours ?? 0) - (b.horizon_hours ?? 0)).forEach((p, i) => { p.rank = Math.min(i, 2); });
+    group.sort((a, b) => (a.horizon_hours ?? 0) - (b.horizon_hours ?? 0)).forEach((p, i) => { p.rank = Math.min(i, HORIZON_COLOURS.length - 1); });
   }
 }
 
@@ -163,7 +163,7 @@ export function forecastReach(street: StreetFeature, ahead: ReturnType<typeof ah
   return null;
 }
 
-export const HORIZON_COLOURS = ['#fde047', '#fb923c', '#f97316'] as const;
+export const HORIZON_COLOURS = ['#fde047', '#fdba74', '#fb923c', '#f97316'] as const;
 export const INITIAL_FORECAST_COLOUR = '#93c5fd';
 
 /** Adds the derived fields the screen works with: `t` (valid_at as epoch ms) and `before`. */

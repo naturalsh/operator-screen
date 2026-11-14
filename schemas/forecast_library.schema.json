@@ -8,7 +8,7 @@
   "properties": {
     "id": { "type": "string" },
     "issued_at": { "type": "string", "format": "date-time" },
-    "trigger": { "enum": ["ignition", "observation", "scheduled", "live"], "description": "ignition; a new VIIRS / Sentinel-2 observation; a scheduled 30-minute step (same perimeter, new weather); computed live" },
+    "trigger": { "enum": ["ignition", "observation", "scheduled", "live"], "description": "ignition; a new VIIRS / Sentinel-2 observation (loaded automatically); a scheduled 30-minute re-run (started from the fire the latest observation-started forecast estimates for that time, new weather); computed live" },
     "initialised_from": { "type": "string", "description": "e.g. 'VIIRS perimeter', 'ignition point'" },
     "last_observation_at": { "type": "string", "format": "date-time" },
     "last_observation_label": { "type": "string", "description": "e.g. 'VIIRS N20'" },
@@ -18,7 +18,8 @@
       "items": {
         "type": "object", "required": ["horizon_hours", "valid_at", "area_km2", "geometry"],
         "properties": {
-          "horizon_hours": { "type": "number", "exclusiveMinimum": 0 },
+          "horizon_hours": { "type": "number", "minimum": 0, "description": "0: the area the forecast started from; then every 30 minutes up to 12 h" },
+          "shown": { "type": "boolean", "description": "one of the horizons shown and scored (+1 / +2 / +3 / +6 h)" },
           "valid_at": { "type": "string", "format": "date-time" },
           "area_km2": { "type": "number", "minimum": 0 },
           "geometry": { "type": "object", "required": ["type", "coordinates"], "properties": { "type": { "enum": ["Polygon", "MultiPolygon"] } } }

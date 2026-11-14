@@ -24,7 +24,7 @@ The forecast panel shows **PRECOMPUTED** or **LIVE MODEL**, so the audience alwa
 |---|---|
 | `scenario` | Scenario id from `public/scenarios/index.json`. |
 | `at` | Scenario time of the request, epoch milliseconds (UTC). |
-| `kind` | `update`: start from every VIIRS / Sentinel-2 observation acquired by `at`. `rerun`: the same perimeter as the forecast in force, a later start time and the weather from then on. |
+| `kind` | `update`: start from every VIIRS / Sentinel-2 observation acquired by `at`. `rerun`: no new observation; start from the fire the forecast in force estimates for `at`, with the weather from then on. |
 
 ## Response
 
@@ -40,7 +40,8 @@ One record of `schemas/forecast_library.schema.json` (the same shape as a librar
   "last_observation_at": "2022-06-22T11:33:00Z",
   "last_observation_label": "VIIRS S-NPP",
   "start_area_km2": 31.2,
-  "contours": [{ "horizon_hours": 4, "valid_at": "2022-06-22T15:40:00Z", "area_km2": 38.0, "geometry": { "type": "Polygon", "coordinates": [] } }],
+  "contours": [{ "horizon_hours": 0, "valid_at": "2022-06-22T11:40:00Z", "area_km2": 31.2, "geometry": { "type": "Polygon", "coordinates": [] } },
+               { "horizon_hours": 1, "valid_at": "2022-06-22T12:40:00Z", "area_km2": 33.0, "shown": true, "geometry": { "type": "Polygon", "coordinates": [] } }],
   "reach": [["marmaris_2022-street-1518696480-123-456", 2.0]]
 }
 ```
@@ -49,9 +50,10 @@ Rules the server must keep (the screen rejects an answer issued after `at`):
 
 - Use only observations acquired by `at` (the same "no hindsight" rule as `tools/test_no_hindsight.py`).
 - `reach`: hours after `issued_at` at which the P ≥ 50 % contour reaches each street, using the fire repo's
-  `evaluate_road_closures` with the 150 m safety buffer, horizons 2–12 h. The screen computes forecast closures
-  from it.
-- `contours`: the +4, +8 and +12 h P ≥ 50 % contours, GeoJSON in EPSG:4326.
+  `evaluate_road_closures` with the 150 m safety buffer, every 30 minutes to 12 h. The screen computes forecast
+  closures and the route warnings from it.
+- `contours`: horizon 0 (the area the forecast started from), then the P ≥ 50 % contour every 30 minutes to 12 h,
+  GeoJSON in EPSG:4326; `shown: true` on +1, +2, +3 and +6 h.
 
 A server can be a thin FastAPI wrapper around `forecast_runner(...)["run"](issued)` and `reach_hours(...)` in
 `tools/build_marmaris_scenario.py` / `tools/build_forecast_library.py`. One forecast takes about 0.5 s on a

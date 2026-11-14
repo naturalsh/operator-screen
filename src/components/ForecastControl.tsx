@@ -30,7 +30,7 @@ export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blo
   const run = load?.run;
   const t = (x: number) => fmtTime(x, timeZone);
   const last = run?.lastObsAt != null ? `${t(run.lastObsAt)} (${run.lastObsLabel})` : null;
-  const twelve = (r?: ForecastRun | null) => r?.contours.find((c) => c.horizon === 12)?.areaKm2 ?? r?.contours[r.contours.length - 1]?.areaKm2;
+  const six = (r?: ForecastRun | null) => r?.contours.find((c) => c.horizon === 6)?.areaKm2 ?? r?.contours[r.contours.length - 1]?.areaKm2;
   const badge = newObs.length + newReports;
   const badgeText = [newObs.length ? `${newObs.length} new observation${newObs.length > 1 ? 's' : ''}` : '',
     newReports ? `${newReports} confirmed report${newReports > 1 ? 's' : ''}` : ''].filter(Boolean).join(' + ') + ' since forecast';
@@ -67,8 +67,8 @@ export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blo
           {load?.label && (
             <div data-forecast-label className="mt-1 rounded bg-ink-800 px-1.5 py-0.5 text-amber-200">
               {load.label}
-              {previous && twelve(run) != null && twelve(previous.run) != null
-                && ` · +12 h ${twelve(run)!.toFixed(1)} km² (was ${twelve(previous.run)!.toFixed(1)})`}
+              {previous && six(run) != null && six(previous.run) != null
+                && ` · +6 h ${six(run)!.toFixed(1)} km² (was ${six(previous.run)!.toFixed(1)})`}
             </div>
           )}
           {run.sourceNote && <div className="mt-1 text-amber-300">{run.sourceNote}</div>}

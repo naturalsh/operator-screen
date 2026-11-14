@@ -24,13 +24,15 @@ export interface ForecastRun {
   lastObsLabel: string | null;
   startAreaKm2: number;
   contours: { horizon: number; validAt: number; areaKm2: number }[];
-  /** Street id -> time (epoch ms) at which the P >= 50 % contour reaches it, within 12 h. */
+  /** Street id -> time (epoch ms) at which the P >= 50 % contour reaches it, to the half hour, within 12 h. */
   reach: Map<string, number>;
   source: 'precomputed' | 'live';
   /** E.g. why the live model was not used. */
   sourceNote?: string;
-  /** FireFront features of the shown contours (+4 / +8 / +12 h). */
+  /** FireFront features of the shown horizons (+1 / +2 / +3 / +6 h). */
   features: GeoJSON.Feature<Geometry, FireFront & { t: number }>[];
+  /** Every contour of the forecast, horizon 0 (the area it started from) and then every 30 minutes to 12 h. */
+  steps: { horizon: number; validAt: number; areaKm2: number; geometry: Geometry }[];
   /** CONCEPT DEMO: confirmed report clusters the forecast was started with (empty: none). */
   reports: string[];
 }
@@ -54,7 +56,10 @@ export interface ForecastSource {
 /** One library entry (or a live server's answer, which has the same shape) as a ForecastRun. */
 export function toRun(f: LibraryForecast, streetIds: (i: number | string) => string, source: ForecastRun['source']): ForecastRun {
   const issuedAt = Date.parse(f.issued_at);
-  const features = f.contours.map((c, rank) => ({
+  // Library records mark the shown horizons; a record without the mark (older or live) shows all its contours > 0.
+  const marked = f.contours.some((c) => c.shown);
+  const shown = f.contours.filter((c) => (marked ? c.shown : c.horizon_hours > 0));
+  const features = shown.map((c, rank) => ({
     type: 'Feature' as const,
     geometry: c.geometry as Geometry,
     properties: {
@@ -62,14 +67,16 @@ export function toRun(f: LibraryForecast, streetIds: (i: number | string) => str
       issued_at: f.issued_at, model_run_at: f.issued_at, valid_at: c.valid_at, horizon_hours: c.horizon_hours,
       probability: 0.5, area_km2: c.area_km2, initialised_from: f.initialised_from,
       last_observation_at: f.last_observation_at, source: source === 'live' ? 'live model' : 'precomputed forecast',
-      t: Date.parse(c.valid_at), issue_t: issuedAt, rank: Math.min(rank, 2), run_id: f.id,
+      t: Date.parse(c.valid_at), issue_t: issuedAt, rank: Math.min(rank, 3), run_id: f.id,
     } as unknown as FireFront & { t: number },
   }));
   return {
     id: f.id, issuedAt, trigger: f.trigger, from: f.initialised_from,
     lastObsAt: f.last_observation_at ? Date.parse(f.last_observation_at) : null,
     lastObsLabel: f.last_observation_label ?? null, startAreaKm2: f.start_area_km2,
-    contours: f.contours.map((c) => ({ horizon: c.horizon_hours, validAt: Date.parse(c.valid_at), areaKm2: c.area_km2 })),
+    contours: shown.map((c) => ({ horizon: c.horizon_hours, validAt: Date.parse(c.valid_at), areaKm2: c.area_km2 })),
+    steps: f.contours.map((c) => ({ horizon: c.horizon_hours, validAt: Date.parse(c.valid_at), areaKm2: c.area_km2, geometry: c.geometry as Geometry }))
+      .sort((a, b) => a.horizon - b.horizon),
     reach: new Map(f.reach.map(([i, h]) => [streetIds(i), issuedAt + h * 3600000])),
     source, features, reports: (f as { reports?: string[] }).reports ?? [],
   };

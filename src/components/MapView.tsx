@@ -64,7 +64,7 @@ function conceptFc(clusters: ClusterState[]): [GeoJSON.FeatureCollection, GeoJSO
   return [{ type: 'FeatureCollection', features: points }, { type: 'FeatureCollection', features: discs }];
 }
 
-const HORIZON_COLOUR = ['match', ['get', 'rank'], 0, HORIZON_COLOURS[0], 1, HORIZON_COLOURS[1], HORIZON_COLOURS[2]] as unknown as string;
+const HORIZON_COLOUR = ['match', ['get', 'rank'], 0, HORIZON_COLOURS[0], 1, HORIZON_COLOURS[1], 2, HORIZON_COLOURS[2], HORIZON_COLOURS[3]] as unknown as string;
 const INSTRUMENT_COLOUR = ['match', ['get', 'instrument'], 'MODIS', '#a855f7', 'SLSTR', '#14b8a6', '#ef4444'] as unknown as string;
 
 function callersFc(callers: CallerReport[], stages: Record<string, Stage>,
@@ -167,7 +167,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.setFilter('forecast-label', inForce);
     map.setFilter('forecast-pending', ['all', inForce, ['>', ['get', 't'], t]]);
     // Simple: only the next horizon not reached yet is a filled area (the last one once all are reached);
-    // the other horizons of the same forecast are thin, faint outlines. Each carries a "+4 h" tag.
+    // the other horizons of the same forecast are thin, faint outlines. Each carries a "+1 h" tag.
     const next = cur?.contours.find((p) => p.t > t) ?? cur?.contours[cur.contours.length - 1];
     const isNext: ExpressionSpecification = ['==', ['get', 'id'], next?.id ?? ''];
     map.setFilter('forecast-fill', ['all', inForce, isNext]);
@@ -368,9 +368,11 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         layout: { 'text-field': ['concat', '+', ['to-string', ['get', 'horizon_hours']], ' h'],
           'text-font': ['Noto Sans Regular'], 'text-size': 11,
           // Just outside the contour, on the side the tip faces.
-          'text-anchor': ['match', ['get', 'side'], 'n', 'bottom', 's', 'top', 'e', 'left', 'w', 'right', 'ne', 'bottom-left', 'top-right'],
+          'text-anchor': ['match', ['get', 'side'], 'n', 'bottom', 's', 'top', 'e', 'left', 'w', 'right', 'ne', 'bottom-left',
+            'nw', 'bottom-right', 'se', 'top-left', 'top-right'],
           'text-offset': ['match', ['get', 'side'], 'n', ['literal', [0, -0.2]], 's', ['literal', [0, 0.2]], 'e', ['literal', [0.3, 0]],
-            'w', ['literal', [-0.3, 0]], 'ne', ['literal', [0.2, -0.2]], ['literal', [-0.2, 0.2]]],
+            'w', ['literal', [-0.3, 0]], 'ne', ['literal', [0.2, -0.2]], 'nw', ['literal', [-0.2, -0.2]], 'se', ['literal', [0.2, 0.2]],
+            ['literal', [-0.2, 0.2]]],
           'text-allow-overlap': false, 'text-padding': 2, 'symbol-sort-key': ['get', 'horizon_hours'] },
         paint: { 'text-color': '#ffffff', 'text-halo-color': '#7c2d12', 'text-halo-width': 1.6 } });
 
@@ -603,9 +605,10 @@ function forecastTagPoints(data: ScenarioData): GeoJSON.FeatureCollection {
       [['n', (c) => c[1]], ['s', (c) => -c[1]]],
       [['e', (c) => c[0]], ['w', (c) => -c[0]]],
       [['ne', (c) => c[0] + c[1]], ['sw', (c) => -c[0] - c[1]]],
+      [['nw', (c) => c[1] - c[0]], ['se', (c) => c[0] - c[1]]],
     ];
     const props = { id: p.id, kind: p.kind, set: p.set, issue_t: p.issue_t, horizon_hours: p.horizon_hours, t: p.t, run_id: p.run_id ?? '' };
-    for (const [side, score] of sides[Math.min(p.rank ?? 0, 2)]) {
+    for (const [side, score] of sides[Math.min(p.rank ?? 0, 3)]) {
       features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: tip(score) }, properties: { ...props, side } });
     }
   }
@@ -662,9 +665,9 @@ function Legend({ mode, nearby }: { mode: MapMode; nearby: boolean }) {
           {row(<LineKey colour="#fbbf24" dashed casing="#083344" />, 'Route cut')}
           {simple ? <>
             {row(<AreaKey fill={FORECAST_FILL_COLOUR} opacity={0.4} edge="#ffffff" />, 'Fire forecast, next horizon')}
-            {row(<LineKey colour="#fdba74" />, 'Later horizons (+8 / +12 h)')}
+            {row(<LineKey colour="#fdba74" />, 'Later horizons (to +6 h)')}
           </> : <>
-            {row(<LineKey colour={HORIZON_COLOURS[0]} />, 'Fire forecast (+4 / +8 / +12 h)')}
+            {row(<LineKey colour={HORIZON_COLOURS[0]} />, 'Fire forecast (+1 / +2 / +3 / +6 h)')}
             {row(<LineKey colour={HORIZON_COLOURS[0]} dashed />, 'Forecast, time not reached yet')}
           </>}
           {!simple && row(<LineKey colour={INITIAL_FORECAST_COLOUR} />, 'Initial forecast (at ignition)')}

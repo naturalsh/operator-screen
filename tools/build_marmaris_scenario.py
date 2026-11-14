@@ -136,10 +136,17 @@ def _unit(key: str) -> float:
 
 
 # --------------------------------------------------------------------------- forecast updates
-UPDATE_STEP_H = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0]     # contours computed per update (street closures use all)
-UPDATE_SHOWN_H = (4.0, 8.0, 12.0)                    # contours written to firefront.geojson
-MAX_GAP_H = 6.0                                      # re-issue at least this often when no satellite passes
+#: Contours computed per forecast: every 30 minutes up to 12 hours. The contour at h is where at least half of the
+#: Monte Carlo runs' arrival-time maps have the fire by h (P >= 50 %), so any time in between can be shown and street
+#: closures are timed to the half hour. 12 h is longer than the longest gap between two fine-resolution passes
+#: (11.5 h), so the forecast in force always covers "now".
+UPDATE_STEP_H = [0.5 * k for k in range(1, 25)]
+UPDATE_SHOWN_H = (1.0, 2.0, 3.0, 6.0)                # horizons shown and scored
+MAX_GAP_H = 12.0                                     # re-issue at least this often when no satellite passes
 SAME_PASS_MIN = 20                                   # observations closer than this are one update
+#: Triggers of forecasts started from the observations (or the ignition point); all others are re-runs, started
+#: from the estimated fire at their issue time (see ``chained_runs``).
+OBS_TRIGGERS = ("ignition", "observation")
 
 
 SAT_NAME = {"N": "S-NPP", "N20": "N20", "N21": "N21"}
@@ -196,7 +203,22 @@ def forecast_runner(fire_root: Path, cfg: dict) -> dict:
     fine = fine.sort_values("_t")
     ign_x, ign_y = Transformer.from_crs("EPSG:4326", grid.crs, always_xy=True).transform(spec.ignition_lon, spec.ignition_lat)
 
-    def run(issued: datetime, extra_starts=()) -> dict:
+    from fireproj.spread.montecarlo import probability_rasters_to_contours
+
+    def burn(geoms) -> np.ndarray:
+        return rasterize([(g, 1) for g in geoms], out_shape=grid.shape, transform=grid.transform, fill=0,
+                         all_touched=True, dtype=np.uint8).astype(bool)
+
+    def smooth(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        gdf = gdf.copy()
+        gdf["geometry"] = gdf.to_crs(grid.crs).geometry.buffer(60).buffer(-60).simplify(30).to_crs("EPSG:4326")
+        return gdf
+
+    def run(issued: datetime, extra_starts=(), start_mask: np.ndarray | None = None, anchor: dict | None = None,
+            chain_hours=()) -> dict:
+        """One forecast issued at ``issued``. With ``start_mask`` (a re-run) it starts from that estimated fire area
+        (from ``anchor``, the forecast it was estimated with) plus everything observed by ``issued``. ``chain_hours``:
+        extra horizons whose P >= 50 % masks are returned in ``masks`` (to start later re-runs from)."""
         seen = fine[fine["_t"] <= pd.Timestamp(issued)]
         if seen.empty:
             perimeter, start, source = None, Point(ign_x, ign_y).buffer(spec.ignition_radius_m), "ignition point"
@@ -204,20 +226,59 @@ def forecast_runner(fire_root: Path, cfg: dict) -> dict:
             perimeter = start = unary_union(list(seen.geometry))
             has_s2 = (seen["observation_type"] == "burned_area").any()
             source = "VIIRS + Sentinel-2 perimeter" if has_s2 else "VIIRS perimeter"
-        if extra_starts:
-            start = unary_union([start, *extra_starts])
-        mask = rasterize([(start, 1)], out_shape=grid.shape, transform=grid.transform, fill=0, all_touched=True,
-                         dtype=np.uint8).astype(bool)
-        mc = run_monte_carlo(mask, fuel, dem["slope_deg"], dem["aspect_deg"], grid, run_cfg, weather_df=wx,
+        mask = burn([start, *extra_starts])
+        if start_mask is not None:
+            mask |= start_mask
+            source = f"fire now (estimated) from the {anchor['issued']:%d %b %H:%M} UTC forecast ({anchor['source']}) + model"
+        chain = sorted({round(float(h), 4) for h in chain_hours if h > 0})
+        cfg_i = run_cfg
+        if chain:
+            cfg_i = copy.deepcopy(run_cfg)
+            cfg_i["spread"]["time_horizons_hours"] = sorted(set(UPDATE_STEP_H) | set(chain))
+        mc = run_monte_carlo(mask, fuel, dem["slope_deg"], dem["aspect_deg"], grid, cfg_i, weather_df=wx,
                              t0_utc=issued, n_runs=int(spec.mc_runs), seed=int(cfg["spread"]["seed"]))
-        contours = mc.contours_gdf.sort_values("horizon_hours").reset_index(drop=True)
-        contours["geometry"] = contours.to_crs(grid.crs).geometry.buffer(60).buffer(-60).simplify(30).to_crs("EPSG:4326")
+        keep = [any(np.isclose(h, x) for x in UPDATE_STEP_H) for h in mc.contours_gdf["horizon_hours"]]
+        contours = smooth(mc.contours_gdf[keep].sort_values("horizon_hours").reset_index(drop=True))
+        start_c = smooth(probability_rasters_to_contours({0.0: mask.astype(np.float32)}, grid, thresholds=[0.5]))
+        masks = {h: next(v for k, v in mc.prob_rasters.items() if np.isclose(k, h)) >= 0.5 for h in chain}
         last = None if seen.empty else seen.iloc[-1]
         return {"issued": issued, "source": source, "perimeter": perimeter, "start": start, "contours": contours,
+                "start_contour": start_c.geometry.iloc[0] if len(start_c) else None, "masks": masks,
+                "chained": start_mask is not None, "start_area_km2": float(mask.sum()) * grid.resolution_m ** 2 / 1e6,
                 "last_obs": None if last is None else last["_t"].to_pydatetime(),
                 "last_obs_label": None if last is None else obs_label(last)}
 
     return {"run": run, "fine": fine, "t0": t0, "wx_end": wx_end, "run_cfg": run_cfg, "grid": grid, "spec": spec}
+
+
+def chained_runs(r: dict, issues: list[tuple[datetime, str]], extra=None, starts: dict | None = None):
+    """Runs a sequence of forecasts in time order. ``issues``: ``(time, trigger)``.
+
+    A forecast with a trigger in OBS_TRIGGERS starts from everything observed by its issue time (the ignition point
+    before the first pass). Any other one is a re-run with the weather from its issue time on: it starts from the
+    fire area the latest observation-started forecast estimates for that time (P >= 50 %), plus anything observed
+    since. Nothing comes from later than the issue time.
+
+    ``extra(time) -> list of geometries`` adds starting areas (e.g. confirmed fire reports). ``starts``, when given,
+    collects each re-run's ``(start mask, anchor forecast)``. Yields ``(time, trigger, forecast)``.
+    """
+    starts = {} if starts is None else starts
+    for i, (t, trig) in enumerate(issues):
+        add = extra(t) if extra else ()
+        if trig in OBS_TRIGGERS:
+            later = []
+            for x, trig_x in issues[i + 1:]:
+                if trig_x in OBS_TRIGGERS:
+                    break
+                later.append(x)
+            u = r["run"](t, extra_starts=add, chain_hours=[(x - t).total_seconds() / 3600 for x in later])
+            for x in later:
+                starts[x] = (u["masks"][round((x - t).total_seconds() / 3600, 4)], u)
+            u["masks"] = {}
+        else:
+            mask, anchor = starts[t]
+            u = r["run"](t, extra_starts=add, start_mask=mask, anchor=anchor)
+        yield t, trig, u
 
 
 def standing_issue_times(fine: pd.DataFrame, t0: datetime, end: datetime, wx_end: datetime) -> list[tuple[datetime, bool]]:
@@ -248,7 +309,7 @@ def build_forecast_updates(fire_root: Path, cfg: dict, end: datetime):
 
     An update is issued at ignition (from the ignition point), at every new VIIRS overpass or Sentinel-2
     image (from the union of everything VIIRS and Sentinel-2 have seen so far), and at least every
-    MAX_GAP_H hours in between (same perimeter, new start time and weather). This standing sequence is what
+    MAX_GAP_H hours in between (a re-run, see ``chained_runs``; none in this scenario). This standing sequence is what
     the street closures, the synthetic calls and the overlap table are computed from; the screen's
     "Update forecast" button uses the precomputed library (tools/build_forecast_library.py) instead.
 
@@ -257,12 +318,10 @@ def build_forecast_updates(fire_root: Path, cfg: dict, end: datetime):
     """
     r = forecast_runner(fire_root, cfg)
     issues = standing_issue_times(r["fine"], r["t0"], end, r["wx_end"])
+    triggers = [(t, "ignition" if k == 0 else "observation" if new_obs else "scheduled") for k, (t, new_obs) in enumerate(issues)]
     updates = []
-    for k, (issued, new_obs) in enumerate(issues):
-        u = r["run"](issued)
-        if u["perimeter"] is not None and not new_obs:
-            u["source"] += " (no new pass)"
-        u.update({"next": issues[k + 1][0] if k + 1 < len(issues) else end, "new_obs": new_obs})
+    for k, (issued, _, u) in enumerate(chained_runs(r, triggers)):
+        u.update({"next": issues[k + 1][0] if k + 1 < len(issues) else end, "new_obs": issues[k][1]})
         updates.append(u)
     return updates, r["grid"], r["t0"], r["run_cfg"]
 

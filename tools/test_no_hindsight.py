@@ -102,7 +102,8 @@ def check_concept() -> int:
 
 def check_library(ci: dict) -> int:
     """Precomputed forecasts (forecast_library.json): each starts from the fine observations acquired by its
-    issue time, no later one, and its contours and street reach lie after the issue time."""
+    issue time, no later one, and its contours and street reach lie after the issue time. A re-run (trigger
+    'scheduled') starts from the fire estimated by a forecast issued before it, never a later one."""
     import json
 
     path = Path(__file__).resolve().parents[1] / "public" / "scenarios" / EVENT / "forecast_library.json"
@@ -120,11 +121,23 @@ def check_library(ci: dict) -> int:
         known = [t for t in times if t <= issued]
         expect = known[-1] if known else None
         got = iso(f["last_observation_at"]) if f.get("last_observation_at") else None
-        later = [c for c in f["contours"] if iso(c["valid_at"]) <= issued]
+        # Horizon 0 is the area the forecast started from (valid at the issue time); every other contour is later.
+        later = [c for c in f["contours"] if (iso(c["valid_at"]) <= issued) != (c["horizon_hours"] == 0)]
         if got != expect or later or any(h <= 0 for _, h in f["reach"]):
             failures += 1
             print(f"FAIL library {f['id']}: last observation {got} (expected {expect}), "
                   f"{len(later)} contours not after the issue time")
+    anchors = [iso(f["issued_at"]) for f in lib["forecasts"] if f["trigger"] in ("ignition", "observation")]
+    for f in lib["forecasts"]:
+        if f["trigger"] != "scheduled":
+            continue
+        issued = iso(f["issued_at"])
+        # "fire now (estimated) from the 22 Jun 01:02 UTC forecast (...)": the anchor named in the record.
+        named = datetime.strptime(f["initialised_from"].split("from the ")[1][:12] + " 2022", "%d %b %H:%M %Y").replace(tzinfo=issued.tzinfo)
+        expect = max(t for t in anchors if t <= issued)
+        if named != expect.replace(second=0):
+            failures += 1
+            print(f"FAIL library {f['id']}: re-run started from the {named} forecast, expected the latest one by then ({expect})")
     print(f"forecast library: {len(lib['forecasts'])} forecasts, {failures} failures")
     return failures
 

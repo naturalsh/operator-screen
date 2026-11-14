@@ -274,12 +274,16 @@ def main() -> int:
     disc = {c["id"]: gpd.GeoSeries([Point(c["lon"], c["lat"])], crs="EPSG:4326").to_crs(grid_crs).iloc[0].buffer(c["radius_m"])
             for c in cands}
     issues = [(iso(f["issued_at"]), f["trigger"], f["id"]) for f in lib["forecasts"] if iso(f["issued_at"]) <= NIGHT_END]
+    # The library's forecasts of the night again (same chain: a re-run starts from the fire estimated for its time).
+    starts: dict = {}
+    bases = {t: u for t, _, u in B.chained_runs(r, [(t, trig) for t, trig, _ in issues], starts=starts)}
     variants, runs = [], {}
     for issued, trigger, base_id in issues:
         known = [c["id"] for c in cands if iso(c["candidate_at"]) <= issued]
+        mask, anchor = starts.get(issued, (None, None))
         for k in range(1, len(known) + 1):
             for subset in itertools.combinations(known, k):
-                u = r["run"](issued, extra_starts=[disc[c] for c in subset])
+                u = r["run"](issued, extra_starts=[disc[c] for c in subset], start_mask=mask, anchor=anchor)
                 reach = L.reach_hours(sedges, u["contours"], r["grid"], r["run_cfg"])
                 # Street indexes of the library; streets this run reaches that the library never does are added.
                 for i, h in enumerate(reach):
@@ -319,7 +323,7 @@ def main() -> int:
         h = next((x for x in B.UPDATE_STEP_H if x >= gap_h), None)
         if h is None:
             continue
-        base = r["run"](issued)
+        base = bases[issued]
         start = base["perimeter"]
         pts = det[det["_t"] == pd.Timestamp(nxt)]
         new_pts = pts if start is None else pts[~pts.within(start)]

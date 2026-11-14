@@ -101,7 +101,7 @@ export interface FireFront extends Provenance {
   initialised_from?: string;
   /** "update" = re-initialised from the latest observed fire area; "initial" = the single run at ignition. */
   forecast_set?: 'initial' | 'update';
-  /** Added on load: issue time as epoch ms, the set, and the rank of the horizon within its issue (0, 1, 2). */
+  /** Added on load: issue time as epoch ms, the set, and the rank of the horizon within its issue (0-3). */
   issue_t?: number;
   set?: 'initial' | 'update';
   rank?: number;
@@ -218,7 +218,8 @@ export interface LibraryForecast {
   last_observation_at?: string;
   last_observation_label?: string;
   start_area_km2: number;
-  contours: { horizon_hours: number; valid_at: string; area_km2: number; geometry: unknown }[];
+  /** Horizon 0 = the area the forecast started from, then every 30 minutes to 12 h; `shown`: +1 / +2 / +3 / +6 h. */
+  contours: { horizon_hours: number; valid_at: string; area_km2: number; shown?: boolean; geometry: unknown }[];
   /** [street index in ForecastLibrary.streets (or street id from a live server), hours after issued_at]. */
   reach: [number | string, number][];
 }

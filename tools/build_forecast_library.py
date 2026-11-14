@@ -9,13 +9,16 @@ A static site cannot run the spread model, so every forecast the operator can as
 - one at ignition (from the ignition point),
 - one at every new VIIRS or Sentinel-2 burned-area observation (from the union of everything they have seen
   so far; passes less than SAME_PASS_MIN apart are one update), and
-- one every STEP_MIN minutes in between (same perimeter, new start time and weather: "Re-run with current
-  weather").
+- one every STEP_MIN minutes in between ("Re-run with current weather"): started from the fire area the latest
+  observation-started forecast estimates for that time (P >= 50 %), plus anything observed since, with the
+  weather from then on.
 
 Each forecast only uses observations acquired by its issue time and the weather from then on (the archived
-Open-Meteo historical forecast, as everywhere in this scenario). For each one the file also lists when its
-P >= 50 % contour reaches each street (the fire repo's road-closure calculation, 150 m safety buffer), so the
-screen can compute forecast closures from the forecasts the operator actually loaded.
+Open-Meteo historical forecast, as everywhere in this scenario). Its contours are stored every 30 minutes up to
+12 hours, plus the area it started from (horizon 0), so the screen can show the estimated fire at any time ("Fire
+now") and the +1 / +2 / +3 / +6 h horizons from then. For each one the file also lists when its P >= 50 % contour
+reaches each street (the fire repo's road-closure calculation, 150 m safety buffer, to the half hour), so the
+screen can compute forecast closures from the forecasts actually in force.
 
 Output: public/scenarios/marmaris_2022/forecast_library.json. A live model server (see docs/forecast_api.md)
 would answer the same request with the same record.
@@ -28,6 +31,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import shapely
 from shapely.geometry import mapping
@@ -36,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_marmaris_scenario as B  # noqa: E402
 
 STEP_MIN = 30
+INTERMEDIATE_SIMPLIFY_M = 40
 LIBRARY = B.OUT / "forecast_library.json"
 
 
@@ -68,7 +73,8 @@ def street_edges():
 
 
 def reach_hours(edges, contours, grid, cfg) -> np.ndarray:
-    """Hours after the issue time at which the contour first reaches each street (NaN: not within 12 h)."""
+    """Hours after the issue time at which the contour first reaches each street, to the half hour (NaN: not
+    within 12 h)."""
     from fireproj.road_closure import evaluate_road_closures
 
     out, _ = evaluate_road_closures(edges, None, contours, None, grid, cfg,
@@ -77,18 +83,26 @@ def reach_hours(edges, contours, grid, cfg) -> np.ndarray:
 
 
 def forecast_record(u: dict, trigger: str, reach: np.ndarray, index: dict[int, int], key: str = "") -> dict:
-    """One library entry: issue, what it started from, the shown contours and its street reach."""
+    """One library entry: issue, what it started from, its contours (horizon 0 = the area it started from, then
+    every 30 minutes; ``shown`` marks +1 / +2 / +3 / +6 h) and its street reach."""
     utm = u["contours"].estimate_utm_crs()
-    areas = u["contours"].to_crs(utm).area / 1e6
+    rows = ([(0.0, u["start_contour"])] if u.get("start_contour") is not None else []) \
+        + [(float(c["horizon_hours"]), c.geometry) for _, c in u["contours"].iterrows()]
     contours = []
-    for (_, c), km2 in zip(u["contours"].iterrows(), areas):
-        h = float(c["horizon_hours"])
-        if h not in B.UPDATE_SHOWN_H or c.geometry.is_empty:
+    for h, g in rows:
+        if g is None or g.is_empty:
             continue
+        metric = gpd.GeoSeries([g], crs="EPSG:4326").to_crs(utm)
+        km2 = float(metric.area.iloc[0]) / 1e6
+        shown = h == 0.0 or h in B.UPDATE_SHOWN_H
+        if not shown:
+            # In-between steps (only drawn as "Fire now" and the horizons from the time shown): 40 m simplification
+            # and ~10 m coordinates, which keeps the file a third smaller.
+            g = metric.simplify(INTERMEDIATE_SIMPLIFY_M).to_crs("EPSG:4326").iloc[0]
         contours.append({"horizon_hours": h, "valid_at": B._iso(u["issued"] + timedelta(hours=h)),
-                         "area_km2": round(float(km2), 3),
-                         "geometry": mapping(shapely.set_precision(c.geometry, 1e-5))})
-    start_km2 = 0.0 if u["perimeter"] is None else u["perimeter"].area / 1e6
+                         "area_km2": round(km2, 3), **({"shown": True} if h in B.UPDATE_SHOWN_H else {}),
+                         "geometry": mapping(shapely.set_precision(g, 1e-5 if shown else 1e-4))})
+    start_km2 = u["start_area_km2"]
     return {
         "id": f"{B.EVENT}-run-{u['issued']:%Y%m%dT%H%MZ}{key}",
         "issued_at": B._iso(u["issued"]),
@@ -117,8 +131,7 @@ def main() -> int:
     edges, ids = street_edges()
     runs = []
     reached: set[int] = set()
-    for issued, trigger in issues:
-        u = r["run"](issued)
+    for issued, trigger, u in B.chained_runs(r, issues):
         reach = reach_hours(edges, u["contours"], r["grid"], r["run_cfg"])
         reached |= {i for i, h in enumerate(reach) if np.isfinite(h)}
         runs.append((u, trigger, reach))
@@ -130,12 +143,16 @@ def main() -> int:
             "label": "PRECOMPUTED",
             "event": B.EVENT, "generated_at": B.GENERATED_AT,
             "step_minutes": STEP_MIN, "horizons_hours": list(B.UPDATE_SHOWN_H),
+            "contour_step_hours": 0.5, "contour_max_hours": max(B.UPDATE_STEP_H),
             "reach_horizons_hours": B.UPDATE_STEP_H, "probability": 0.5,
             "first_issue_at": B._iso(issues[0][0]), "last_issue_at": B._iso(last),
             "weather_until": B._iso(r["wx_end"]),
-            "note": "Forecasts the operator can load with 'Update forecast'. Each one starts from the VIIRS and "
-                    "Sentinel-2 burned-area observations acquired by its issue time (the ignition point before "
-                    "the first) and uses the weather from then on (archived Open-Meteo historical forecast). "
+            "note": "Forecasts loaded automatically at each new pass (trigger 'observation': started from the VIIRS and "
+                    "Sentinel-2 burned-area observations acquired by then, the ignition point before the first) and "
+                    "by 'Update forecast' in between (trigger 'scheduled': started from the fire the latest "
+                    "observation-started forecast estimates for that time, plus anything observed since). Each "
+                    "uses the weather from its issue time on (archived Open-Meteo historical forecast). Contours "
+                    "every 30 min to 12 h; horizon 0 is the area the forecast started from. "
                     "Forecasts are issued until the end of the scenario (last_issue_at); the weather data run "
                     f"until {B._iso(r['wx_end'])}.",
             "no_hindsight": "issued_at >= last_observation_at for every forecast (tools/test_no_hindsight.py).",

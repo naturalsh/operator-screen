@@ -48,7 +48,7 @@ Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_over
 The switch in the header changes how much the map shows (add `?mode=detailed` to a link to open in Detailed).
 
 - **Simple** (default): the forecast in force as an area (the next horizon not reached yet filled in orange with a
-  white edge, later horizons as thin outlines, each tagged "+4 h / +8 h / +12 h"), everything satellites have
+  white edge, later horizons as thin outlines, each tagged "+1 h / +2 h / +3 h / +6 h"), everything satellites have
   seen so far in one light colour, closed roads (solid red: seen by satellite; orange dashed: forecast closure),
   callers, crews and their routes.
 - **Detailed**: adds the satellite sensors in their own colours (VIIRS, MODIS, SLSTR, Sentinel-2 flame front and
@@ -90,7 +90,7 @@ Legend opened: [docs/simple_legend_open.png](docs/simple_legend_open.png).
 
 | Layer | File | Status |
 |---|---|---|
-| Fire front | `public/scenarios/marmaris_2022/firefront.geojson` | **Real observations + model forecasts.** Fire-model contours (the initial 8 / 20 / 40 h forecast and 16 forecast updates of +4 / +8 / +12 h) and satellite observations (NASA FIRMS VIIRS and MODIS, Copernicus Sentinel-3 SLSTR, Sentinel-2), exported by the fire tool. |
+| Fire front | `public/scenarios/marmaris_2022/firefront.geojson` | **Real observations + model forecasts.** Fire-model contours (the initial 8 / 20 / 40 h forecast and 15 forecast updates of +1 / +2 / +3 / +6 h) and satellite observations (NASA FIRMS VIIRS and MODIS, Copernicus Sentinel-3 SLSTR, Sentinel-2), exported by the fire tool. |
 | Street access | `public/scenarios/marmaris_2022/street_access.geojson` | **Model + satellite.** Real OpenStreetMap streets (© OpenStreetMap contributors, ODbL). A street is `blocked` from its `valid_at` when the forecast in force reaches it (forecast closure: the fire repository's road-closure calculation on that forecast's P ≥ 50 % contour, 150 m safety buffer) **or** a satellite saw fire on it (observed closure) (a VIIRS 375 m pixel footprint crosses it, or the Sentinel-2 flame front or burned area is within 150 m, or MODIS/SLSTR 1 km pixels cover it in two separate overpasses between 30 minutes and 6 hours apart and a VIIRS or Sentinel-2 detection made by then lies within 1 km of it: "satellite (repeated MODIS/SLSTR)")"). A single MODIS or SLSTR pixel does not close a street; it raises a "fire nearby (satellite)" warning, drawn as an amber halo. Not a road survey: no width was measured. |
 | Caller reports | `public/scenarios/marmaris_2022/caller_reports.json` | **SYNTHETIC.** Invented reports generated from the fire scenario: placed on streets that close (by forecast or satellite) and timed around that closure, so calls increase as the fire grows. Their urgency comes from a rule in the build script, not from the voice agent; cards say "synthetic, generated from the fire scenario". They never enter any measurement. |
 
@@ -200,12 +200,14 @@ the top left of the map with its issue time, what it started from and the last s
   **Update forecast** shows a badge ("2 new observations since forecast") and lists them. Clicking it loads the
   forecast started from everything seen so far.
 - **No new observations:** the box says "No new observations since 04:02 (VIIRS N20)" and offers **Re-run with
-  current weather**: the same perimeter, a later start time and the weather from then on. The result is labelled
-  "same perimeter, new weather" with the +12 h area against the previous run, so it is not mistaken for new
-  information about the fire.
+  current weather**: it starts from the fire the forecast in force estimates for that time (no new observation),
+  with the weather from then on. The result is labelled "same perimeter, new weather" with the +6 h area against
+  the previous run, so it is not mistaken for new information about the fire.
 - **Source:** the box says where the forecast comes from. **PRECOMPUTED**: a static site cannot run the model,
   so `tools/build_forecast_library.py` computes in advance every forecast that can be asked for, at ignition, at
-  every new pass and every 30 minutes (98 forecasts, 1.4 MB, `forecast_library.json`). **LIVE MODEL** is for a
+  every new pass and every 30 minutes until the end of the scenario (127 forecasts, `forecast_library.json`,
+  11 MB, 2 MB as served compressed). Each holds its contours every 30 minutes to 12 h and the area it started
+  from. **LIVE MODEL** is for a
   model server on the demo laptop (`?forecast_api=http://localhost:8000`); not set up yet, see
   [docs/forecast_api.md](docs/forecast_api.md). If that server does not answer within 3 s the precomputed
   forecast is used and the box says so.
@@ -226,8 +228,15 @@ the top left of the map with its issue time, what it started from and the last s
 ### The standing sequence
 
 Street closures in `street_access.geojson`, the synthetic calls and the table below come from a fixed sequence:
-a forecast at ignition, at every new VIIRS overpass or Sentinel-2 image (started from the union of everything those
-sensors have seen so far) and at least every 6 hours in between, each with contours for +4, +8 and +12 hours.
+a forecast at ignition and at every new VIIRS overpass or Sentinel-2 image (started from the union of everything
+those sensors have seen so far; passes less than 20 minutes apart are one update), 15 in all.
+
+**Horizons and contours.** Every forecast is a Monte Carlo ensemble of the fire repository's spread model; each run
+gives an arrival-time map. The P ≥ 50 % contour at time h is where at least half of the runs have the fire by h.
+It is stored every 30 minutes up to 12 hours, so the screen can show the fire at any time in between, and street
+closures are timed to the half hour. The horizons shown and scored are **+1, +2, +3 and +6 hours**. 12 hours is
+longer than the longest gap between two fine-resolution passes (11.5 h), so the forecast in force always covers
+the time shown.
 The layer "Fire front: initial forecast (at ignition)" adds the single 8 / 20 / 40 h forecast made at ignition,
 in blue, for comparison.
 
@@ -242,19 +251,24 @@ its starting area, the share that any VIIRS or Sentinel-2 observation of the who
 
 | Updates | Horizon | Hotspot detections (distinct) | Inside updated | Inside one-shot | New ground: detections (distinct) | New ground inside updated | New ground inside one-shot | Forecast new area seen burning (updated / one-shot) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| all 20 | +4 h | 818 (489) | 74.4 % | 8.8 % | 335 (262) | 37.6 % | 3.3 % | 40.7 % / 27.7 % |
-| all 20 | +8 h | 1298 (559) | 63.1 % | 11.2 % | 726 (436) | 34.0 % | 6.2 % | 32.8 % / 32.2 % |
-| all 20 | +12 h | 1787 (559) | 71.9 % | 13.0 % | 1007 (464) | 50.1 % | 7.6 % | 27.9 % / 36.2 % |
-| 2 started from the ignition point | +4 h | 167 (167) | 1.8 % | 3.0 % | 167 (167) | 1.8 % | 3.0 % | 100 % / 99.1 % |
-| 2 started from the ignition point | +8 h | 323 (167) | 3.4 % | 5.6 % | 323 (167) | 3.4 % | 5.6 % | 95.4 % / 95.2 % |
-| 2 started from the ignition point | +12 h | 351 (195) | 6.8 % | 9.1 % | 351 (195) | 6.8 % | 9.1 % | 93.5 % / 92.7 % |
-| 18 started from a satellite perimeter | +4 h | 651 (434) | 93.1 % | 10.3 % | 168 (125) | 73.2 % | 3.6 % | 40.4 % / 25.7 % |
-| 18 started from a satellite perimeter | +8 h | 975 (504) | 82.9 % | 13.0 % | 403 (299) | 58.6 % | 6.7 % | 32.3 % / 29.1 % |
-| 18 started from a satellite perimeter | +12 h | 1436 (504) | 87.8 % | 14.0 % | 656 (312) | 73.3 % | 6.9 % | 27.2 % / 32.1 % |
+| all 15 | +1 h | 383 (367) | 88.0 % | 5.5 % | 85 (80) | 45.9 % | 3.5 % | 41.6 % / 20.2 % |
+| all 15 | +2 h | 531 (385) | 91.1 % | 7.9 % | 121 (95) | 61.2 % | 4.1 % | 42.1 % / 21.6 % |
+| all 15 | +3 h | 554 (385) | 93.9 % | 9.2 % | 124 (96) | 72.6 % | 4.0 % | 41.1 % / 22.0 % |
+| all 15 | +6 h | 589 (396) | 96.3 % | 12.7 % | 144 (107) | 84.7 % | 7.6 % | 35.1 % / 25.0 % |
+| 1 started from the ignition point | +1 h | 0 (0) | – | – | 0 (0) | – | – | 100 % / – |
+| 1 started from the ignition point | +2 h | 0 (0) | – | – | 0 (0) | – | – | 100 % / 100 % |
+| 1 started from the ignition point | +3 h | 0 (0) | – | – | 0 (0) | – | – | 100 % / 100 % |
+| 1 started from the ignition point | +6 h | 11 (11) | 0.0 % | 0.0 % | 11 (11) | 0.0 % | 0.0 % | 100 % / 100 % |
+| 14 started from a satellite perimeter | +1 h | 383 (367) | 88.0 % | 5.5 % | 85 (80) | 45.9 % | 3.5 % | 41.5 % / 20.2 % |
+| 14 started from a satellite perimeter | +2 h | 531 (385) | 91.1 % | 7.9 % | 121 (95) | 61.2 % | 4.1 % | 42.0 % / 21.2 % |
+| 14 started from a satellite perimeter | +3 h | 554 (385) | 93.9 % | 9.2 % | 124 (96) | 72.6 % | 4.0 % | 40.9 % / 21.6 % |
+| 14 started from a satellite perimeter | +6 h | 578 (385) | 98.1 % | 13.0 % | 133 (96) | 91.7 % | 8.3 % | 34.9 % / 24.1 % |
 
-Reading it: started from the ignition point, the model misses almost all of the first night's spread. Started
-from a satellite perimeter, the forecast contains most later hotspots on new ground, but more than half of the new
-area it forecasts at +8 and +12 h was never seen burning: it over-predicts, increasingly with the horizon.
+Reading it: started from the ignition point, the model contains none of the first hotspots (it stays far too
+small on the first night). Started from a satellite perimeter, it contains most hotspots on new ground within a few
+hours (46 % at +1 h, 73 % at +3 h, 92 % at +6 h), but only 35-42 % of the new area it forecasts was ever seen
+burning: it over-predicts, and more so with the horizon. The single forecast made at ignition contains 3-8 % of
+the new-ground hotspots.
 
 **Caveats: in-sample parameters, hindcast weather, zero satellite latency.** Four model parameters
 (r0_multiplier, gust fraction, wind-direction spread, length-to-breadth cap) were set on this same fire; the
@@ -298,16 +312,16 @@ from the model (`tools/build_concept_reports.py`, fixed seed):
 
 | Forecast issued (UTC) | vs VIIRS pass | Variant | New fire inside | Area | Added area seen burning |
 |---|---|---|---:|---:|---:|
-| 21 Jun 23:00 | 23:22 | without reports | 0 % | 0.32 km² | 100 % |
-| 21 Jun 23:00 | 23:22 | with the true reports | 12.5 % | 2.27 km² | 93.4 % |
-| 21 Jun 23:00 | 23:22 | with every candidate (1 false) | 12.5 % | 2.71 km² | 78.3 % |
-| 21 Jun 23:22 | 00:12 | without reports | 73.3 % | 17.7 km² | 87.0 % |
-| 21 Jun 23:22 | 00:12 | with the true reports | 86.7 % | 18.5 km² | 86.4 % |
-| 21 Jun 23:22 | 00:12 | with every candidate (1 false) | 86.7 % | 18.9 km² | 81.2 % |
+| 21 Jun 23:00 | 23:22 | without reports | 0 % | 0.92 km² | 100 % |
+| 21 Jun 23:00 | 23:22 | with the true reports | 5.0 % | 1.82 km² | 95.3 % |
+| 21 Jun 23:00 | 23:22 | with every candidate (1 false) | 5.0 % | 1.99 km² | 87.0 % |
+| 21 Jun 23:22 | 00:12 | without reports | 66.7 % | 15.3 km² | 88.0 % |
+| 21 Jun 23:22 | 00:12 | with the true reports | 86.7 % | 16.1 km² | 87.8 % |
+| 21 Jun 23:22 | 00:12 | with every candidate (1 false) | 86.7 % | 16.3 km² | 83.2 % |
 
-Reading it: before the first VIIRS pass the reports put some of the new fire inside the forecast (12.5 % instead of
+Reading it: before the first VIIRS pass the reports put a little of the new fire inside the forecast (5 % instead of
 none), but a model started from a few small discs is still far too small for that night. After the pass they add
-13 points. The false candidate adds area that never burned. Full table: [docs/concept_reports.md](docs/concept_reports.md).
+20 points. The false candidate adds area that never burned. Full table: [docs/concept_reports.md](docs/concept_reports.md).
 This is an **upper bound** (real callers are fewer, later and less precise) and it is **excluded from the overlap
 table** above. `tools/test_no_hindsight.py` checks that clustering only uses reports received by each time and that a
 forecast only uses candidates known by its issue time.
