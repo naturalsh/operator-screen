@@ -155,6 +155,17 @@ box the offline map is empty. The three data layers are always local files.
   `node tools/fetch_basemap.mjs` (it refuses to exceed 100 MB).
 - Map data © OpenStreetMap contributors (ODbL), schema © OpenMapTiles, tiles by OpenFreeMap.
 
+### Working without internet
+
+The built site (`npm run build`, `npm run preview`, GitHub Pages) installs a service worker
+([vite-plugin-pwa](https://vite-pwa-org.netlify.app/), config in `vite.config.ts`). On the first visit it
+stores the page, the scenario data and the packaged basemap (961 files, about 20 MB, a few seconds on a normal
+connection). After that the screen opens, reloads and routes crews with no network at all, at any deep link
+(`?demo=1`, `?t=…`), with the offline basemap. A new deployment replaces the stored copy on the next online visit.
+
+Before a presentation: open the site once on the presenting laptop (and on each tablet) while online. To check,
+switch the network off and reload. `npm run dev` does not use the service worker.
+
 ## Using the screen
 
 - **Scenario** (top): picks an entry of `public/scenarios/index.json`.
