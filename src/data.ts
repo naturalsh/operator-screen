@@ -1,5 +1,5 @@
 import type { Feature, Geometry } from 'geojson';
-import type { CallerReport, FileMeta, FireFront, FireMeta, ForecastLibrary, Responder, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
+import type { CallerReport, ConceptReports, FileMeta, FireFront, FireMeta, ForecastLibrary, Responder, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
 
 const BASE = `${import.meta.env?.BASE_URL ?? '/'}scenarios/`;
 
@@ -14,7 +14,7 @@ export async function loadIndex(): Promise<ScenarioEntry[]> {
 }
 
 export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> {
-  const [fire, streets, callers, responders, library] = await Promise.all([
+  const [fire, streets, callers, responders, library, concept] = await Promise.all([
     getJson<ScenarioData['fire'] & { metadata?: FireMeta }>(entry.files.fire_front),
     getJson<ScenarioData['streets'] & { metadata?: FileMeta }>(entry.files.street_access),
     getJson<{ metadata?: FileMeta; records: CallerReport[] }>(entry.files.caller_reports),
@@ -22,6 +22,7 @@ export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> 
       ? getJson<{ metadata?: FileMeta; records: Responder[] }>(entry.files.responders)
       : Promise.resolve({ metadata: {} as FileMeta, records: [] as Responder[] }),
     entry.files.forecast_library ? getJson<ForecastLibrary>(entry.files.forecast_library) : Promise.resolve(undefined),
+    entry.files.concept_reports ? getJson<ConceptReports>(entry.files.concept_reports) : Promise.resolve(undefined),
   ]);
   // With a forecast library the operator loads forecasts; the file's own update sequence is not shown.
   if (library) fire.features = fire.features.filter((f) => f.properties.forecast_set !== 'update');
@@ -39,6 +40,7 @@ export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> 
     responders: responders.records,
     respondersMeta: responders.metadata ?? {},
     library,
+    concept,
   };
 }
 

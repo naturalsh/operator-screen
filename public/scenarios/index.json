@@ -17,7 +17,8 @@
         "caller_reports": "marmaris_2022/caller_reports.json",
         "street_access": "marmaris_2022/street_access.geojson",
         "responders": "marmaris_2022/responders.json",
-        "forecast_library": "marmaris_2022/forecast_library.json"
+        "forecast_library": "marmaris_2022/forecast_library.json",
+        "concept_reports": "marmaris_2022/concept_reports.json"
       },
       "demo": {
         "t": "2022-06-23T08:40:00Z",

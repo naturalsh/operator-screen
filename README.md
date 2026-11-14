@@ -266,6 +266,53 @@ The updates are computed by `tools/build_marmaris_scenario.py` with the fire rep
 reconstruction grid (forecasts stop at that grid's edge) and its cached weather, which ends on 23 June:
 the last update is issued on 23 June at 14:14 local. The model has no suppression, so late updates over-predict.
 
+## Fire reports from people (CONCEPT DEMO)
+
+**CONCEPT DEMO · synthetic reports derived from later satellite passes.** Off by default; turn on "Concept demo:
+fire reports (synthetic)" in the layer list, or open `?concept=1&t=2022-06-21T22:00:00Z`. While it is on, the label
+is in the header, on the map and in the panel.
+
+Why: on the first night the satellites gave only 1 km pixels for six hours and the model, started from the
+ignition point, stayed far too small (the first VIIRS pass, at 23:22 UTC, saw fire 8 km east). Calls saying "I see
+flames here" could start a better forecast earlier. To show this without circular reasoning, the calls are not made
+from the model (`tools/build_concept_reports.py`, fixed seed):
+
+- **Reports:** every first-night VIIRS pass sees fire on new ground. For each such place, 1–3 callers report it
+  before the pass: at an assumed fire arrival 30–150 min earlier, 300–800 m from where the satellite saw it. 25 %
+  of the reports are false (no fire there, ever), including one convincing pair (two callers see "flames" at a
+  burning skip). Some numbers call twice. 21 reports in all. Which reports are false is never shown on the screen.
+- **Clustering and confidence:** in time order, a report joins a cluster within 1 km and 30 min. Confidence is a
+  noisy-OR, `P = 1 − Π(1 − wᵢ)`, one weight per independent source, w = statement (flames 0.6, fire near 0.4,
+  smoke 0.15, hearsay 0.05) × location quality (GPS 1.0, address 0.7, "near X" 0.4) × observer distance (on site
+  1.0, < 500 m 0.8, far 0.4) × independence (same number again: 0). One source never counts more than 0.5.
+- **Candidates:** a cluster with two independent sources and P ≥ 0.5 is a candidate, drawn as a dashed purple
+  disc, "REPORTED (unconfirmed)", whose radius is the location uncertainty. Single reports are small points.
+- **Confirm:** a candidate never enters the model by itself. The operator's **Confirm** marks it (solid disc,
+  decision log) and the next **Update forecast** starts from the perimeter plus a disc for each confirmed candidate.
+  These forecasts are precomputed for every set of candidates the night can have (137); the forecast box says
+  "with 3 confirmed reports (CONCEPT DEMO)".
+- **Score, after the fact:** once the next VIIRS pass has happened, the panel compares the forecasts issued before
+  it: without reports, with the true candidates only, and with every candidate (the false one included).
+
+| Forecast issued (UTC) | vs VIIRS pass | Variant | New fire inside | Area | Added area seen burning |
+|---|---|---|---:|---:|---:|
+| 21 Jun 23:00 | 23:22 | without reports | 0 % | 0.32 km² | 100 % |
+| 21 Jun 23:00 | 23:22 | with the true reports | 12.5 % | 2.27 km² | 93.4 % |
+| 21 Jun 23:00 | 23:22 | with every candidate (1 false) | 12.5 % | 2.71 km² | 78.3 % |
+| 21 Jun 23:22 | 00:12 | without reports | 73.3 % | 17.7 km² | 87.0 % |
+| 21 Jun 23:22 | 00:12 | with the true reports | 86.7 % | 18.5 km² | 86.4 % |
+| 21 Jun 23:22 | 00:12 | with every candidate (1 false) | 86.7 % | 18.9 km² | 81.2 % |
+
+Reading it: before the first VIIRS pass the reports put some of the new fire inside the forecast (12.5 % instead of
+none), but a model started from a few small discs is still far too small for that night. After the pass they add
+13 points. The false candidate adds area that never burned. Full table: [docs/concept_reports.md](docs/concept_reports.md).
+This is an **upper bound** (real callers are fewer, later and less precise) and it is **excluded from the overlap
+table** above. `tools/test_no_hindsight.py` checks that clustering only uses reports received by each time and that a
+forecast only uses candidates known by its issue time.
+
+![Confirmed reports](docs/b2_concept_confirmed.png)
+![Score after the pass](docs/b2_concept_score.png)
+
 ## Crews
 
 Each response point has **two crews** (an assumption, stated on screen), e.g. Armutalan-1 and Armutalan-2.

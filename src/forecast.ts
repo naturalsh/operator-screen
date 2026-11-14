@@ -9,7 +9,7 @@
  *   with `?forecast_api=<url>`, and it falls back to the precomputed forecast when the server does not answer.
  */
 import type { Geometry } from 'geojson';
-import type { FireFront, ForecastLibrary, LibraryForecast, StreetFeature } from './types';
+import type { ConceptReports, FireFront, ForecastLibrary, LibraryForecast, StreetFeature } from './types';
 import { NEVER } from './data';
 
 export type ForecastTrigger = 'ignition' | 'observation' | 'scheduled' | 'live';
@@ -31,6 +31,8 @@ export interface ForecastRun {
   sourceNote?: string;
   /** FireFront features of the shown contours (+4 / +8 / +12 h). */
   features: GeoJSON.Feature<Geometry, FireFront & { t: number }>[];
+  /** CONCEPT DEMO: confirmed report clusters the forecast was started with (empty: none). */
+  reports: string[];
 }
 
 /** What the operator asks for: the newest forecast that can be issued at `at`. */
@@ -40,6 +42,8 @@ export interface ForecastRequest {
   at: number;
   /** 'update': start from the latest observations; 'rerun': same perimeter, new start time and weather. */
   kind: 'update' | 'rerun';
+  /** CONCEPT DEMO: report clusters the operator confirmed (a live server gets their discs). */
+  reports?: string[];
 }
 
 export interface ForecastSource {
@@ -67,7 +71,7 @@ export function toRun(f: LibraryForecast, streetIds: (i: number | string) => str
     lastObsLabel: f.last_observation_label ?? null, startAreaKm2: f.start_area_km2,
     contours: f.contours.map((c) => ({ horizon: c.horizon_hours, validAt: Date.parse(c.valid_at), areaKm2: c.area_km2 })),
     reach: new Map(f.reach.map(([i, h]) => [streetIds(i), issuedAt + h * 3600000])),
-    source, features,
+    source, features, reports: (f as { reports?: string[] }).reports ?? [],
   };
 }
 
@@ -75,10 +79,30 @@ export class PrecomputedForecasts implements ForecastSource {
   readonly kind = 'precomputed' as const;
   readonly runs: ForecastRun[];
   readonly lastIssueAt: number;
-  constructor(readonly library: ForecastLibrary) {
+  /** CONCEPT DEMO: forecasts started with confirmed reports, by `${base id}|${sorted cluster ids}`. */
+  private readonly withReports = new Map<string, LibraryForecast>();
+  private readonly candidateAt = new Map<string, number>();
+  readonly reportsUntil: number;
+  constructor(readonly library: ForecastLibrary, readonly concept?: ConceptReports) {
     this.runs = library.forecasts.map((f) => toRun(f, (i) => library.streets[i as number], 'precomputed'))
       .sort((a, b) => a.issuedAt - b.issuedAt);
     this.lastIssueAt = Date.parse(library.metadata.last_issue_at);
+    for (const f of concept?.forecasts ?? []) this.withReports.set(`${f.base_forecast}|${[...f.reports].sort().join(',')}`, f);
+    for (const c of concept?.clusters ?? []) if (c.candidate_at) this.candidateAt.set(c.id, Date.parse(c.candidate_at));
+    this.reportsUntil = concept ? Date.parse(concept.metadata.window_end) : -Infinity;
+  }
+  /** Confirmed clusters a forecast issued at `issuedAt` can start from (candidates by then, first night only). */
+  usableReports(issuedAt: number, confirmed: string[]): string[] {
+    if (issuedAt > this.reportsUntil) return [];
+    return confirmed.filter((id) => (this.candidateAt.get(id) ?? Infinity) <= issuedAt).sort();
+  }
+  /** The base forecast, or the one started with these reports when that one was computed. */
+  withConfirmed(base: ForecastRun, confirmed: string[]): ForecastRun {
+    const use = this.usableReports(base.issuedAt, confirmed);
+    if (!use.length) return base;
+    const f = this.withReports.get(`${base.id}|${use.join(',')}`);
+    if (!f) return { ...base, sourceNote: 'this set of confirmed reports was not precomputed; forecast without them' };
+    return toRun(f, (i) => this.concept!.streets[i as number], 'precomputed');
   }
   /** The newest forecast issued by `at` (it only uses observations acquired by then). */
   latest(at: number): ForecastRun | null {
@@ -87,7 +111,10 @@ export class PrecomputedForecasts implements ForecastSource {
     return best;
   }
   get first(): ForecastRun | null { return this.runs[0] ?? null; }
-  async run(req: ForecastRequest): Promise<ForecastRun | null> { return this.latest(req.at); }
+  async run(req: ForecastRequest): Promise<ForecastRun | null> {
+    const base = this.latest(req.at);
+    return base && req.reports?.length ? this.withConfirmed(base, req.reports) : base;
+  }
 }
 
 /**

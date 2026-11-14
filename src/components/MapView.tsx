@@ -7,13 +7,14 @@ import {
   modelLabel, fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
 } from '../data';
 import { resolveBasemap } from '../basemap';
+import { CONCEPT_LABEL, STATEMENT_LABEL, circle, type ClusterState } from '../reports';
 import { CREW_STATUS_COLOUR, type CrewStatus } from '../crews';
 import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
 
 /** A crew vehicle that is away from its station. */
 export interface Vehicle { id: string; name: string; status: CrewStatus; position: [number, number]; label: string }
 
-export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'nearby' | 'callers' | 'crews';
+export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'nearby' | 'callers' | 'crews' | 'concept';
 
 /** Simple: what a newcomer needs to read the screen. Detailed: every source and distinction. */
 export type MapMode = 'simple' | 'detailed';
@@ -42,7 +43,26 @@ const LAYER_GROUPS: Record<LayerKey, string[]> = {
   nearby: ['streets-nearby'],
   callers: ['callers-selected', 'callers', 'callers-label'],
   crews: ['routes-casing', 'routes', 'routes-cut', 'responders', 'responders-label'],
+  concept: ['report-points', 'cluster-fill', 'cluster-line', 'cluster-line-confirmed', 'cluster-label'],
 };
+
+/** CONCEPT DEMO colour (reports from people). */
+export const REPORT_COLOUR = '#a78bfa';
+
+/** Report points and candidate discs at the time shown. */
+function conceptFc(clusters: ClusterState[]): [GeoJSON.FeatureCollection, GeoJSON.FeatureCollection] {
+  const points: GeoJSON.Feature[] = clusters.flatMap((c) => c.reports.map((r) => ({
+    type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [r.place.lon, r.place.lat] },
+    properties: { id: r.id, cluster: c.cluster.id, candidate: c.candidate },
+  })));
+  const discs: GeoJSON.Feature[] = clusters.filter((c) => c.candidate).map((c) => ({
+    type: 'Feature' as const,
+    geometry: circle(c.cluster.lon, c.cluster.lat, c.cluster.radius_m ?? 300),
+    properties: { id: c.cluster.id, confirmed: c.confirmedAt != null, p: c.p,
+      label: `${c.confirmedAt != null ? 'REPORTED (confirmed)' : 'REPORTED (unconfirmed)'} · P ${c.p.toFixed(2)}` },
+  }));
+  return [{ type: 'FeatureCollection', features: points }, { type: 'FeatureCollection', features: discs }];
+}
 
 const HORIZON_COLOUR = ['match', ['get', 'rank'], 0, HORIZON_COLOURS[0], 1, HORIZON_COLOURS[1], HORIZON_COLOURS[2]] as unknown as string;
 const INSTRUMENT_COLOUR = ['match', ['get', 'instrument'], 'MODIS', '#a855f7', 'SLSTR', '#14b8a6', '#ef4444'] as unknown as string;
@@ -91,11 +111,13 @@ interface Props {
   forecastRunId?: string | null;
   /** Change when street closures or fire features change in place (the sources are reloaded). */
   streetsVersion?: number;
+  /** CONCEPT DEMO: report clusters at the time shown (empty when the concept layer is off). */
+  concept?: ClusterState[];
   fireVersion?: number;
 }
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
-  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0 }: Props) {
+  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [] }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
@@ -123,8 +145,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       && pts.some((p) => near(p, s.properties.label_point!))).map((s) => s.properties.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, selectedId, routesKey]);
-  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId });
-  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId };
+  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId, concept });
+  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId, concept };
   const vehicleMarkers = useRef(new Map<string, maplibregl.Marker>());
 
   /** Push the current time, selection and toggles into the map. */
@@ -189,6 +211,9 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       ['case', ['<=', ['get', 't'], t], ['get', 'status'], ['get', 'before']],
       'open', STATUS_COLOUR.open, 'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked]);
     map.setFilter('callers-selected', ['==', ['get', 'id'], sel ?? '']);
+    const [reportPts, discs] = conceptFc(latest.current.concept);
+    (map.getSource('report-points') as GeoJSONSource | undefined)?.setData(reportPts);
+    (map.getSource('clusters') as GeoJSONSource | undefined)?.setData(discs);
     (map.getSource('callers') as GeoJSONSource).setData(
       callersFc(visibleCallers(d.callers, t), st, uo));
     const ok = rts.filter((r) => !r.cut).flatMap((r) => r.edgeIds);
@@ -363,6 +388,22 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           'circle-color': ['get', 'colour'],
           'circle-stroke-color': ['match', ['get', 'stage'], 'new', '#07090d', ['get', 'ring']],
           'circle-stroke-width': ['match', ['get', 'stage'], 'new', 2, 'taken', 2.5, 3.5] } });
+      // CONCEPT DEMO: reports from people (points) and candidate clusters (uncertainty discs, dashed until confirmed).
+      map.addSource('report-points', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('clusters', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({ id: 'cluster-fill', type: 'fill', source: 'clusters',
+        paint: { 'fill-color': REPORT_COLOUR, 'fill-opacity': ['case', ['get', 'confirmed'], 0.22, 0.1] } });
+      map.addLayer({ id: 'cluster-line', type: 'line', source: 'clusters', filter: ['!', ['get', 'confirmed']],
+        paint: { 'line-color': REPORT_COLOUR, 'line-width': 2, 'line-dasharray': [2, 1.5] } });
+      map.addLayer({ id: 'cluster-line-confirmed', type: 'line', source: 'clusters', filter: ['get', 'confirmed'],
+        paint: { 'line-color': REPORT_COLOUR, 'line-width': 2.5 } });
+      map.addLayer({ id: 'report-points', type: 'circle', source: 'report-points',
+        paint: { 'circle-radius': ['case', ['get', 'candidate'], 4, 3], 'circle-color': REPORT_COLOUR,
+          'circle-opacity': ['case', ['get', 'candidate'], 0.95, 0.5], 'circle-stroke-color': '#07090d', 'circle-stroke-width': 1 } });
+      map.addLayer({ id: 'cluster-label', type: 'symbol', source: 'clusters',
+        layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-anchor': 'bottom',
+          'text-offset': [0, -1.2], 'text-allow-overlap': true },
+        paint: { 'text-color': '#ddd6fe', 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
       map.addLayer({ id: 'callers-label', type: 'symbol', source: 'callers',
         // Labels that would collide are hidden (most urgent kept); they appear when zooming in.
         layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Regular'], 'text-size': 11,
@@ -380,7 +421,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       }
 
       // One click handler, most specific feature first: caller, response point, street, fire front.
-      const CLICKABLE = ['callers', 'responders', 'streets', 'streets-forecast', 'flame-front', 'forecast-reached', 'forecast-pending',
+      const CLICKABLE = ['callers', 'report-points', 'cluster-fill', 'responders', 'streets', 'streets-forecast', 'flame-front', 'forecast-reached', 'forecast-pending',
         'initial-reached', 'initial-pending', 'hotspots', 'burned-area'];
       const muted = (text: string) => `<div class="ns-muted">${text}</div>`;
       const tag = (p: { synthetic?: boolean; basis?: string }) => (p.synthetic ? '<span class="synthetic-tag">SYNTHETIC</span>'
@@ -395,7 +436,17 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         const tz = d.entry.timezone ?? 'UTC';
         let html = '';
         let at: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-        if (hit.layer.id === 'callers') {
+        if (hit.layer.id === 'report-points' || hit.layer.id === 'cluster-fill') {
+          const cid = hit.layer.id === 'cluster-fill' ? hit.properties.id : hit.properties.cluster;
+          const c = latest.current.concept.find((x) => x.cluster.id === cid);
+          if (!c) return;
+          html = `<b>${c.candidate ? (c.confirmedAt != null ? 'REPORTED (confirmed)' : 'REPORTED (unconfirmed)') : 'Fire report (below threshold)'}</b>`
+            + `<div>P ${c.p.toFixed(2)} · ${c.sources} independent source${c.sources === 1 ? '' : 's'} · ${c.reports.length} report${c.reports.length === 1 ? '' : 's'}</div>`
+            + c.reports.map((r) => muted(`${fmtTime(Date.parse(r.observed_at), tz)} · ${STATEMENT_LABEL[r.statement_class]} · ±${r.place.uncertainty_m} m`)).join('')
+            + (c.candidate ? '' : muted('One independent source or P < 0.5: not a candidate.'))
+            + `<div style="margin-top:4px"><span class="concept-tag">CONCEPT DEMO</span></div>`
+            + muted(CONCEPT_LABEL);
+        } else if (hit.layer.id === 'callers') {
           const c = d.callers.find((x) => x.id === hit.properties.id);
           if (!c) return;
           onSelect(c.id);

@@ -9,7 +9,8 @@
 import { readFileSync } from 'node:fs';
 import { PrecomputedForecasts, applyForecastClosures, forecastClosures, forecastInForce, loadAt, type ForecastLoad } from '../src/forecast';
 import { NEVER, prepareStreets } from '../src/data';
-import type { ForecastLibrary, StreetFeature } from '../src/types';
+import type { ConceptReports, ForecastLibrary, StreetFeature } from '../src/types';
+import { clustersAt } from '../src/reports';
 
 const dir = new URL('../public/scenarios/marmaris_2022/', import.meta.url);
 const lib = JSON.parse(readFileSync(new URL('forecast_library.json', dir), 'utf8')) as ForecastLibrary;
@@ -79,6 +80,25 @@ for (const s of streets) {
   if (first < NEVER ? p.status !== 'blocked' || p.t !== first : p.status === 'blocked') { fail(`street ${p.id}: status ${p.status} t ${p.t}`); break; }
 }
 
+// 5. CONCEPT DEMO: the screen's noisy-OR gives the build script's candidate times, and before a cluster's
+// candidate time it is never a candidate on screen.
+const concept = JSON.parse(readFileSync(new URL('concept_reports.json', dir), 'utf8')) as ConceptReports;
+let conceptChecked = 0;
+for (const r of concept.records) {
+  const T = Date.parse(r.observed_at);
+  for (const st of clustersAt(concept, T, new Map())) {
+    const c = st.cluster;
+    const should = c.candidate_at != null && Date.parse(c.candidate_at) <= T;
+    if (st.candidate !== should) fail(`${c.id} at ${r.observed_at}: screen says candidate=${st.candidate}`);
+    conceptChecked++;
+  }
+}
+const before = (c: { candidate_at?: string }) => Date.parse(c.candidate_at!) - 60e3;
+for (const c of concept.clusters.filter((x) => x.candidate_at)) {
+  const st = clustersAt(concept, before(c), new Map()).find((x) => x.cluster.id === c.id);
+  if (st?.candidate) fail(`${c.id} is a candidate before its candidate time`);
+}
+
 console.log(`forecast: ${pre.runs.length} forecasts checked; ${compared} causality comparisons; closures by 23 Jun 08:40: `
-  + `${a} without updates, ${b} updating at every pass; ${failures} failures`);
+  + `${a} without updates, ${b} updating at every pass; ${conceptChecked} concept cluster states; ${failures} failures`);
 process.exit(failures ? 1 : 0);

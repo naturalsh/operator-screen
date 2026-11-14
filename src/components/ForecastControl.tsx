@@ -13,6 +13,8 @@ interface Props {
   rerunTo: ForecastRun | null;
   /** Why neither is possible, e.g. the precomputed forecasts end. */
   blockedNote: string | null;
+  /** CONCEPT DEMO: confirmed reports the forecast in force does not have yet. */
+  newReports?: number;
   sourceKind: 'precomputed' | 'live';
   busy: boolean;
   timeZone: string;
@@ -23,13 +25,15 @@ interface Props {
 const SOURCE_LABEL = { precomputed: 'PRECOMPUTED', live: 'LIVE MODEL' } as const;
 
 /** The forecast in force and the operator's "Update forecast" button (map overlay, top left). */
-export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blockedNote, sourceKind, busy, timeZone, compact, onUpdate }: Props) {
+export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blockedNote, newReports = 0, sourceKind, busy, timeZone, compact, onUpdate }: Props) {
   const [open, setOpen] = useState(!compact);
   const run = load?.run;
   const t = (x: number) => fmtTime(x, timeZone);
   const last = run?.lastObsAt != null ? `${t(run.lastObsAt)} (${run.lastObsLabel})` : null;
   const twelve = (r?: ForecastRun | null) => r?.contours.find((c) => c.horizon === 12)?.areaKm2 ?? r?.contours[r.contours.length - 1]?.areaKm2;
-  const badge = newObs.length > 0 ? newObs.length : 0;
+  const badge = newObs.length + newReports;
+  const badgeText = [newObs.length ? `${newObs.length} new observation${newObs.length > 1 ? 's' : ''}` : '',
+    newReports ? `${newReports} confirmed report${newReports > 1 ? 's' : ''}` : ''].filter(Boolean).join(' + ') + ' since forecast';
   if (compact && !open) {
     return (
       <button data-forecast-control="closed" onClick={() => setOpen(true)}
@@ -78,7 +82,7 @@ export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blo
               className="flex w-full items-center justify-between rounded bg-sky-500 px-2.5 py-1.5 font-bold text-ink-950 disabled:opacity-50">
               <span>Update forecast</span>
               <span data-new-obs-badge className="rounded-full bg-ink-950 px-2 py-0.5 text-[11px] text-sky-300">
-                {badge} new observation{badge > 1 ? 's' : ''} since forecast
+                {badgeText}
               </span>
             </button>
             <div className="mt-1 text-ink-400" data-new-obs-list>

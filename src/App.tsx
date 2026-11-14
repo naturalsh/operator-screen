@@ -12,6 +12,8 @@ import {
   type ForecastLoad, type ForecastSource,
 } from './forecast';
 import { ForecastControl } from './components/ForecastControl';
+import { ConceptPanel } from './components/ConceptPanel';
+import { CONCEPT_LABEL, clustersAt } from './reports';
 import type { CallerReport, Decision, ScenarioData, ScenarioEntry, StreetFeature, Urgency } from './types';
 import { CallerList, NEAR_RADIUS_M, type CardCrew, type CaseState } from './components/CallerList';
 import { DecisionLog } from './components/DecisionLog';
@@ -44,6 +46,8 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(params.get('call'));
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>({
     forecast: true, initial: false, observed: true, streets: true, nearby: false, callers: true, crews: true,
+    // CONCEPT DEMO (synthetic fire reports): off unless asked for, `?concept=1` turns it on.
+    concept: params.get('concept') === '1',
   });
   // Simple (default) shows what a newcomer needs; Detailed shows every source. `?mode=detailed` deep-links.
   const [mode, setMode] = useState<MapMode>(params.get('mode') === 'detailed' ? 'detailed' : 'simple');
@@ -80,6 +84,8 @@ export function App() {
   const loadSeq = useRef(0);
   const [forecastBusy, setForecastBusy] = useState(false);
   const [fireVersion, setFireVersion] = useState(0);
+  // CONCEPT DEMO: report clusters the operator confirmed, and when (scenario time).
+  const [confirmations, setConfirmations] = useState<Map<string, number>>(new Map());
 
   useEffect(() => {
     loadIndex().then((list) => {
@@ -98,6 +104,7 @@ export function App() {
     setDecisions([]);
     setLoads([]);
     setPrecomputed(null);
+    setConfirmations(new Map());
     loadScenario(entry).then((d) => {
       const demo = wantDemo ? entry.demo : undefined;
       const t0 = Date.parse(demo?.t ?? '') || Date.parse(params.get('t') ?? '') || Date.parse(entry.initial ?? entry.start);
@@ -105,7 +112,7 @@ export function App() {
       if (demo?.call) setSelectedId(demo.call);
       // Before the opening time the forecast was updated at every new satellite pass (the previous shift);
       // from then on it changes only when the operator loads one.
-      const pre = d.library ? new PrecomputedForecasts(d.library) : null;
+      const pre = d.library ? new PrecomputedForecasts(d.library, d.concept) : null;
       if (pre) {
         d.fire.features.push(...pre.runs.flatMap((r) => r.features));
         const history = historyLoads(pre, t);
@@ -338,25 +345,38 @@ export function App() {
     record(to, 'dispatch_no_access', 'not dispatched', 'no access by road', `tried to redirect the crew from ${shortLabel(from.id)}`);
   };
 
+  // CONCEPT DEMO: report clusters at the time shown and the confirmed ones the next update would add.
+  const conceptOn = !!data?.concept && layers.concept;
+  const clusterStates = useMemo(() => (conceptOn && data?.concept ? clustersAt(data.concept, now, confirmations) : []),
+    [conceptOn, data, now, confirmations]);
+  const confirmedNow = useMemo(() => clusterStates.filter((c) => c.candidate && c.confirmedAt != null).map((c) => c.cluster.id),
+    [clusterStates]);
+
   // "Update forecast": new observations since the forecast in force, and what the button would load.
   const fireProps = useMemo(() => (data ? data.fire.features.map((f) => f.properties) : []), [data, fireVersion]);
   const newObs = useMemo(() => (inForce ? newObservations(fireProps, inForce.run, now) : []), [fireProps, inForce, now]);
   const forecastOptions = useMemo(() => {
-    if (!precomputed || !inForce) return { updateTo: null, rerunTo: null, blockedNote: null };
+    if (!precomputed || !inForce) return { updateTo: null, rerunTo: null, blockedNote: null, newReports: 0 };
     const tz = data?.entry.timezone ?? 'UTC';
     const newest = precomputed.latest(now);
     const newer = newest && newest.issuedAt > inForce.run.issuedAt ? newest : null;
     const lastNew = newObs[newObs.length - 1];
+    // Confirmed reports the newest forecast could start from but the one in force does not have.
+    const usable = newest ? precomputed.usableReports(newest.issuedAt, confirmedNow) : [];
+    const newReports = usable.filter((id) => !inForce.run.reports.includes(id)).length;
+    const withReports = newest ? precomputed.withConfirmed(newest, confirmedNow) : null;
     let blockedNote: string | null = null;
     if (now > precomputed.lastIssueAt && (!newer || (lastNew && (newer.lastObsAt ?? 0) < lastNew.at))) {
       blockedNote = `No forecast can be issued after ${fmtTime(precomputed.lastIssueAt, tz)}: the weather data end 12 h later.`;
-    } else if (!newObs.length && !newer) {
+    } else if (!newObs.length && !newer && !newReports) {
       blockedNote = `The newest run is loaded; the next one can be issued at ${fmtTime(
         (precomputed.runs.find((r) => r.issuedAt > now)?.issuedAt ?? precomputed.lastIssueAt), tz)}.`;
     }
     const covers = newer && (!lastNew || (newer.lastObsAt ?? 0) >= lastNew.at);
-    return { updateTo: newObs.length && covers ? newer : null, rerunTo: !newObs.length ? newer : null, blockedNote };
-  }, [precomputed, inForce, newObs, now, data]);
+    const updateTo = newObs.length ? (covers ? withReports : null) : newReports ? withReports : null;
+    const rerunTo = !newObs.length && !newReports && newer ? withReports : null;
+    return { updateTo, rerunTo, blockedNote, newReports };
+  }, [precomputed, inForce, newObs, now, data, confirmedNow]);
   const previousLoad = useMemo(() => {
     if (!inForce) return null;
     const before = loads.filter((l) => l.at <= inForce.at && l !== inForce);
@@ -370,25 +390,36 @@ export function App() {
     setForecastBusy(true);
     const at = now;
     try {
-      const run = await source.run({ scenario: data.entry.id, at, kind });
+      const run = await source.run({ scenario: data.entry.id, at, kind, reports: conceptOn ? confirmedNow : [] });
       if (!run || run.id === inForce.run.id) return;
       if (!data.fire.features.some((f) => f.properties.run_id === run.id)) {
         data.fire.features.push(...run.features);
         setFireVersion((v) => v + 1);
       }
       const samePerimeter = run.lastObsAt === inForce.run.lastObsAt && run.from.replace(' (no new pass)', '') === inForce.run.from.replace(' (no new pass)', '');
-      const label = samePerimeter ? 'same perimeter, new weather' : undefined;
+      const withReports = run.reports.length
+        ? `with ${run.reports.length} confirmed report${run.reports.length > 1 ? 's' : ''} (CONCEPT DEMO)` : '';
+      const label = (samePerimeter && !withReports ? 'same perimeter, new weather' : withReports) || undefined;
       const load: ForecastLoad = { seq: ++loadSeq.current, at, run, kind, label };
       setLoads((all) => loadAt(all, load));
       const twelve = (r: typeof run) => r.contours.find((c) => c.horizon === 12)?.areaKm2;
       record({ id: 'forecast' }, 'update_forecast', describeRun(inForce.run), describeRun(run),
-        [kind === 'rerun' ? 'Re-run with current weather' : `${newObs.length} new observation${newObs.length === 1 ? '' : 's'}`,
+        [kind === 'rerun' ? 'Re-run with current weather' : [newObs.length ? `${newObs.length} new observation${newObs.length === 1 ? '' : 's'}` : '',
+          forecastOptions.newReports ? `${forecastOptions.newReports} confirmed report${forecastOptions.newReports === 1 ? '' : 's'}` : ''].filter(Boolean).join(', '),
           label, run.source === 'live' ? 'live model' : 'precomputed', run.sourceNote,
           twelve(run) != null && twelve(inForce.run) != null ? `+12 h ${twelve(run)!.toFixed(1)} km² (was ${twelve(inForce.run)!.toFixed(1)})` : '',
         ].filter(Boolean).join('; '));
     } finally {
       setForecastBusy(false);
     }
+  };
+
+  const onConfirmReport = (clusterId: string) => {
+    const c = clusterStates.find((x) => x.cluster.id === clusterId);
+    if (!c) return;
+    setConfirmations((m) => new Map(m).set(clusterId, now));
+    record({ id: clusterId, synthetic: true }, 'confirm_report', `REPORTED (unconfirmed), P ${c.p.toFixed(2)}, ${c.sources} sources`,
+      'confirmed: used in the next forecast update', CONCEPT_LABEL);
   };
 
   const changeOnScene = (value: number) => {
@@ -450,21 +481,34 @@ export function App() {
   );
   const sidePanel = data && (
     <SidePanel data={data} now={now} timeZone={timeZone} layers={layers} mode={mode} forecastRunId={forecastRunId}
+      conceptPanel={conceptOn && data.concept ? (
+        <ConceptPanel clusters={clusterStates} inForecast={inForce?.run.reports ?? []} now={now} timeZone={timeZone}
+          reportsUntil={Date.parse(data.concept.metadata.window_end)} onConfirm={onConfirmReport}
+          scores={data.concept.scores.filter((x) => Date.parse(x.next_pass_at) <= now)} />
+      ) : null}
       onToggle={(k) => setLayers((l) => ({ ...l, [k]: !l[k] }))}
       crewStates={crewStates} labelOf={shortLabel} onSceneMin={onSceneMin} onSceneChange={changeOnScene}
       onFocusCrew={(s) => setFocus({ lon: s.position[0], lat: s.position[1], key: Date.now() })} />
   );
   const decisionLog = data && (
     <DecisionLog decisions={decisions} scenarioId={data.entry.id} timeZone={timeZone}
-      labelOf={(id) => (id === 'settings' ? 'Crews' : id === 'forecast' ? 'Forecast' : labelOf(id))} />
+      labelOf={(id) => (id === 'settings' ? 'Crews' : id === 'forecast' ? 'Forecast'
+        : id.startsWith('concept-cluster') ? `Fire report ${id.slice(-2)} (concept demo)` : labelOf(id))} />
   );
   const mapProps = data && {
     data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
-    forecastRunId, streetsVersion, fireVersion,
+    forecastRunId, streetsVersion, fireVersion, concept: clusterStates,
   };
+  // CONCEPT DEMO: the full label stays on the map while the synthetic reports are shown.
+  const conceptBanner = conceptOn && (
+    <div data-concept-banner className="pointer-events-none absolute bottom-8 left-2 z-10 max-w-[calc(100%-140px)] rounded border border-dashed border-violet-400 bg-ink-900/85 px-2 py-1 text-[11px] font-bold text-violet-200">
+      {CONCEPT_LABEL}
+    </div>
+  );
   const forecastControl = (compact: boolean) => precomputed && (
     <ForecastControl load={inForce} previous={previousLoad} newObs={newObs} updateTo={forecastOptions.updateTo}
       rerunTo={forecastOptions.rerunTo} blockedNote={forecastOptions.blockedNote} sourceKind={source?.kind ?? 'precomputed'}
+      newReports={forecastOptions.newReports}
       busy={forecastBusy} timeZone={timeZone} compact={compact} onUpdate={onUpdateForecast} />
   );
   // With one tabbed panel, picking a caller (on the map or by a deep link) shows its card.
@@ -532,6 +576,7 @@ export function App() {
           {modeSwitch(true)}
           {demoButton(true)}
           {syntheticLayers.length > 0 && <span className="synthetic-tag">SYNTHETIC calls</span>}
+          {conceptOn && <span className="concept-tag" title={CONCEPT_LABEL} data-concept-header>CONCEPT DEMO</span>}
           {modelStreets && <span className="model-tag truncate">{modelLabel(data!.streetsMeta)} streets</span>}
           {landscape && <div className="ml-auto flex shrink-0 gap-1 text-xs font-bold" role="tablist">{tabButtons}</div>}
         </header>
@@ -542,6 +587,7 @@ export function App() {
             <main ref={mainRef} className="relative min-h-0 flex-1 overflow-hidden">
               <MapView {...mapProps} insetBottom={insetBottom} insetRight={insetRight} fitFire />
               {forecastControl(true)}
+              {conceptBanner}
               <div data-drawer={drawer ?? 'closed'}
                 className={landscape
                   ? `absolute inset-y-0 right-0 z-10 flex flex-col border-l border-ink-600 bg-ink-900 shadow-2xl ${drawer ? '' : 'hidden'}`
@@ -580,7 +626,7 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className={`flex items-center border-b border-ink-700 bg-ink-900 px-3 py-2 ${roomy ? 'gap-3' : 'flex-wrap gap-x-2 gap-y-1.5'}`}>
+      <header className={`flex flex-wrap items-center border-b border-ink-700 bg-ink-900 px-3 py-2 gap-y-1.5 ${roomy ? 'gap-x-3' : 'gap-x-2'}`}>
         <h1 className="whitespace-nowrap text-base font-bold">Nature Shield{roomy && <span className="font-normal text-ink-400"> · Operator screen</span>}</h1>
         <label className="text-xs text-ink-400">
           Scenario{' '}
@@ -591,6 +637,11 @@ export function App() {
         {syntheticLayers.length > 0 && (
           <span className="synthetic-tag whitespace-nowrap" style={{ fontSize: 11, padding: '3px 8px' }}>
             SYNTHETIC {roomy ? syntheticLayers.join(' and ') : 'calls'}
+          </span>
+        )}
+        {conceptOn && (
+          <span className="concept-tag" style={{ fontSize: 11, padding: '3px 8px' }} title={CONCEPT_LABEL} data-concept-header>
+            CONCEPT DEMO
           </span>
         )}
         {modelStreets && (
@@ -638,6 +689,7 @@ export function App() {
               <main className="relative min-w-0 flex-1">
                 <MapView {...mapProps} />
                 {forecastControl(false)}
+                {conceptBanner}
               </main>
             </div>
           ) : (
@@ -646,6 +698,7 @@ export function App() {
               <main className="relative min-w-0 flex-1">
                 <MapView {...mapProps} />
                 {forecastControl(false)}
+                {conceptBanner}
               </main>
               <aside className={`flex ${roomy ? 'w-[310px]' : 'w-[260px]'} shrink-0 flex-col border-l border-ink-700 bg-ink-900`}>
                 <div className="flex border-b border-ink-700 text-xs font-bold uppercase tracking-wider">

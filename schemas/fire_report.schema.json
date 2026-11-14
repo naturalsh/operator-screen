@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://naturalsh.github.io/operator-screen/schemas/fire_report.schema.json",
+  "title": "FireReport",
+  "description": "A report of fire from a person, a drone or a crew. Its weight in the noisy-OR confidence is statement x location quality x observer distance x independence. The voice intake fills the classes; the operator screen clusters reports and the operator confirms them.",
+  "type": "object",
+  "required": ["id", "kind", "observed_at", "place", "statement_class", "location_quality", "observer_distance", "source_ref", "language", "channel", "confidence"],
+  "properties": {
+    "id": { "type": "string" },
+    "kind": { "enum": ["caller", "drone", "crew"] },
+    "observed_at": { "type": "string", "format": "date-time", "description": "When the report was made (UTC)." },
+    "place": {
+      "type": "object", "required": ["lon", "lat", "uncertainty_m"],
+      "properties": {
+        "lon": { "type": "number", "minimum": -180, "maximum": 180 },
+        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+        "uncertainty_m": { "type": "number", "exclusiveMinimum": 0, "description": "Radius of the location uncertainty: a circle, not a point." },
+        "label": { "type": "string" }
+      }
+    },
+    "statement_class": { "enum": ["flames_seen", "fire_near", "smoke", "hearsay"], "description": "What the person says: 'I see flames' 0.6, 'fire is close' 0.4, 'smoke' 0.15, heard of it 0.05." },
+    "location_quality": { "enum": ["gps", "address", "near_place"], "description": "GPS / shared pin 1.0, an address 0.7, 'near X' 0.4." },
+    "observer_distance": { "enum": ["on_site", "within_500m", "far"], "description": "On site 1.0, closer than 500 m 0.8, far 0.4." },
+    "source_ref": { "type": "string", "pattern": "^(sha256:[0-9a-f]{8,64}|crew:.+|drone:.+)$", "description": "Hashed phone number (never the number itself), crew or drone id. The same value twice is not an independent source." },
+    "language": { "type": "string", "description": "ISO 639-1, e.g. tr, el, en, de." },
+    "channel": { "enum": ["voice", "sms", "whatsapp", "radio", "app"] },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Weight of this report in the noisy-OR (0 for a repeat from the same number)." },
+    "synthetic": { "type": "boolean" },
+    "repeat_of_number": { "type": "boolean" },
+    "cluster": { "type": "string" }
+  }
+}

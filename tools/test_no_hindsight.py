@@ -56,7 +56,48 @@ def main() -> int:
                 print(f"FAIL {key} at {cut:%d %b %H:%M}Z")
     print(f"no-hindsight: {len(cutoffs)} cut-off times x {len(ci['edges'])} streets, {failures} failures")
     lib_failures = check_library(ci)
-    return 1 if failures or lib_failures else 0
+    concept_failures = check_concept()
+    return 1 if failures or lib_failures or concept_failures else 0
+
+
+def check_concept() -> int:
+    """CONCEPT DEMO reports: clustering a prefix of the reports (those received by T) gives the same clusters and
+    candidate times up to T as clustering all of them; a forecast started with reports only uses clusters that
+    were candidates by its issue time."""
+    import copy
+    import json
+
+    from build_concept_reports import cluster
+
+    path = Path(__file__).resolve().parents[1] / "public" / "scenarios" / EVENT / "concept_reports.json"
+    if not path.exists():
+        print("concept reports: not built, skipped")
+        return 0
+    data = json.loads(path.read_text(encoding="utf-8"))
+    recs = sorted(data["records"], key=lambda r: r["observed_at"])
+    iso = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00"))
+    full = cluster(copy.deepcopy(recs))
+    full_of = {rid: c["id"] for c in full for rid in c["reports"]}
+    full_cand = {c["id"]: c.get("candidate_at") for c in full}
+    failures = 0
+    for k in range(1, len(recs) + 1):
+        cut = iso(recs[k - 1]["observed_at"])
+        part = cluster(copy.deepcopy([r for r in recs if iso(r["observed_at"]) <= cut]))
+        for c in part:
+            members = set(c["reports"])
+            if any(full_of[rid] != c["id"] for rid in members):
+                failures += 1
+                print(f"FAIL concept clusters at {cut:%d %H:%M}: {c['id']} differs")
+            if c.get("candidate_at") != (full_cand[c["id"]] if full_cand[c["id"]] and iso(full_cand[c["id"]]) <= cut else None):
+                failures += 1
+                print(f"FAIL concept candidate time of {c['id']} at {cut:%d %H:%M}")
+    cand = {c["id"]: iso(c["candidate_at"]) for c in data["clusters"] if c.get("candidate_at")}
+    for f in data["forecasts"]:
+        if any(cand.get(cid) is None or cand[cid] > iso(f["issued_at"]) for cid in f["reports"]):
+            failures += 1
+            print(f"FAIL concept forecast {f['id']} uses a report cluster that was not a candidate by its issue time")
+    print(f"concept reports: {len(recs)} prefixes, {len(data['forecasts'])} forecasts with reports, {failures} failures")
+    return failures
 
 
 def check_library(ci: dict) -> int:

@@ -134,7 +134,7 @@ export interface Decision {
   operator: string;
   report_id: string;
   action: 'take' | 'confirm_urgency' | 'dispatch' | 'dispatch_no_access' | 'dispatch_no_crew' | 'reroute' | 'reroute_no_access'
-    | 'reassign' | 'unassigned' | 'settings' | 'update_forecast';
+    | 'reassign' | 'unassigned' | 'settings' | 'update_forecast' | 'confirm_report';
   previous: string | null;
   new: string | null;
   note?: string;
@@ -155,7 +155,56 @@ export interface ScenarioEntry {
   /** A rehearsed scene (Demo button, `?demo=1`): the time and the call selected. */
   demo?: { t: string; call?: string; note?: string };
   timezone?: string;
-  files: { fire_front: string; caller_reports: string; street_access: string; responders?: string; forecast_library?: string };
+  files: { fire_front: string; caller_reports: string; street_access: string; responders?: string; forecast_library?: string;
+    concept_reports?: string };
+}
+
+/** A report of fire from a person, a drone or a crew (schemas/fire_report.schema.json). */
+export interface FireReport {
+  id: string;
+  kind: 'caller' | 'drone' | 'crew';
+  observed_at: string;
+  place: { lon: number; lat: number; uncertainty_m: number; label?: string };
+  statement_class: 'flames_seen' | 'fire_near' | 'smoke' | 'hearsay';
+  location_quality: 'gps' | 'address' | 'near_place';
+  observer_distance: 'on_site' | 'within_500m' | 'far';
+  /** Hashed phone number or crew id: reports with the same one are not independent. */
+  source_ref: string;
+  language: string;
+  channel: string;
+  /** Weight in the noisy-OR (0 for a repeat call from the same number). */
+  confidence: number;
+  synthetic?: boolean;
+  repeat_of_number?: boolean;
+  cluster?: string;
+}
+
+/** Reports of one place, clustered in time order (tools/build_concept_reports.py). */
+export interface ReportCluster {
+  id: string;
+  reports: string[];
+  lon: number;
+  lat: number;
+  /** When it first had two independent sources and P >= 0.5; its disc (for the model) is fixed then. */
+  candidate_at?: string;
+  radius_m?: number;
+  p_at_candidate?: number;
+}
+
+export interface ConceptScore {
+  issued_at: string; next_pass_at: string; horizon_hours: number; variant: string; reports: string[];
+  false_reports: number; new_detections: number; new_detections_inside_pct: number | null; forecast_km2: number;
+  added_seen_burning_pct: number | null;
+}
+
+/** CONCEPT DEMO file: synthetic reports, clusters, "with reports" forecasts and their score. */
+export interface ConceptReports {
+  metadata: FileMeta & { label: string; window_end: string; concept_demo: true };
+  records: FireReport[];
+  clusters: ReportCluster[];
+  streets: string[];
+  forecasts: (LibraryForecast & { reports: string[]; base_forecast: string })[];
+  scores: ConceptScore[];
 }
 
 /** One precomputed forecast (tools/build_forecast_library.py); a live model server answers with the same record. */
@@ -194,6 +243,8 @@ export interface ScenarioData {
   responders: Responder[];
   /** Precomputed forecasts for "Update forecast" (absent: the forecast in force follows the file's updates). */
   library?: ForecastLibrary;
+  /** CONCEPT DEMO: synthetic fire reports and the forecasts started with them. */
+  concept?: ConceptReports;
   respondersMeta: FileMeta;
 }
 

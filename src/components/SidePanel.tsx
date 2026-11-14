@@ -12,6 +12,7 @@ const LAYER_LABEL: Record<LayerKey, string> = {
   nearby: 'Fire nearby (satellite), within 1 km of the selected caller and routes',
   callers: 'Caller reports',
   crews: 'Response points and routes',
+  concept: 'Concept demo: fire reports (synthetic)',
 };
 
 interface Props {
@@ -29,6 +30,8 @@ interface Props {
   onFocusCrew: (state: CrewState) => void;
   /** The forecast the operator loaded (forecast library); undefined: the latest update in the file. */
   forecastRunId?: string | null;
+  /** CONCEPT DEMO panel (fire reports), shown under the layers when the concept layer is on. */
+  conceptPanel?: React.ReactNode;
 }
 
 type Kind = 'synthetic' | 'model' | 'real';
@@ -51,7 +54,7 @@ function Section({ title, kind, label, children }: { title: string; kind?: Kind;
   );
 }
 
-export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew, forecastRunId }: Props) {
+export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew, forecastRunId, conceptPanel }: Props) {
   const fire = data.fire.features.map((f) => f.properties);
   const cur = currentForecast(fire, now, forecastRunId);
   const hasUpdates = cur?.set === 'update';
@@ -90,7 +93,8 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
     <div className="h-full overflow-y-auto text-sm">
       <Section title="Layers">
         {(Object.keys(LAYER_LABEL) as LayerKey[])
-          .filter((k) => (k !== 'initial' || hasUpdates) && (mode === 'detailed' || (k !== 'initial' && k !== 'nearby'))).map((k) => (
+          .filter((k) => (k !== 'initial' || hasUpdates) && (mode === 'detailed' || (k !== 'initial' && k !== 'nearby'))
+            && (k !== 'concept' || !!data.concept)).map((k) => (
           <label key={k} className="flex cursor-pointer items-center gap-2 py-0.5">
             <input type="checkbox" checked={layers[k]} onChange={() => onToggle(k)} />
             {LAYER_LABEL[k]}
@@ -100,6 +104,8 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
           <p className="mt-1 text-xs text-ink-400">Detailed mode adds the initial forecast, satellite sensors, model/satellite closures and the fire-nearby warning.</p>
         )}
       </Section>
+
+      {conceptPanel}
 
       {crewStates.length > 0 && (
         <Section title={`Crews · ${crewStates.filter((s) => s.status === 'available').length} of ${crewStates.length} available`}>
