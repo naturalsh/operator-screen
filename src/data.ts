@@ -261,8 +261,15 @@ export function streetsNear(streets: StreetFeature[], caller: CallerReport, radi
   return out.sort((a, b) => a.dist - b.dist);
 }
 
+const TIME_FORMATS = new Map<string, Intl.DateTimeFormat>();
+/** "22 Jun, 04:02" in the given time zone (one formatter per zone: creating one is slow on a phone). */
 export function fmtTime(ms: number, timeZone: string): string {
-  return new Intl.DateTimeFormat('en-GB', { timeZone, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(ms);
+  let f = TIME_FORMATS.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-GB', { timeZone, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
+    TIME_FORMATS.set(timeZone, f);
+  }
+  return f.format(ms);
 }
 
 export function fmtAge(ms: number): string {

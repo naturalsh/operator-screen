@@ -88,3 +88,10 @@ body { background: #07090d; color: #f2f6fb; font-size: 14px; }
 /* "Forecast updated: new VIIRS pass": slides in at the top of the map. */
 .ns-toast { animation: ns-toast-in 0.25s ease-out; }
 @keyframes ns-toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Tags of the observed edge, the fire now estimate and the look-ahead line (MapView, placeTags). */
+.ns-fire-tag { pointer-events: none; white-space: nowrap; font: 600 11px/1.2 system-ui, sans-serif; padding: 1px 5px; border-radius: 3px;
+  color: #fff; background: rgba(63, 63, 70, 0.85); margin: 2px; }
+.ns-fire-tag[data-role="obs"] { color: #0b0f17; background: rgba(255, 255, 255, 0.92); }
+.ns-fire-tag[data-role="now"] { background: rgba(240, 83, 43, 0.92); }
+.ns-fire-tag[data-role="look"] { color: #1c1917; background: rgba(250, 204, 21, 0.95); }

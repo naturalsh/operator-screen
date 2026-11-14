@@ -25,7 +25,12 @@ interface Props {
   compact?: boolean;
   /** Phone held sideways: everything on one row. */
   thin?: boolean;
+  /** True while the slider is being dragged (the screen can skip expensive work until it is released). */
+  onScrub?: (scrubbing: boolean) => void;
 }
+
+/** While dragging, the time is passed on at most this often; the final value is passed on release. */
+const SCRUB_MS = 120;
 
 const KIND_COLOUR = { auto: '#fde047', operator: '#38bdf8', other: '#cbd5e1' } as const;
 /** Marks closer than this on screen are drawn as one (wider than a mark's 14 px touch target). */
@@ -112,10 +117,39 @@ function Marks({ start, end, marks, timeZone, height }: { start: number; end: nu
   );
 }
 
-export function TimeBar({ start, end, now, playing, speed, timeZone, marks, onSeek, onPlay, onSpeed, compact, thin }: Props) {
+export function TimeBar({ start, end, now: applied, playing, speed, timeZone, marks, onSeek, onPlay, onSpeed, compact, thin, onScrub }: Props) {
+  // Dragging: the thumb and the clock follow the finger at once; the screen gets the time at most every SCRUB_MS
+  // (a phone cannot redraw the map at every input event) and the exact value on release.
+  const [drag, setDrag] = useState<number | null>(null);
+  const dragging = useRef(false);
+  const pending = useRef<number | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flush = () => {
+    timer.current = null;
+    if (pending.current != null) { onSeek(pending.current); pending.current = null; }
+  };
+  const begin = () => { if (!dragging.current) { dragging.current = true; onScrub?.(true); } };
+  const end_ = () => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    if (timer.current) clearTimeout(timer.current);
+    flush();
+    setDrag(null);
+    onScrub?.(false);
+  };
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const change = (v: number) => {
+    if (!dragging.current) { onSeek(v); return; }       // keyboard, or a tap on the track: apply at once
+    setDrag(v);
+    pending.current = v;
+    if (!timer.current) timer.current = setTimeout(flush, SCRUB_MS);
+  };
+  const now = drag ?? applied;
   const slider = (cls: string) => (
     <input type="range" className={cls} min={start} max={end} step={60000} value={now}
-      aria-label="Scenario time" onChange={(e) => onSeek(Number(e.target.value))} />
+      aria-label="Scenario time" data-scrubbing={drag != null ? 'true' : undefined}
+      onPointerDown={begin} onTouchStart={begin} onPointerUp={end_} onTouchEnd={end_} onPointerCancel={end_} onTouchCancel={end_}
+      onBlur={end_} onChange={(e) => change(Number(e.target.value))} />
   );
   const speedSelect = (cls: string) => (
     <select value={speed} onChange={(e) => onSpeed(Number(e.target.value))} aria-label="Playback speed" className={cls}>

@@ -11,6 +11,7 @@
 import type { Geometry } from 'geojson';
 import type { ConceptReports, FireFront, ForecastLibrary, LibraryForecast, StreetFeature } from './types';
 import { NEVER } from './data';
+import { withTimeout } from './latest';
 
 export type ForecastTrigger = 'ignition' | 'observation' | 'scheduled' | 'live';
 
@@ -50,7 +51,8 @@ export interface ForecastRequest {
 
 export interface ForecastSource {
   readonly kind: 'precomputed' | 'live';
-  run(req: ForecastRequest): Promise<ForecastRun | null>;
+  /** `signal`: aborted when a newer request replaces this one (see LatestRequest). */
+  run(req: ForecastRequest, signal?: AbortSignal): Promise<ForecastRun | null>;
 }
 
 /** One library entry (or a live server's answer, which has the same shape) as a ForecastRun. */
@@ -132,11 +134,11 @@ export class PrecomputedForecasts implements ForecastSource {
 export class LiveForecasts implements ForecastSource {
   readonly kind = 'live' as const;
   constructor(readonly url: string, readonly fallback: PrecomputedForecasts, readonly timeoutMs = 3000) {}
-  async run(req: ForecastRequest): Promise<ForecastRun | null> {
+  async run(req: ForecastRequest, signal?: AbortSignal): Promise<ForecastRun | null> {
     try {
       const res = await fetch(`${this.url.replace(/\/$/, '')}/forecast`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: withTimeout(signal, this.timeoutMs),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const f = (await res.json()) as LibraryForecast;

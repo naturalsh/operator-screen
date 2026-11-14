@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map as MLMap } from 'maplibre-gl';
+import maplibregl, { type ExpressionSpecification, type Map as MLMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL, URGENCY_ORDER,
@@ -9,6 +9,7 @@ import {
 import { resolveBasemap } from '../basemap';
 import { CONCEPT_LABEL, STATEMENT_LABEL, circle, type ClusterState } from '../reports';
 import { CREW_STATUS_COLOUR, type CrewStatus } from '../crews';
+import { SourceQueue } from '../sourceQueue';
 import { lookLabel, nowcastSource, type Nowcast } from '../forecast';
 import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
 
@@ -62,7 +63,7 @@ const NEARBY_RADIUS_M = 1000;
 
 const LAYER_GROUPS: Record<LayerKey, string[]> = {
   forecast: ['forecast-zone-lines', 'forecast-zone-dotted', 'nowcast-fill', 'front-band', 'front-edges', 'nowcast-spots',
-    'lookahead-line', 'observed-line', 'forecast-tag'],
+    'lookahead-line', 'observed-line'],
   initial: ['initial-pending', 'initial-reached', 'initial-label'],
   observed: ['hotspots-old', 'hotspots', 'burned-area', 'flame-front'],
   streets: ['streets-near', 'streets', 'streets-forecast'],
@@ -105,7 +106,8 @@ function callersFc(callers: CallerReport[], stages: Record<string, Stage>,
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [c.place.lon, c.place.lat] },
         properties: { id: c.id, urgency, colour: URGENCY_COLOUR[urgency], stage, ring: STAGE_COLOUR[stage],
-          rank: URGENCY_ORDER[urgency], label: c.people_at_risk > 0 ? `${c.people_at_risk} at risk` : '' },
+          rank: URGENCY_ORDER[urgency], label: c.people_at_risk > 0 ? `${c.people_at_risk} at risk` : '',
+          reported_t: Date.parse(c.reported_at) },
       };
     }),
   };
@@ -143,10 +145,12 @@ interface Props {
   nowcast?: Nowcast | null;
   /** The horizon chosen with "Look ahead" (hours; 0 = none). */
   lookAhead?: number;
+  /** Called once, when the map has first drawn everything it shows (tiles, data). */
+  onFirstIdle?: () => void;
 }
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
-  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1 }: Props) {
+  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
@@ -180,7 +184,54 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   const nowcastKey = nowcast ? `${nowcast.run.id}|${nowcast.stepAt}|${nowcast.observed?.at}|${lookAhead}|${mode}` : '';
   const vehicleMarkers = useRef(new Map<string, maplibregl.Marker>());
 
-  /** Push the current time, selection and toggles into the map. */
+  // Times at which a time-dependent filter or paint can change its result: the map is only told when one of
+  // them is crossed (moving the slider between two such times changes nothing on the map, so nothing is sent).
+  const fireEvents = useMemo(() => {
+    const t = data.fire.features.map((f) => f.properties.t).filter(Number.isFinite);
+    return [...t, ...t.map((x) => x + SIMPLE_FIRE_H * 3600000), ...t.map((x) => x + ACTIVE_FIRE_H * 3600000)].sort((a, b) => a - b);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, fireVersion]);
+  const streetEvents = useMemo(() => {
+    const out: number[] = [];
+    for (const f of data.streets.features) {
+      const p = f.properties;
+      for (const x of [p.t, p.tm, p.ts, p.tn, p.tnear]) if (x != null && x < 9e15) out.push(x);
+    }
+    return out.sort((a, b) => a - b);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, streetsVersion]);
+  /** What was last sent to the map, per group: a group is only updated when its signature changes. */
+  const applied = useRef(new Map<string, string>());
+  /** Tags of the three lines ("Seen by satellite 04:02", "Fire now (model estimate)", "Expected by 04:55 (+1 h)").
+   * DOM markers rebuilt from the current state each time: a symbol layer fed by setData kept drawing old tags after
+   * fast slider moves (MapLibre 4.7). */
+  const tagMarkers = useRef<maplibregl.Marker[]>([]);
+  const placeTags = () => {
+    const map = mapRef.current;
+    tagMarkers.current.forEach((m) => m.remove());
+    tagMarkers.current = [];
+    if (!map || !latest.current.layers.forecast) return;
+    const fc = nowcastTagPoints(latest.current.nowcast, latest.current.lookAhead, latest.current.mode, latest.current.data.entry.timezone ?? 'UTC');
+    for (const f of fc.features) {
+      const p = f.properties as { role: string; text: string; side: string };
+      const el = document.createElement('div');
+      el.className = 'ns-fire-tag';
+      el.dataset.role = p.role;
+      el.textContent = p.text;
+      const anchor = ({ n: 'bottom', s: 'top', e: 'left', w: 'right' } as Record<string, maplibregl.PositionAnchor>)[p.side] ?? 'center';
+      tagMarkers.current.push(new maplibregl.Marker({ element: el, anchor, offset: [0, 0] })
+        .setLngLat((f.geometry as GeoJSON.Point).coordinates as [number, number]).addTo(map));
+    }
+  };
+  /** GeoJSON updates: one in flight per source, latest wins (see sourceQueue.ts). */
+  const queue = useRef<SourceQueue | null>(null);
+  const once = (group: string, signature: string, apply: () => void) => {
+    if (applied.current.get(group) === signature) return;
+    applied.current.set(group, signature);
+    apply();
+  };
+
+  /** Push the current time, selection and toggles into the map: only what changed since the last call. */
   const sync = () => {
     const map = mapRef.current;
     if (!map || !ready.current) return;
@@ -188,68 +239,90 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     const upTo: ExpressionSpecification = ['<=', ['get', 't'], t];
     const kind = (k: string): ExpressionSpecification => ['==', ['get', 'kind'], k];
     const obs = (o: string): ExpressionSpecification => ['==', ['get', 'observation_type'], o];
+    const simple = latest.current.mode === 'simple';
+    const mode = latest.current.mode;
     // "Fire now (estimated)" and the horizons from now come from their own source (see the nowcast effect).
     const cur = currentForecast(d.fire.features.map((f) => f.properties), t, latest.current.forecastRunId);
-    // Optional: the single forecast made at ignition, for comparison (only when updates exist).
-    const initial: ExpressionSpecification = ['all', kind('forecast'), ['==', ['get', 'set'], cur?.set === 'update' || latest.current.nowcast ? 'initial' : 'none']];
-    map.setFilter('initial-reached', ['all', initial, upTo]);
-    map.setFilter('initial-label', ['all', initial, upTo]);
-    map.setFilter('initial-pending', ['all', initial, ['>', ['get', 't'], t]]);
-    // Satellite detections: the last ACTIVE_FIRE_H hours are active fire (bright), older ones burned (dark grey).
-    const recent: ExpressionSpecification = ['>', ['get', 't'], t - ACTIVE_FIRE_H * 3600000];
-    const simpleMode = latest.current.mode === 'simple';
+    const fireStep = countUpTo(fireEvents, t);
+    once('fire', `${fireStep}|${mode}|${cur?.set ?? ''}|${!!latest.current.nowcast}`, () => {
+      // Optional: the single forecast made at ignition, for comparison (only when updates exist).
+      const initial: ExpressionSpecification = ['all', kind('forecast'), ['==', ['get', 'set'], cur?.set === 'update' || latest.current.nowcast ? 'initial' : 'none']];
+      map.setFilter('initial-reached', ['all', initial, upTo]);
+      map.setFilter('initial-label', ['all', initial, upTo]);
+      map.setFilter('initial-pending', ['all', initial, ['>', ['get', 't'], t]]);
+      // Satellite detections: the last ACTIVE_FIRE_H hours are active fire (bright), older ones burned (dark grey).
+      const recent: ExpressionSpecification = ['>', ['get', 't'], t - ACTIVE_FIRE_H * 3600000];
+      // Simple: only VIIRS of the last SIMPLE_FIRE_H hours (the 1 km pixels are large squares that hide the map).
+      map.setFilter('hotspots', simple
+        ? ['all', obs('hotspots'), upTo, ['>', ['get', 't'], t - SIMPLE_FIRE_H * 3600000], ['==', ['get', 'instrument'], 'VIIRS']]
+        : ['all', obs('hotspots'), upTo, recent]);
+      map.setFilter('flame-front', simple ? ['all', obs('flame_front'), upTo, ['>', ['get', 't'], t - SIMPLE_FIRE_H * 3600000]]
+        : ['all', obs('flame_front'), upTo]);
+      map.setFilter('burned-area', ['all', obs('burned_area'), upTo]);
+      // Active fire: one bright colour in Simple, the sensor colours in Detailed.
+      map.setPaintProperty('hotspots', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : INSTRUMENT_COLOUR);
+      map.setPaintProperty('hotspots', 'fill-opacity', ['match', ['get', 'instrument'], 'VIIRS', simple ? 0.3 : 0.4, simple ? 0.1 : 0.15]);
+      map.setPaintProperty('hotspots', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : INSTRUMENT_COLOUR);
+      // Older detections (burned): dark grey, Detailed only.
+      map.setFilter('hotspots-old', ['all', obs('hotspots'), upTo, ['!', recent]]);
+      map.setPaintProperty('flame-front', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : ['case', recent, ACTIVE_FIRE_COLOUR, OLD_FIRE_COLOUR]);
+      map.setPaintProperty('flame-front', 'fill-opacity', simple ? 0.35 : ['case', recent, 0.9, 0.5]);
+      map.setPaintProperty('flame-front', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : '#fef08a');
+    });
     // Look ahead: one horizon, dashed; Detailed also draws the other horizons faint.
     const look = `h${latest.current.lookAhead}`;
-    map.setFilter('lookahead-line', ['==', ['get', 'role'], look]);
-    map.setFilter('forecast-zone-lines', ['all', ['match', ['get', 'role'], ['h0.5', 'h1', 'h2', 'h3'], true, false], ['!=', ['get', 'role'], look]]);
-    map.setFilter('forecast-zone-dotted', ['all', ['==', ['get', 'role'], 'h6'], ['!=', ['get', 'role'], look]]);
-    // Simple: only VIIRS of the last SIMPLE_FIRE_H hours (the 1 km pixels are large squares that hide the map).
-    map.setFilter('hotspots', simpleMode
-      ? ['all', obs('hotspots'), upTo, ['>', ['get', 't'], t - SIMPLE_FIRE_H * 3600000], ['==', ['get', 'instrument'], 'VIIRS']]
-      : ['all', obs('hotspots'), upTo, recent]);
-    map.setFilter('flame-front', simpleMode ? ['all', obs('flame_front'), upTo, ['>', ['get', 't'], t - SIMPLE_FIRE_H * 3600000]]
-      : ['all', obs('flame_front'), upTo]);
-    map.setFilter('burned-area', ['all', obs('burned_area'), upTo]);
-    map.setFilter('streets-near', ['in', ['get', 'id'], ['literal', near]]);
-    // Blocked by a satellite detection only (the model has not reached the street yet): dashed red.
-    // Closed by the forecast only (no satellite detection yet): a forecast closure, orange dashed in both modes.
-    const forecastOnlyExpr: ExpressionSpecification = ['all', ['<=', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t]];
-    const simple = latest.current.mode === 'simple';
-    map.setFilter('streets-forecast', forecastOnlyExpr);
-    map.setFilter('streets', ['!', forecastOnlyExpr]);
-    // Active fire: one bright colour in Simple, the sensor colours in Detailed. The 1 km MODIS / SLSTR pixels stay
-    // light so they do not hide the estimated fire under them.
-    map.setPaintProperty('hotspots', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : INSTRUMENT_COLOUR);
-    map.setPaintProperty('hotspots', 'fill-opacity', ['match', ['get', 'instrument'], 'VIIRS', simple ? 0.3 : 0.4, simple ? 0.1 : 0.15]);
-    map.setPaintProperty('hotspots', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : INSTRUMENT_COLOUR);
-    // Older detections (burned): dark grey in both modes, the 1 km pixels hardly at all.
-    map.setFilter('hotspots-old', ['all', obs('hotspots'), upTo, ['!', recent]]);
-    map.setPaintProperty('flame-front', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : ['case', recent, ACTIVE_FIRE_COLOUR, OLD_FIRE_COLOUR]);
-    map.setPaintProperty('flame-front', 'fill-opacity', simple ? 0.35 : ['case', recent, 0.9, 0.5]);
-    map.setPaintProperty('flame-front', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : '#fef08a');
-
-    // Fire nearby: a coarse pixel covers the street and neither source has closed it yet. (Not `t > now`:
-    // a street that is never closed has t = scenario start.)
-    map.setFilter('streets-nearby', ['all', ['<=', ['coalesce', ['get', 'tn'], 9e15], t],
-      ['>', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t],
-      ['in', ['get', 'id'], ['literal', latest.current.nearbyIds]]]);
-    // Streets the fire has not come near yet (no forecast in force so far within 3 km; mostly the town of
-    // Marmaris) are barely visible. Routes and the highlight around a selected caller are separate layers.
-    map.setPaintProperty('streets', 'line-opacity', ['case', ['<=', ['coalesce', ['get', 'tnear'], 9e15], t], 1, 0.07]);
-    map.setPaintProperty('streets', 'line-color', ['match',
-      ['case', ['<=', ['get', 't'], t], ['get', 'status'], ['get', 'before']],
-      'open', STATUS_COLOUR.open, 'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked]);
-    map.setFilter('callers-selected', ['==', ['get', 'id'], sel ?? '']);
-    const [reportPts, discs] = conceptFc(latest.current.concept);
-    (map.getSource('report-points') as GeoJSONSource | undefined)?.setData(reportPts);
-    (map.getSource('clusters') as GeoJSONSource | undefined)?.setData(discs);
-    (map.getSource('callers') as GeoJSONSource).setData(
-      callersFc(visibleCallers(d.callers, t), st, uo));
+    once('look', look, () => {
+      map.setFilter('lookahead-line', ['==', ['get', 'role'], look]);
+      map.setFilter('forecast-zone-lines', ['all', ['match', ['get', 'role'], ['h0.5', 'h1', 'h2', 'h3'], true, false], ['!=', ['get', 'role'], look]]);
+      map.setFilter('forecast-zone-dotted', ['all', ['==', ['get', 'role'], 'h6'], ['!=', ['get', 'role'], look]]);
+    });
+    once('near', near.join(','), () => map.setFilter('streets-near', ['in', ['get', 'id'], ['literal', near]]));
+    const streetStep = countUpTo(streetEvents, t);
+    once('streets', `${streetStep}|${streetsVersion}|${latest.current.nearbyIds.join(',')}`, () => {
+      // Closed by the forecast only (no satellite detection yet): a forecast closure, orange dashed in both modes.
+      const forecastOnlyExpr: ExpressionSpecification = ['all', ['<=', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t]];
+      map.setFilter('streets-forecast', forecastOnlyExpr);
+      map.setFilter('streets', ['!', forecastOnlyExpr]);
+      // Fire nearby: a coarse pixel covers the street and neither source has closed it yet.
+      map.setFilter('streets-nearby', ['all', ['<=', ['coalesce', ['get', 'tn'], 9e15], t],
+        ['>', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t],
+        ['in', ['get', 'id'], ['literal', latest.current.nearbyIds]]]);
+      // Streets the fire has not come near yet are barely visible.
+      map.setPaintProperty('streets', 'line-opacity', ['case', ['<=', ['coalesce', ['get', 'tnear'], 9e15], t], 1, 0.07]);
+      map.setPaintProperty('streets', 'line-color', ['match',
+        ['case', ['<=', ['get', 't'], t], ['get', 'status'], ['get', 'before']],
+        'open', STATUS_COLOUR.open, 'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked]);
+    });
+    once('selected', sel ?? '', () => map.setFilter('callers-selected', ['all', ['<=', ['get', 'reported_t'], t], ['==', ['get', 'id'], sel ?? '']]));
+    const concept = latest.current.concept;
+    once('concept', concept.map((c) => `${c.cluster.id}:${c.reports.length}:${c.candidate}:${c.confirmedAt != null}:${c.p.toFixed(2)}`).join(','), () => {
+      const [reportPts, discs] = conceptFc(concept);
+      queue.current?.set('report-points', reportPts);
+      queue.current?.set('clusters', discs);
+    });
+    // Callers: every report is in the source from the start; the filter shows those received by now and the
+    // operator's stage and urgency are feature state. Nothing is re-sent to the map's worker when time moves.
+    const visible = visibleCallers(d.callers, t);
+    once('callers', String(visible.length), () => {
+      const shown: ExpressionSpecification = ['<=', ['get', 'reported_t'], t];
+      for (const id of ['callers-shadow', 'callers', 'callers-label']) map.setFilter(id, shown);
+      map.setFilter('callers-selected', ['all', shown, ['==', ['get', 'id'], sel ?? '']]);
+      applied.current.delete('selected');
+    });
+    once('caller-state', d.callers.map((c) => `${st[c.id] ?? 'new'}:${uo(c)}`).join(','), () => {
+      for (const c of d.callers) {
+        const stage = st[c.id] ?? 'new';
+        const urgency = uo(c);
+        map.setFeatureState({ source: 'callers', id: c.id }, { stage, ring: STAGE_COLOUR[stage], urgency, colour: URGENCY_COLOUR[urgency] });
+      }
+    });
     const ok = rts.filter((r) => !r.cut).flatMap((r) => r.edgeIds);
     const cut = rts.filter((r) => r.cut).flatMap((r) => r.edgeIds);
-    map.setFilter('routes-casing', ['in', ['get', 'id'], ['literal', [...ok, ...cut]]]);
-    map.setFilter('routes', ['in', ['get', 'id'], ['literal', ok]]);
-    map.setFilter('routes-cut', ['in', ['get', 'id'], ['literal', cut]]);
+    once('routes', `${ok.join(',')}|${cut.join(',')}`, () => {
+      map.setFilter('routes-casing', ['in', ['get', 'id'], ['literal', [...ok, ...cut]]]);
+      map.setFilter('routes', ['in', ['get', 'id'], ['literal', ok]]);
+      map.setFilter('routes-cut', ['in', ['get', 'id'], ['literal', cut]]);
+    });
     // Crew vehicles: one DOM marker each, moved to the crew's position for the time shown.
     const shown = on.crews ? latest.current.vehicles : [];
     for (const [id, marker] of vehicleMarkers.current) {
@@ -274,12 +347,14 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       el.style.setProperty('--vehicle', CREW_STATUS_COLOUR[v.status]);
       el.querySelector('.ns-vehicle-label')!.textContent = `${v.name} · ${v.label}`;
     }
-    for (const [key, ids] of Object.entries(LAYER_GROUPS) as [LayerKey, string[]][]) {
-      for (const id of ids) {
-        const shownHere = on[key] && !(simple ? DETAILED_ONLY.includes(id) : SIMPLE_ONLY.includes(id));
-        map.setLayoutProperty(id, 'visibility', shownHere ? 'visible' : 'none');
+    once('visibility', `${mode}|${JSON.stringify(on)}`, () => {
+      for (const [key, ids] of Object.entries(LAYER_GROUPS) as [LayerKey, string[]][]) {
+        for (const id of ids) {
+          const shownHere = on[key] && !(simple ? DETAILED_ONLY.includes(id) : SIMPLE_ONLY.includes(id));
+          map.setLayoutProperty(id, 'visibility', shownHere ? 'visible' : 'none');
+        }
       }
-    }
+    });
   };
 
   useEffect(() => {
@@ -321,9 +396,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.on('load', () => {
       map.addSource('fire', { type: 'geojson', data: data.fire });
       map.addSource('nowcast', { type: 'geojson', data: latest.current.nowcast?.fc ?? { type: 'FeatureCollection', features: [] } });
-      map.addSource('forecast-tags', { type: 'geojson', data: nowcastTagPoints(latest.current.nowcast, latest.current.lookAhead, latest.current.mode, data.entry.timezone ?? 'UTC') });
       map.addSource('streets', { type: 'geojson', data: data.streets });
-      map.addSource('callers', { type: 'geojson', data: callersFc([], {}, (c) => c.urgency) });
+      map.addSource('callers', { type: 'geojson', data: callersFc(data.callers, {}, (c) => c.urgency), promoteId: 'id' });
       map.addSource('responders', { type: 'geojson', data: {
         type: 'FeatureCollection',
         features: data.responders.map((r) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.place.lon, r.place.lat] },
@@ -410,20 +484,6 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         layout: { 'symbol-placement': 'line', 'text-field': ['concat', 'initial +', ['to-string', ['get', 'horizon_hours']], ' h'],
           'text-font': ['Noto Sans Regular'], 'text-size': 11, 'symbol-spacing': 400 },
         paint: { 'text-color': INITIAL_FORECAST_COLOUR, 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
-      // Two tags per horizon at most, at two tips of its contour (see nowcastTagPoints); "Fire now" once.
-      map.addLayer({ id: 'forecast-tag', type: 'symbol', source: 'forecast-tags',
-        layout: { 'text-field': ['get', 'text'],
-          'text-font': ['Noto Sans Regular'], 'text-size': 11,
-          // Just outside the contour, on the side the tip faces.
-          'text-anchor': ['match', ['get', 'side'], 'n', 'bottom', 's', 'top', 'e', 'left', 'w', 'right', 'ne', 'bottom-left',
-            'nw', 'bottom-right', 'se', 'top-left', 'top-right'],
-          'text-offset': ['match', ['get', 'side'], 'n', ['literal', [0, -0.2]], 's', ['literal', [0, 0.2]], 'e', ['literal', [0.3, 0]],
-            'w', ['literal', [-0.3, 0]], 'ne', ['literal', [0.2, -0.2]], 'nw', ['literal', [-0.2, -0.2]], 'se', ['literal', [0.2, 0.2]],
-            ['literal', [-0.2, 0.2]]],
-          'text-allow-overlap': true, 'text-padding': 2, 'symbol-sort-key': ['get', 'horizon_hours'] },
-        paint: { 'text-color': ['match', ['get', 'role'], 'obs', '#0b0f17', '#ffffff'],
-          'text-halo-color': ['match', ['get', 'role'], 'now', NOWCAST_EDGE, 'obs', '#ffffff', 'look', '#854d0e', '#3f3f46'], 'text-halo-width': 1.6 } });
-
       map.addLayer({ id: 'responders', type: 'circle', source: 'responders',
         paint: { 'circle-radius': 8, 'circle-color': '#0e7490', 'circle-stroke-color': '#a5f3fc', 'circle-stroke-width': 2.5 } });
       map.addLayer({ id: 'responders-label', type: 'symbol', source: 'responders',
@@ -433,16 +493,16 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
 
       // A soft dark shadow under each caller, so the dots stay readable on the fire.
       map.addLayer({ id: 'callers-shadow', type: 'circle', source: 'callers',
-        paint: { 'circle-radius': ['match', ['get', 'urgency'], 'life_threat', 13, 'urgent', 11.5, 10], 'circle-color': '#000000',
+        paint: { 'circle-radius': ['match', ['coalesce', ['feature-state', 'urgency'], ['get', 'urgency']], 'life_threat', 13, 'urgent', 11.5, 10], 'circle-color': '#000000',
           'circle-opacity': 0.45, 'circle-blur': 0.6 } });
       map.addLayer({ id: 'callers-selected', type: 'circle', source: 'callers',
         paint: { 'circle-radius': 17, 'circle-color': 'rgba(255,255,255,0.15)', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2.5 } });
       map.addLayer({ id: 'callers', type: 'circle', source: 'callers',
-        paint: { 'circle-radius': ['match', ['get', 'urgency'], 'life_threat', 9, 'urgent', 7.5, 6],
-          'circle-color': ['get', 'colour'],
+        paint: { 'circle-radius': ['match', ['coalesce', ['feature-state', 'urgency'], ['get', 'urgency']], 'life_threat', 9, 'urgent', 7.5, 6],
+          'circle-color': ['coalesce', ['feature-state', 'colour'], ['get', 'colour']],
           // A new caller has a thin white edge; once handled the ring takes the stage colour.
-          'circle-stroke-color': ['match', ['get', 'stage'], 'new', '#ffffff', ['get', 'ring']],
-          'circle-stroke-width': ['match', ['get', 'stage'], 'new', 1.5, 'taken', 2.5, 3.5] } });
+          'circle-stroke-color': ['match', ['coalesce', ['feature-state', 'stage'], 'new'], 'new', '#ffffff', ['coalesce', ['feature-state', 'ring'], '#ffffff']],
+          'circle-stroke-width': ['match', ['coalesce', ['feature-state', 'stage'], 'new'], 'new', 1.5, 'taken', 2.5, 3.5] } });
       // CONCEPT DEMO: reports from people (points) and candidate clusters (uncertainty discs, dashed until confirmed).
       map.addSource('report-points', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addSource('clusters', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
@@ -604,11 +664,22 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       // Hook for rehearsal and screenshot scripts (map.project, map.fire).
       (window as unknown as { __nsMap?: MLMap }).__nsMap = map;
       ready.current = true;
+      applied.current.clear();
+      queue.current?.dispose();
+      queue.current = new SourceQueue(map);
+      placeTags();
+      (window as unknown as { __nsQueue?: SourceQueue }).__nsQueue = queue.current;
       sync();
+      map.once('idle', () => {
+        (window as unknown as { __nsFirstIdle?: number }).__nsFirstIdle = performance.now();   // for tests
+        onFirstIdle?.();
+      });
     });
     });
     return () => {
       cancelled = true; ready.current = false; popupRef.current?.remove();
+      queue.current?.dispose(); queue.current = null;
+      tagMarkers.current.forEach((m) => m.remove()); tagMarkers.current = [];
       vehicleMarkers.current.forEach((m) => m.remove()); vehicleMarkers.current.clear();
       created?.remove(); mapRef.current = null;
     };
@@ -622,25 +693,25 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready.current) return;
-    (map.getSource('streets') as maplibregl.GeoJSONSource | undefined)?.setData(data.streets);
+    queue.current?.set('streets', data.streets);
     sync();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streetsVersion]);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready.current || !fireVersion) return;
-    (map.getSource('fire') as maplibregl.GeoJSONSource | undefined)?.setData(data.fire);
+    queue.current?.set('fire', data.fire);
     sync();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fireVersion]);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready.current) return;
-    (map.getSource('nowcast') as maplibregl.GeoJSONSource | undefined)?.setData(nowcast?.fc ?? { type: 'FeatureCollection', features: [] });
-    (map.getSource('forecast-tags') as maplibregl.GeoJSONSource | undefined)?.setData(nowcastTagPoints(nowcast, lookAhead, mode, data.entry.timezone ?? 'UTC'));
+    queue.current?.set('nowcast', nowcast?.fc ?? { type: 'FeatureCollection', features: [] });
+    placeTags();
     sync();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nowcastKey]);
+  }, [nowcastKey, layers.forecast]);
 
   // Bring a newly selected caller into view.
   useEffect(() => {
@@ -668,16 +739,26 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       <Legend mode={mode} nearby={layers.nearby} nowcast={nowcast} timeZone={data.entry.timezone ?? 'UTC'} />
       {offline && (
         <span className="absolute left-2 top-2 rounded bg-ink-800/90 px-2 py-1 text-[11px] text-ink-200">
-          Offline basemap (packaged copy, demo area only)
+          Packaged basemap (stored on this device, demo area only)
         </span>
       )}
     </>
   );
 }
 
+/** How many of the sorted `times` are at or before `t` (binary search). */
+function countUpTo(times: number[], t: number): number {
+  let lo = 0, hi = times.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] <= t) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
 /** Clock time only ("04:55"), in the scenario's time zone. */
+const CLOCKS = new Map<string, Intl.DateTimeFormat>();
 function clock(ms: number, timeZone: string): string {
-  return new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(ms);
+  let f = CLOCKS.get(timeZone);
+  if (!f) { f = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }); CLOCKS.set(timeZone, f); }
+  return f.format(ms);
 }
 
 /** Tags of the three lines, one each at a different tip so they do not collide: "Seen by satellite 04:02" (north),

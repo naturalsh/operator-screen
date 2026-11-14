@@ -173,12 +173,16 @@ Deep link to any other moment: `?t=2022-06-23T09:02:00Z&call=synthetic-call-005`
 
 ### Basemap, online and offline
 
-The basemap is the OpenFreeMap dark style. If it cannot be reached within 3 seconds when the page loads,
-the app switches to the copy packaged in `public/basemap/` (10 MB: vector tiles for zoom 0–14 over
-27.85–28.45° E, 36.65–37.05° N, fonts, sprites, style) and shows "Offline basemap" on the map. Outside that
-box the offline map is empty. The three data layers are always local files.
+The basemap is the OpenFreeMap dark style, or the copy packaged in `public/basemap/` (10 MB: vector tiles for
+zoom 0–14 over 27.85–28.45° E, 36.65–37.05° N, fonts, sprites, style):
 
-- Rehearse without unplugging the network: add `?basemap=offline` to the address.
+- Once the offline package is stored on the device (see below), the packaged copy is used even online, so a slow
+  network is not loaded with map tiles the device already has.
+- Otherwise the online style is used if it answers within 3 seconds, else the packaged copy.
+- With the packaged copy the map says "Packaged basemap (stored on this device, demo area only)"; outside that box
+  the map is empty. The data layers are always local files.
+- `?basemap=offline` forces the packaged copy (rehearse without unplugging the network), `?basemap=online` the
+  online one.
 - Rebuild or change the area: edit `BBOX` / `MAX_ZOOM` in `tools/fetch_basemap.mjs`, then
   `node tools/fetch_basemap.mjs` (it refuses to exceed 100 MB).
 - Map data © OpenStreetMap contributors (ODbL), schema © OpenMapTiles, tiles by OpenFreeMap.
@@ -186,11 +190,17 @@ box the offline map is empty. The three data layers are always local files.
 ### Working without internet
 
 The built site (`npm run build`, `npm run preview`, GitHub Pages) installs a service worker
-([vite-plugin-pwa](https://vite-pwa-org.netlify.app/), config in `vite.config.ts`). On the first visit it
-stores the page, the scenario data and the packaged basemap (961 files, about 20 MB). From GitHub Pages this
-took about 2.5 minutes in our test (a few seconds from a local `npm run preview`); the header shows
-**✓ Offline ready** when it is done. After that the screen opens, reloads and routes crews with no network at all, at any deep link
-(`?demo=1`, `?t=…`), with the offline basemap. A new deployment replaces the stored copy on the next online visit.
+([vite-plugin-pwa](https://vite-pwa-org.netlify.app/), config in `vite.config.ts`) that stores the page, the
+scenario data and the packaged basemap (963 files, about 45 MB; GitHub Pages serves them compressed).
+
+- **First visit:** the download starts only after the map has drawn what is on screen and the browser is idle, so
+  on a slow network the visible map and the data come first. The header shows **✓ Offline ready** when it is
+  done. After that the screen opens, reloads and routes crews with no network at all, at any deep link
+  (`?demo=1`, `?t=…`).
+- **New version:** a new deployment is downloaded in the background but does not take over an open page (that
+  would mix the old page with the new data, and reloading by itself would lose open work). The page shows
+  **New version available, tap to reload**; the new version is used from that tap, or the next time all tabs of
+  the site are closed. (Pages opened before this change update the old way once.)
 
 Before a presentation: open the site once on the presenting laptop (and on each tablet) while online and wait for
 **✓ Offline ready**. To check, switch the network off and reload. `npm run dev` does not use the service worker.
@@ -198,7 +208,10 @@ Before a presentation: open the site once on the presenting laptop (and on each 
 ## Using the screen
 
 - **Scenario** (top): picks an entry of `public/scenarios/index.json`.
-- **Time bar** (bottom): play / pause, slider in 1-minute steps, speed. Above the slider, small marks show every
+- **Time bar** (bottom): play / pause, slider in 1-minute steps, speed. While the slider is dragged the thumb and
+  the clock follow at once, the map follows several times a second, and route planning waits until it is
+  released. Everything on the map is derived from the time shown, never built up from earlier states: after any
+  number of jumps back and forth the screen equals a page opened at that time. Above the slider, small marks show every
   forecast load up to the time shown (yellow: automatic at a satellite pass; blue: by the operator). There is no
   text on the bar: hovering a mark (tapping it on a phone) opens a tooltip with the time and what happened. Marks
   closer than 16 px are merged into one, slightly wider mark ("3 passes"), and the tooltip lists each of them.

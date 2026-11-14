@@ -9,8 +9,10 @@ export default defineConfig({
     // so the screen opens and works without a network afterwards (a venue Wi-Fi that drops, a laptop on a
     // projector). Only in the built site (`npm run build` / `npm run preview`, GitHub Pages), not in `npm run dev`.
     VitePWA({
-      registerType: 'autoUpdate',
-      injectRegister: 'script',
+      // A new version waits until the operator taps "New version available, tap to reload": taking over a page
+      // that is open would mix the old page with the new data (and reloading by itself would lose open work).
+      registerType: 'prompt',
+      injectRegister: false,
       manifest: false,
       workbox: {
         globPatterns: ['**/*.{js,css,html,json,geojson,pbf,png,svg,ico,txt,woff,woff2}'],
@@ -19,9 +21,8 @@ export default defineConfig({
         // Any page address (`?demo=1`, `?t=...`) opens the stored page.
         navigateFallback: 'index.html',
         cleanupOutdatedCaches: true,
-        // The page that installed the worker is served by it at once, not only after the next load.
+        // The page that installed the worker (first visit) is served by it at once, not only after the next load.
         clientsClaim: true,
-        skipWaiting: true,
       },
     }),
   ],

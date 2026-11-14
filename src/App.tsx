@@ -8,6 +8,7 @@ import {
 } from './crews';
 import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
 import { routeRisk, saferRoute, streetNamer } from './routeRisk';
+import { LatestRequest } from './latest';
 import {
   LiveForecasts, PrecomputedForecasts, applyForecastClosures, autoLabel, autoLoads, forecastClosures, forecastInForce, loadAt,
   NOWCAST_HORIZONS, lookLabel, nowcastAt, type ForecastLoad, type ForecastSource,
@@ -24,6 +25,7 @@ import { MapView, type LayerKey, type MapMode, type Vehicle } from './components
 import { SidePanel } from './components/SidePanel';
 import { TimeBar, type TimeMark } from './components/TimeBar';
 import { useMediaQuery } from './useMediaQuery';
+import { registerSW } from 'virtual:pwa-register';
 
 const TICK_MS = 100;
 
@@ -45,6 +47,10 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(0);
   const [playing, setPlaying] = useState(false);
+  // True while the time slider is being dragged: route planning waits until it is released.
+  const [scrubbing, setScrubbing] = useState(false);
+  // "Update forecast" requests: a result that is not the latest (or comes back after the clock moved) is dropped.
+  const forecastRequests = useRef(new LatestRequest());
   const [speed, setSpeed] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(params.get('call'));
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>({
@@ -78,9 +84,41 @@ export function App() {
   const [offlineReady, setOfflineReady] = useState(false);
   // (The worker is registered on the page's load event, after this runs, so wait for `ready` rather than asking
   // for the registration now.)
+  // A new version of the site, downloaded in the background, waits for the operator (see vite.config.ts).
+  const [updateSite, setUpdateSite] = useState<(() => void) | null>(null);
+  // The offline package (about 40 MB) starts downloading only once the map has drawn what is on screen and the
+  // browser is idle, so on a slow network the visible map and the data come first.
+  const [mapIdle, setMapIdle] = useState(false);
+  const swStarted = useRef(false);
   useEffect(() => {
-    if (import.meta.env.PROD && 'serviceWorker' in navigator) navigator.serviceWorker.ready.then(() => setOfflineReady(true));
+    if (!mapIdle || swStarted.current || !import.meta.env.PROD || !('serviceWorker' in navigator)) return;
+    swStarted.current = true;
+    const start = () => {
+    const update = registerSW({
+      immediate: true,
+      onNeedRefresh: () => setUpdateSite(() => () => {
+        // Reload once the new version controls the page (or after 3 s at the latest).
+        navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+        setTimeout(() => location.reload(), 3000);
+        void update(true);
+      }),
+      onOfflineReady: () => setOfflineReady(true),
+    });
+    navigator.serviceWorker.ready.then(() => setOfflineReady(true));
+    };
+    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o: { timeout: number }) => void }).requestIdleCallback;
+    if (idle) idle(start, { timeout: 5000 }); else setTimeout(start, 2000);
+  }, [mapIdle]);
+  // A page already controlled by the service worker (a later visit) knows at once whether the package is stored.
+  useEffect(() => {
+    if (import.meta.env.PROD && 'serviceWorker' in navigator && navigator.serviceWorker.controller) setOfflineReady(true);
   }, []);
+  const updateBanner = updateSite && (
+    <button data-new-version onClick={updateSite}
+      className="fixed left-1/2 top-2 z-50 -translate-x-1/2 rounded-lg border border-sky-400 bg-ink-900 px-3 py-2 text-xs font-bold text-sky-200 shadow-xl">
+      New version available, tap to reload
+    </button>
+  );
   const mainRef = useRef<HTMLElement>(null);
   const missionSeq = useRef(0);
   // Forecasts: the precomputed library and the forecasts the operator loaded with "Update forecast". The one in
@@ -226,10 +264,10 @@ export function App() {
   // Crews that could go to the selected report (only computed for the report the operator is looking at).
   const selectedStage = selected ? viewCases[selected.id]?.stage : undefined;
   const candidates = useMemo(() => {
-    if (!graph || !selected || !(selectedStage === 'confirmed' || selectedStage === 'unassigned')) return null;
+    if (!graph || !selected || scrubbing || !(selectedStage === 'confirmed' || selectedStage === 'unassigned')) return null;
     return candidatesFor(graph, [selected.place.lon, selected.place.lat], crewStates, now, undefined, safety);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, selected, selectedStage, crewStates, now, streetsVersion, safety]);
+  }, [graph, selected, selectedStage, crewStates, now, streetsVersion, safety, scrubbing]);
 
   // What each dispatched report's card says about its crew at the time shown.
   const cardCrews = useMemo(() => {
@@ -250,14 +288,14 @@ export function App() {
       // On the way: does the forecast in force reach a street still ahead, and is there a safer way from here?
       let risk: CardCrew['risk'] = null;
       let safer: CardCrew['safer'] = null;
-      if (mine && state.status === 'en_route' && safety) {
+      if (mine && state.status === 'en_route' && safety && !scrubbing) {
         risk = routeRisk(last, safety.reach, now, safety.name);
         if (risk && state.node != null) {
           const alt = saferRoute(graph, m.target, { id: crew.id, name: crew.name, node: state.node }, last, risk, safety.reach, now, safety.name, m.lastStretchM);
           safer = alt ? { minutes: alt.leg.minutes, km: alt.leg.km, extraMin: alt.extraMin + (now - last.startAt) / 60000, risk: alt.risk } : null;
         }
       }
-      if (mine && state.status === 'holding') {
+      if (mine && state.status === 'holding' && !scrubbing) {
         const leg = [...m.legs].reverse().find((l) => l.startAt <= now) ?? last;
         const cut = leg.spans.map((s) => streetById.get(s.edgeId)).find((s) => s && s.properties.status === 'blocked'
           && (s.properties.t ?? 0) > leg.startAt && (s.properties.t ?? 0) <= now);
@@ -278,7 +316,7 @@ export function App() {
       };
     }
     return out;
-  }, [graph, viewCases, missions, crews, crewStates, streetById, now, safety]);
+  }, [graph, viewCases, missions, crews, crewStates, streetById, now, safety, scrubbing]);
 
   const awaiting = useMemo(() => callers.filter((c) => ['confirmed', 'unassigned'].includes(viewCases[c.id]?.stage ?? 'new'))
     .map((c) => ({ id: c.id, label: c.place.label ?? c.id })), [callers, viewCases]);
@@ -450,9 +488,11 @@ export function App() {
     setForecastBusy(true);
     const at = now;
     const kind = forecastOptions.newReports ? 'update' : 'rerun';
+    const job = forecastRequests.current.begin();
     try {
-      const run = await source.run({ scenario: data.entry.id, at, kind, reports: conceptOn ? confirmedNow : [] });
-      if (!run) return;
+      const run = await source.run({ scenario: data.entry.id, at, kind, reports: conceptOn ? confirmedNow : [] }, job.signal);
+      // Stale: a newer request was made meanwhile, or this one was cancelled.
+      if (!run || !forecastRequests.current.isLatest(job.id) || job.signal.aborted) return;
       if (!data.fire.features.some((f) => f.properties.run_id === run.id)) {
         data.fire.features.push(...run.features);
         setFireVersion((v) => v + 1);
@@ -582,7 +622,7 @@ export function App() {
   );
   const mapProps = data && {
     data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
-    forecastRunId, streetsVersion, fireVersion, concept: clusterStates, nowcast, lookAhead,
+    forecastRunId, streetsVersion, fireVersion, concept: clusterStates, nowcast, lookAhead, onFirstIdle: () => setMapIdle(true),
   };
   const lookSwitch = (compact: boolean, style: React.CSSProperties) => nowcast && (
     <div role="group" aria-label="Look ahead" data-look-ahead={lookAhead} style={style}
@@ -674,6 +714,7 @@ export function App() {
     ));
     return (
       <div className="flex flex-col" style={{ height: '100dvh' }} data-layout={landscape ? 'phone-landscape' : 'phone'}>
+        {updateBanner}
         <header className={`flex items-center gap-x-2 gap-y-1 border-b border-ink-700 bg-ink-900 px-2 ${landscape ? 'h-10 flex-nowrap' : 'flex-wrap py-1.5'}`}>
           <h1 className="whitespace-nowrap text-sm font-bold">Nature Shield</h1>
           {modeSwitch(true)}
@@ -721,7 +762,7 @@ export function App() {
               </div>
             </main>
             <TimeBar compact thin={landscape} start={start} end={end} now={now} playing={playing} speed={speed} timeZone={timeZone} marks={marks}
-              onSeek={setNow} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
+              onSeek={setNow} onScrub={setScrubbing} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
           </>
         )}
       </div>
@@ -730,6 +771,7 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
+      {updateBanner}
       <header className={`flex flex-wrap items-center border-b border-ink-700 bg-ink-900 px-3 py-2 gap-y-1.5 ${roomy ? 'gap-x-3' : 'gap-x-2'}`}>
         <h1 className="whitespace-nowrap text-base font-bold">Nature Shield{roomy && <span className="font-normal text-ink-400"> · Operator screen</span>}</h1>
         <label className="text-xs text-ink-400">
@@ -820,7 +862,7 @@ export function App() {
             </div>
           )}
           <TimeBar start={start} end={end} now={now} playing={playing} speed={speed} timeZone={timeZone} marks={marks}
-            onSeek={setNow} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
+            onSeek={setNow} onScrub={setScrubbing} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
         </>
       )}
     </div>
