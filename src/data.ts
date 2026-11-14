@@ -1,3 +1,4 @@
+import type { Feature, Geometry } from 'geojson';
 import type { CallerReport, FileMeta, FireFront, FireMeta, Responder, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
 
 const BASE = `${import.meta.env?.BASE_URL ?? '/'}scenarios/`;
@@ -101,6 +102,49 @@ export function currentForecast(props: (FireFront & { t: number })[], now: numbe
   return { issuedAt, from: contours[0]?.initialised_from ?? 'ignition point', set, index: past.length, count: issues.length, contours };
 }
 
+type Ring = number[][];
+
+function inRing(pt: number[], ring: Ring): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Point inside a GeoJSON Polygon / MultiPolygon (holes respected). */
+export function inPolygon(pt: number[], geom: Geometry): boolean {
+  const polys = (geom.type === 'Polygon' ? [geom.coordinates] : geom.type === 'MultiPolygon' ? geom.coordinates : []) as Ring[][];
+  return polys.some((rings) => inRing(pt, rings[0]) && !rings.slice(1).some((h) => inRing(pt, h)));
+}
+
+export interface ForecastReach { at: number; horizon: number; issuedAt: number; from: string }
+
+/**
+ * Contours of the forecast in force at `now` that are still ahead (valid after `now`), with geometry,
+ * innermost first. This is all the screen may say about where the fire will be.
+ */
+export function aheadContours(features: Feature<Geometry, FireFront & { t: number }>[], now: number) {
+  const cur = currentForecast(features.map((f) => f.properties), now);
+  if (!cur) return [];
+  const ids = new Set(cur.contours.filter((c) => c.t > now).map((c) => c.id));
+  return features.filter((f) => ids.has(f.properties.id)).sort((a, b) => a.properties.t - b.properties.t);
+}
+
+/** When the forecast in force says the fire may reach this street (null: not within its horizons). */
+export function forecastReach(street: StreetFeature, ahead: ReturnType<typeof aheadContours>): ForecastReach | null {
+  const g = street.geometry;
+  const pts = (g.type === 'LineString' ? g.coordinates : g.coordinates.flat()) as number[][];
+  for (const c of ahead) {
+    if (pts.some((pt) => inPolygon(pt, c.geometry))) {
+      const p = c.properties;
+      return { at: p.t, horizon: p.horizon_hours ?? 0, issuedAt: p.issue_t ?? 0, from: p.initialised_from ?? '' };
+    }
+  }
+  return null;
+}
+
 export const HORIZON_COLOURS = ['#fde047', '#fb923c', '#f97316'] as const;
 export const INITIAL_FORECAST_COLOUR = '#93c5fd';
 
@@ -117,6 +161,7 @@ export function prepareStreets(features: StreetFeature[]): StreetFeature[] {
     p.tm = model;
     p.ts = sat === NEVER && p.status === 'blocked' && p.basis === 'satellite' ? p.t! : sat;
     p.tn = p.fire_nearby_at ? Date.parse(p.fire_nearby_at) : NEVER;
+    p.tnear = p.near_fire_from ? Date.parse(p.near_fire_from) : NEVER;
   }
   return features;
 }

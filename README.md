@@ -56,8 +56,18 @@ The switch in the header changes how much the map shows (add `?mode=detailed` to
 
 The **legend** is a small button under the zoom buttons; it opens there, on a translucent panel, and lists the
 lines and colours of the mode shown. "Fire nearby (satellite)" is a separate layer, off by default; when on,
-it is drawn only within 1 km of the selected caller and of active crew routes. Streets 3 km or more from the
-fire, mostly the town of Marmaris, are drawn at 7 % opacity; crew routes over them stay fully visible.
+it is drawn only within 1 km of the selected caller and of active crew routes. Streets that no forecast so far
+has come within 3 km of, mostly the town of Marmaris, are drawn at 7 % opacity; crew routes over them stay
+fully visible.
+
+### Only what is known at the time shown
+
+The screen never states what will happen later in the replay. A street is closed from the moment a forecast in
+force or a satellite pass closes it; before that the only note is what the forecast in force says
+("forecast: fire may reach it by 14:30"). Reasons in a popup name only the sources that have closed the street
+by then, the faint/bright street styling uses only forecasts issued so far, and the time bar marks only
+forecasts already issued. `tools/test_no_hindsight.py` recomputes every street closure from the data available
+at 88 cut-off times and checks that the result matches the full scenario up to that time.
 
 | 22 June 04:30 | 23 June 11:51 |
 |---|---|
@@ -303,7 +313,7 @@ All three share the same provenance fields: `schema_version`, `source`, `source_
 | Record | Required fields | Optional |
 |---|---|---|
 | `CallerReport` | `id`, `reported_at`, `place` (`lon`, `lat`, `label`), `language` (`el`/`tr`/`en`/`fr`), `urgency` (`life_threat`/`urgent`/`routine`), `urgency_reasons[]`, `hazard`, `people_at_risk`, `summary`, `confirmed_by_operator` | `summary_en`, `channel` |
-| `StreetAccess` | `id`, `osm_way_id`, `status` (`open`/`special_access`/`blocked`), `confirmed_by_operator`; with `basis: "imagery"` also `free_width_m` and `imagery_date` | `valid_at` + `status_before` (status that starts at a time), `basis` (`imagery`/`fire_model`/`satellite`/`fire_model_and_satellite`/`operator`), `reason`, per-source closure: `blocked_by`, `first_blocked_by`, `model_blocked_at`, `satellite_blocked_at`, `satellite_source`; warning: `fire_nearby_at`, `fire_nearby_source`; `edge_id`, `name`, `highway`, `confidence`, `imagery_source`; for routing and labels: `u`, `v`, `length_m`, `near_place`, `label_point`, `fire_distance_km` |
+| `StreetAccess` | `id`, `osm_way_id`, `status` (`open`/`special_access`/`blocked`), `confirmed_by_operator`; with `basis: "imagery"` also `free_width_m` and `imagery_date` | `valid_at` + `status_before` (status that starts at a time), `basis` (`imagery`/`fire_model`/`satellite`/`fire_model_and_satellite`/`operator`), `reason`, per-source closure: `blocked_by`, `first_blocked_by`, `model_blocked_at`, `satellite_blocked_at`, `satellite_source`, `model_forecast_issued_at`, `model_reason`, `satellite_reason`; warning: `fire_nearby_at`, `fire_nearby_source`; `edge_id`, `name`, `highway`, `confidence`, `imagery_source`; for routing and labels: `u`, `v`, `length_m`, `near_place`, `label_point`, `near_fire_from` |
 | `FireFront` | `id`, `kind` (`forecast`/`observed`), `valid_at`; forecast: `horizon_hours`, `model_run_at`; observed: `observation_type`, `instrument` | forecast updates: `issued_at`, `forecast_set` (`initial`/`update`), `initialised_from`; `probability`, `area_km2`, `satellite`, `detections`, `frp_mw` |
 | `Responder` (optional file) | `id`, `name`, `kind` (`fire_station`/`gendarmerie`/`police`/`other`), `place` (`lon`, `lat`) | |
 

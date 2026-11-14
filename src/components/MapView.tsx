@@ -3,7 +3,8 @@ import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map 
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL, URGENCY_ORDER,
-  HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, closureAt, closureSource, currentForecast, fireNearby, modelLabel, fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
+  HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, aheadContours, closureAt, closureSource, currentForecast, fireNearby, forecastReach,
+  modelLabel, fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
 } from '../data';
 import { resolveBasemap } from '../basemap';
 import { CREW_STATUS_COLOUR, type CrewStatus } from '../crews';
@@ -172,6 +173,9 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.setFilter('streets-nearby', ['all', ['<=', ['coalesce', ['get', 'tn'], 9e15], t],
       ['>', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t],
       ['in', ['get', 'id'], ['literal', latest.current.nearbyIds]]]);
+    // Streets the fire has not come near yet (no forecast in force so far within 3 km; mostly the town of
+    // Marmaris) are barely visible. Routes and the highlight around a selected caller are separate layers.
+    map.setPaintProperty('streets', 'line-opacity', ['case', ['<=', ['coalesce', ['get', 'tnear'], 9e15], t], 1, 0.07]);
     map.setPaintProperty('streets', 'line-color', ['match',
       ['case', ['<=', ['get', 't'], t], ['get', 'status'], ['get', 'before']],
       'open', STATUS_COLOUR.open, 'special_access', STATUS_COLOUR.special_access, STATUS_COLOUR.blocked]);
@@ -238,7 +242,11 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         if (Array.isArray(c) && typeof c[0] === 'number') box.extend(c as [number, number]);
         else if (Array.isArray(c)) c.forEach(add);
       };
-      for (const f of data.fire.features) if (f.properties.kind === 'forecast' && 'coordinates' in f.geometry) add(f.geometry.coordinates);
+      // Only the forecast in force at the time shown (later forecasts are not known yet).
+      const cur = currentForecast(data.fire.features.map((f) => f.properties), latest.current.now);
+      const ids = new Set(cur?.contours.map((c) => c.id) ?? []);
+      for (const f of data.fire.features) if (ids.has(f.properties.id) && 'coordinates' in f.geometry) add(f.geometry.coordinates);
+      if (box.isEmpty() && data.fireMeta.ignition) box.extend([data.fireMeta.ignition.lon, data.fireMeta.ignition.lat]);
       if (!box.isEmpty()) map.fitBounds(box, { padding: { top: 24, left: 24, right: 24 + insetRight, bottom: 24 + insetBottom }, animate: false });
     }
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
@@ -276,10 +284,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         paint: {
           'line-color': STATUS_COLOUR.open,
           // Streets far from the fire stay on the map for routing but are drawn faint.
-          // Streets far from the fire (the town of Marmaris, mostly) are barely visible; routes and the
-          // white highlight around a selected caller are separate layers, so they still show.
-          'line-opacity': ['step', ['coalesce', ['get', 'fire_distance_km'], 0], 1, 1.5, 0.55,
-            data.streetsMeta.far_from_fire_km ?? 3, 0.07],
+          // Set in sync(): streets no forecast so far has come near are barely visible.
+          'line-opacity': 1,
           'line-width': ['interpolate', ['linear'], ['zoom'],
             10, ['match', ['get', 'highway'], 'track', 0.8, 1.8],
             14, ['match', ['get', 'highway'], 'track', 2.2, 4.5]],
@@ -408,11 +414,18 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             + (closure ? ` since ${fmtTime(closure.since, tz)} — ${closureSource(p, closure)}`
               : (p.t ?? 0) > 0 && (p.t ?? 0) <= t && p.status !== p.before ? ` since ${fmtTime(p.t!, tz)}` : '') + '</div>'
             + (closure?.by === 'both' ? muted(`model from ${fmtTime(p.tm!, tz)} · satellite from ${fmtTime(p.ts!, tz)}`) : '')
-            + ((p.t ?? 0) > t ? `<div>Expected: ${p.status.replace('_', ' ')} from ${fmtTime(p.t!, tz)}`
-              + `${p.first_blocked_by ? ` (${p.first_blocked_by})` : ''}</div>` : '')
+            + (() => {
+              // Not closed yet: only what the forecast in force says, never what will happen.
+              if (closure) return '';
+              const feature = d.streets.features.find((f) => f.properties.id === p.id);
+              const reach = feature ? forecastReach(feature, aheadContours(d.fire.features, t)) : null;
+              return reach ? `<div>Forecast (issued ${fmtTime(reach.issuedAt, tz)}): fire may reach this street by `
+                + `${fmtTime(reach.at, tz)} (+${reach.horizon} h)</div>` : '';
+            })()
             + (fireNearby(p, t) ? `<div style="color:#fbbf24">⚠ Fire nearby (satellite): ${p.fire_nearby_source ?? '1 km pixel'} `
               + `since ${fmtTime(p.tn!, tz)}. 1 km pixel, too coarse to close the street.</div>` : '')
-            + (p.reason && closure ? muted(p.reason) : '')
+            + (closure && (p.tm ?? 9e15) <= t && p.model_reason ? muted(p.model_reason) : '')
+            + (closure && (p.ts ?? 9e15) <= t && (p.satellite_reason ?? p.reason) ? muted(p.satellite_reason ?? p.reason ?? '') : '')
             + (p.imagery_date ? muted(`Imagery: ${p.imagery_date}`) : '')
             + muted(p.confirmed_by_operator ? 'Confirmed by operator' : 'Not confirmed by an operator') + tag(p);
         } else {

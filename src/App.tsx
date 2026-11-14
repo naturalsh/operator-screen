@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  HORIZON_COLOURS, URGENCY_LABEL, fileKind, fmtTime, loadIndex, loadScenario, modelLabel, streetLabel, streetsNear, visibleCallers,
+  HORIZON_COLOURS, URGENCY_LABEL, aheadContours, fileKind, fmtTime, loadIndex, loadScenario, modelLabel, streetLabel, streetsNear, visibleCallers,
 } from './data';
 import {
   CREW_STATUS_LABEL, DEFAULT_ON_SCENE_MIN, candidatesFor, crewStateAt, makeCrews, missionTimes, withReturn,
@@ -277,9 +277,10 @@ export function App() {
     if (!fc.some((p) => p.set === 'update')) {
       return fc.map((p) => ({ t: p.t, label: `+${p.horizon_hours} h`, colour: HORIZON_COLOURS[p.rank ?? 0] as string }));
     }
-    return [...new Set(fc.filter((p) => p.set === 'update').map((p) => p.issue_t!))].sort((a, b) => a - b)
+    // Only forecasts issued by now: a tick for a later forecast would announce a satellite pass in advance.
+    return [...new Set(fc.filter((p) => p.set === 'update').map((p) => p.issue_t!))].filter((t) => t <= now).sort((a, b) => a - b)
       .map((t, i) => ({ t, label: i === 0 ? 'forecast issued' : '', colour: '#fde047' }));
-  }, [data]);
+  }, [data, now]);
 
   // Routes and vehicles on the map: the leg each crew is driving at the time shown.
   const routes = useMemo(() => crewStates.flatMap((s) => {
@@ -295,6 +296,7 @@ export function App() {
     label: s.status === 'en_route' ? `ETA ${mins(s.etaMin ?? 0)}` : s.status === 'returning' ? `back in ${mins(s.etaMin ?? 0)}`
       : s.status === 'holding' ? 'route cut' : 'on scene',
   })), [crewStates]);
+  const ahead = useMemo(() => (data ? aheadContours(data.fire.features, now) : []), [data, now]);
   const stages = useMemo(() => Object.fromEntries(Object.entries(cases).map(([id, cs]) => [id, cs.stage])), [cases]);
 
   const syntheticLayers = data ? ([['caller reports', data.callersMeta], ['street access', data.streetsMeta],
@@ -310,7 +312,7 @@ export function App() {
   const callerList = data && (
     <CallerList callers={callers} streets={data.streets.features} now={now} timeZone={timeZone}
       synthetic={data.callersMeta.synthetic === true} selectedId={selected?.id ?? null}
-      cases={cases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf}
+      cases={cases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf} ahead={ahead}
       canRoute={data.responders.length > 0} onSelect={setSelectedId} onTake={onTake} onConfirm={onConfirm}
       onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} />
   );

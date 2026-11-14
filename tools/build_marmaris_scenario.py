@@ -294,7 +294,12 @@ def forecast_skill(fire_root: Path, cfg: dict, updates: list[dict], initial: gpd
 
 
 # --------------------------------------------------------------------------- street access (model output)
-def build_street_access(fire_root: Path, updates: list[dict], updates_cfg: dict):
+def closure_inputs(fire_root: Path, updates: list[dict], updates_cfg: dict) -> dict:
+    """Everything the street closures are computed from: streets, per-forecast reach, satellite observations.
+
+    Nothing here looks past the time it describes: each forecast's reach comes from that forecast alone, and
+    observations keep their acquisition time. ``compute_closures`` then combines them up to a cut-off time.
+    """
     from fireproj.config import load_config
     from fireproj.reconstruction import run_reconstruction
     from fireproj.road_closure import evaluate_road_closures
@@ -310,81 +315,117 @@ def build_street_access(fire_root: Path, updates: list[dict], updates_cfg: dict)
     edges, places, responders, osm_fetched_at = load_osm()
     # The ignition locality is not a named place in OSM; the fire repo's config gives its position.
     places["Bördübet"] = (res.spec.ignition_lon, res.spec.ignition_lat)
-    # Model source of a closure = the forecast that is current at the time. For each update, the fire repo's
-    # road-closure calculation gives the first horizon at which its contour reaches a street; that closure
-    # counts if the update is still the latest one when the horizon is reached.
+    edges["_uv"] = [tuple(sorted((int(u), int(v)))) for u, v in zip(edges["u"], edges["v"])]
+    edges = edges.drop_duplicates(["_uv", "osmid"]).reset_index(drop=True)
+    utm = res.model_grid.crs
+    geom_utm = edges.to_crs(utm).geometry
+
+    # For each forecast: hours after ignition at which its contour reaches each street (fire repo's
+    # road-closure calculation, P >= 50 %, safety buffer), from that forecast alone.
     upd_cfg = copy.deepcopy(updates_cfg)
-    model_h = np.full(len(edges), np.nan)
-    status_gdf = None
+    reach_list = []
+    near_list = []
     for u in updates:
         out, _ = evaluate_road_closures(
             edges, None, u["contours"], None, res.model_grid, upd_cfg,
             selected_horizon_hours=max(UPDATE_STEP_H), selected_prob_threshold=0.5,
         )
-        status_gdf = out if status_gdf is None else status_gdf
         hours = out["earliest_horizon_hours"].to_numpy(dtype=float)
-        reach = np.array([(u["issued"] + timedelta(hours=float(h)) - t0).total_seconds() / 3600.0 if np.isfinite(h) else np.nan
-                          for h in hours])
-        current = reach <= (u["next"] - t0).total_seconds() / 3600.0 + 1e-9
+        reach_list.append(np.array([(u["issued"] + timedelta(hours=float(h)) - t0).total_seconds() / 3600.0
+                                    if np.isfinite(h) else np.nan for h in hours]))
+        # Area of interest known at issue time: the forecast's outermost contour (and where it started from).
+        area = unary_union([g for g in u["contours"].to_crs(utm).geometry] + ([u["perimeter"]] if u["perimeter"] is not None else []))
+        near_list.append((geom_utm.distance(area) <= FAR_FROM_FIRE_KM * 1000).to_numpy())
+
+    ff = gpd.read_file(fire_root / "exports" / f"{EVENT}_firefront.geojson").to_crs(utm)
+    obs = ff[ff["kind"] == "observed"].copy()
+    obs["_t"] = [pd.Timestamp(v).tz_convert("UTC").to_pydatetime() for v in obs["valid_at"]]
+    obs = obs.sort_values("_t")
+    return {"res": res, "t0": t0, "buffer_m": buffer_m, "edges": edges, "geom_utm": geom_utm, "places": places,
+            "responders": responders, "osm_fetched_at": osm_fetched_at, "issues": [u["issued"] for u in updates],
+            "end": updates[-1]["next"], "reach_list": reach_list, "near_list": near_list, "obs": obs}
+
+
+def compute_closures(ci: dict, cutoff: datetime | None = None) -> dict:
+    """Closure times per street from the information available at ``cutoff`` (all of it when None).
+
+    - Model: the forecast in force when its contour reaches a street (a forecast stops being in force when the
+      next one is issued; with a cut-off, forecasts issued after it do not exist yet).
+    - Satellite: a VIIRS 375 m pixel crossing the street, or the Sentinel-2 flame front / burned area within the
+      safety buffer, at the acquisition time. MODIS / SLSTR 1 km pixels: see ``_repeated_coarse``.
+    - ``near_from``: first issue time at which the street lies within FAR_FROM_FIRE_KM of a forecast.
+    Returned lists hold datetimes or None, one per street.
+    """
+    t0, n = ci["t0"], len(ci["edges"])
+    keep = [k for k, t in enumerate(ci["issues"]) if cutoff is None or t <= cutoff]
+    model_h = np.full(n, np.nan)
+    model_issue = np.full(n, None, dtype=object)
+    near_from = np.full(n, None, dtype=object)
+    for pos, k in enumerate(keep):
+        nxt = ci["issues"][keep[pos + 1]] if pos + 1 < len(keep) else ci["end"]
+        reach = ci["reach_list"][k]
+        current = reach <= (nxt - t0).total_seconds() / 3600.0 + 1e-9
         better = np.isfinite(reach) & current & (np.isnan(model_h) | (reach < model_h))
         model_h[better] = reach[better]
-    status_gdf = status_gdf.copy()
-    status_gdf["earliest_horizon_hours"] = model_h
-    status_gdf["status"] = np.where(np.isfinite(model_h), "closed", "open")
-    status_gdf["_uv"] = [tuple(sorted((int(u), int(v)))) for u, v in zip(status_gdf["u"], status_gdf["v"])]
-    status_gdf = status_gdf.sort_values(["_uv", "earliest_horizon_hours"]).drop_duplicates(["_uv", "osmid"])
-    # Distance to the fire extent (modelled 40 h contour + observed burned area), for de-emphasising far streets.
-    utm = res.model_grid.crs
-    extent = unary_union(list(res.modelled_gdf.to_crs(utm).geometry) + list(res.observed_gdf.to_crs(utm).geometry))
-    geom_utm = status_gdf.to_crs(utm).geometry
-    status_gdf["_fire_km"] = (geom_utm.distance(extent) / 1000.0).round(1).to_numpy()
-    status_gdf["_len_m"] = geom_utm.length.round(0).to_numpy()
+        model_issue[better] = ci["issues"][k]
+        first_near = ci["near_list"][k] & np.array([x is None for x in near_from])
+        near_from[first_near] = ci["issues"][k]
+    model_at = [t0 + timedelta(hours=float(h)) if np.isfinite(h) else None for h in model_h]
 
-    # --- satellite observations (the fire tool's FireFront export) -----------------------------------
-    # The model is slow in the first hours, so streets are also closed where a satellite saw fire:
-    #   - a VIIRS 375 m pixel footprint that crosses the street, from the overpass time;
-    #   - the Sentinel-2 flame front or burned area within the safety buffer, from the image time.
-    # MODIS and SLSTR pixels are 1 km or more: one such detection is too coarse to close a street and only
-    # raises a "fire nearby (satellite)" warning. When a second, separate overpass (at least
-    # REPEAT_GAP_MIN minutes later) again sees fire in a coarse pixel over the street, the street is closed
-    # from that second overpass: "satellite (repeated MODIS/SLSTR)".
-    ff = gpd.read_file(fire_root / "exports" / f"{EVENT}_firefront.geojson").to_crs(utm)
-    ff = ff[ff["kind"] == "observed"].sort_values("valid_at")
-    n = len(status_gdf)
+    obs = ci["obs"] if cutoff is None else ci["obs"][ci["obs"]["_t"] <= cutoff]
+    geom_utm, buffer_m = ci["geom_utm"], ci["buffer_m"]
     sat_at, sat_src = np.full(n, None, dtype=object), np.full(n, None, dtype=object)
     near_at, near_src = np.full(n, None, dtype=object), np.full(n, None, dtype=object)
     sat_name = {"N": "S-NPP", "N20": "N20", "N21": "N21"}
     coarse: list[list[tuple[datetime, str]]] = [[] for _ in range(n)]
-    for _, f in ff.iterrows():
-        when = pd.Timestamp(f["valid_at"]).tz_convert("UTC").to_pydatetime()
+    fine_seen: list[tuple[datetime, object]] = []
+    for _, f in obs.iterrows():
+        when = f["_t"]
         kind, inst = f["observation_type"], str(f["instrument"])
         if kind == "hotspots" and inst == "VIIRS":
             hits, label, at, src = geom_utm.intersects(f.geometry).to_numpy(), f"VIIRS {sat_name.get(f['satellite'], f['satellite'])}", sat_at, sat_src
+            fine_seen.append((when, f.geometry))
         elif kind in ("burned_area", "flame_front"):
             hits = geom_utm.intersects(f.geometry.buffer(buffer_m)).to_numpy()
             label, at, src = f"Sentinel-2 {kind.replace('_', ' ')}", sat_at, sat_src
+            fine_seen.append((when, f.geometry))
         else:
             hits, label, at, src = geom_utm.intersects(f.geometry).to_numpy(), f"{inst} {f['satellite']}", near_at, near_src
             for i in np.flatnonzero(hits):
                 coarse[i].append((when, label))
         new = hits & np.array([a is None for a in at])
         at[new], src[new] = when, label
-    # Repeated coarse detections: closed from the first overpass that is a separate pass from the first one.
+    _repeated_coarse(coarse, sat_at, sat_src, geom_utm, fine_seen)
+    return {"model_at": model_at, "model_issue": list(model_issue), "sat_at": list(sat_at), "sat_src": list(sat_src),
+            "near_at": list(near_at), "near_src": list(near_src), "near_from": list(near_from)}
+
+
+def _repeated_coarse(coarse, sat_at, sat_src, geom_utm, fine_seen) -> None:
+    """Close a street from the second of two separate coarse (MODIS / SLSTR) overpasses with fire over it."""
     for i, seen in enumerate(coarse):
         again = next(((w, lab) for w, lab in seen[1:] if (w - seen[0][0]).total_seconds() >= REPEAT_GAP_MIN * 60), None)
         if again and (sat_at[i] is None or again[0] < sat_at[i]):
             sat_at[i] = again[0]
             sat_src[i] = f"repeated MODIS/SLSTR: {seen[0][1]} + {again[1]}"
-    model_at_all = [t0 + timedelta(hours=float(h)) if st == "closed" and np.isfinite(h) else None
-                    for st, h in zip(status_gdf["status"], status_gdf["earliest_horizon_hours"])]
+
+
+def build_street_access(fire_root: Path, updates: list[dict], updates_cfg: dict):
+    ci = closure_inputs(fire_root, updates, updates_cfg)
+    res, t0, buffer_m, places = ci["res"], ci["t0"], ci["buffer_m"], ci["places"]
+    responders, osm_fetched_at = ci["responders"], ci["osm_fetched_at"]
+    status_gdf = ci["edges"].copy()
+    status_gdf["_len_m"] = ci["geom_utm"].length.round(0).to_numpy()
+    cl = compute_closures(ci)
     # First closure by either source; used for the status and for timing the synthetic calls.
-    first_all = [min([a for a in (m, s_) if a is not None], default=None) for m, s_ in zip(model_at_all, sat_at)]
+    first_all = [min([a for a in (m, s_) if a is not None], default=None) for m, s_ in zip(cl["model_at"], cl["sat_at"])]
     status_gdf["closure_hours"] = [np.nan if a is None else (a - t0).total_seconds() / 3600.0 for a in first_all]
     # Kept as plain lists: a DataFrame column would turn None into NaT / NaN.
-    closures = list(zip(model_at_all, sat_at, sat_src, near_at, near_src, first_all))
+    closures = list(zip(cl["model_at"], cl["sat_at"], cl["sat_src"], cl["near_at"], cl["near_src"], first_all,
+                        cl["model_issue"], cl["near_from"]))
 
     feats = []
-    for (_, r), (model_at, sat, sat_source, nearby_at, nearby_source, first) in zip(status_gdf.iterrows(), closures):
+    for (_, r), (model_at, sat, sat_source, nearby_at, nearby_source, first, model_issue, near_from) in zip(
+            status_gdf.iterrows(), closures):
         way = r["osmid"]
         u, v = r["_uv"]
         edge_id = f"{int(way)}-{u}-{v}"
@@ -396,14 +437,14 @@ def build_street_access(fire_root: Path, updates: list[dict], updates_cfg: dict)
         valid = first if reached else t0
         by = "both" if model_at and sat else "model" if model_at else "satellite" if sat else None
         first_by = None if not reached else "satellite" if sat and (not model_at or sat <= model_at) else "model"
-        reasons = []
-        if model_at:
-            reasons.append(f"latest forecast (P ≥ 50 %, {buffer_m:.0f} m safety buffer) reaches this street "
-                           f"{float(r['earliest_horizon_hours']):.0f} h after ignition")
+        model_reason = (f"forecast issued {model_issue:%d %b %H:%M} UTC (P ≥ 50 %, {buffer_m:.0f} m safety buffer) "
+                        f"reaches this street") if model_at else None
+        sat_reason = None
         if sat:
-            reasons.append(f"two separate overpasses saw fire in 1 km pixels over this street ({sat_source[22:]})"
-                           if sat_source.startswith("repeated") else f"{sat_source} saw fire on this street"
-                           + (f" (within {buffer_m:.0f} m)" if sat_source.startswith("Sentinel-2") else " (375 m pixel)"))
+            sat_reason = (f"two separate overpasses saw fire in 1 km pixels over this street ({sat_source[22:]})"
+                          if sat_source.startswith("repeated") else f"{sat_source} saw fire on this street"
+                          + (f" (within {buffer_m:.0f} m)" if sat_source.startswith("Sentinel-2") else " (375 m pixel)"))
+        reasons = [x for x in (model_reason, sat_reason) if x]
         feats.append({
             "type": "Feature",
             "geometry": mapping(_compact(line)),
@@ -420,14 +461,17 @@ def build_street_access(fire_root: Path, updates: list[dict], updates_cfg: dict)
                 "near_place": near,
                 "near_place_km": round(near_km, 1),
                 "label_point": [round(mid.x, 5), round(mid.y, 5)],
-                "fire_distance_km": float(r["_fire_km"]),
+                # First time a forecast in force came within FAR_FROM_FIRE_KM: the screen fades streets until then.
+                **({"near_fire_from": _iso(near_from)} if near_from else {}),
                 "status": "blocked" if reached else "open",
                 **({"status_before": "open"} if reached else {}),
                 "valid_at": _iso(valid),
                 "basis": {"model": "fire_model", "satellite": "satellite", "both": "fire_model_and_satellite"}.get(
                     by, "fire_model_and_satellite"),
                 **({"blocked_by": by, "first_blocked_by": first_by, "reason": "; ".join(reasons)} if reached else {}),
-                **({"model_blocked_at": _iso(model_at)} if model_at else {}),
+                **({"model_blocked_at": _iso(model_at), "model_forecast_issued_at": _iso(model_issue),
+                    "model_reason": model_reason} if model_at else {}),
+                **({"satellite_reason": sat_reason} if sat else {}),
                 **({"satellite_blocked_at": _iso(sat), "satellite_source": sat_source} if sat else {}),
                 **({"fire_nearby_at": _iso(nearby_at), "fire_nearby_source": nearby_source} if nearby_at else {}),
                 "confirmed_by_operator": False,
@@ -453,6 +497,8 @@ def build_street_access(fire_root: Path, updates: list[dict], updates_cfg: dict)
             "model_run_at": _iso(t0), "contour_step_hours": 2, "safety_buffer_m": buffer_m,
             "model_source": "latest forecast update (re-initialised from the observed fire area)",
             "far_from_fire_km": FAR_FROM_FIRE_KM, "osm_fetched_at": osm_fetched_at,
+            "no_hindsight": "Every time in this file only uses information available at that time "
+                            "(tools/test_no_hindsight.py).",
         },
         "features": feats,
     }

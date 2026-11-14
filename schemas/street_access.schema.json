@@ -56,10 +56,10 @@
       "maxItems": 2,
       "description": "[lon, lat] shown with unnamed streets."
     },
-    "fire_distance_km": {
-      "type": "number",
-      "minimum": 0,
-      "description": "Distance to the fire extent; far streets are drawn faint."
+    "near_fire_from": {
+      "type": "string",
+      "format": "date-time",
+      "description": "First time a forecast in force came within 3 km of the street; the screen draws the street faint until then."
     },
     "status": {
       "enum": [
@@ -125,6 +125,19 @@
     "satellite_source": {
       "type": "string",
       "description": "Sensor behind satellite_blocked_at, e.g. 'VIIRS N20' or 'Sentinel-2 burned area'."
+    },
+    "model_forecast_issued_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Issue time of the forecast whose contour closed the street."
+    },
+    "model_reason": {
+      "type": "string",
+      "description": "Why the forecast closed the street; shown only once that closure has happened."
+    },
+    "satellite_reason": {
+      "type": "string",
+      "description": "Why the satellite closed the street; shown only once that closure has happened."
     },
     "fire_nearby_at": {
       "type": "string",

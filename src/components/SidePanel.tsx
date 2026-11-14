@@ -1,4 +1,5 @@
-import { HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, closureAt, currentForecast, fileKind, fireNearby, fmtAge, fmtTime, modelLabel, statusAt } from '../data';
+import { useMemo } from 'react';
+import { HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, aheadContours, closureAt, currentForecast, inPolygon, fileKind, fireNearby, fmtAge, fmtTime, modelLabel, statusAt } from '../data';
 import type { ScenarioData, StreetStatus } from '../types';
 import type { LayerKey, MapMode } from './MapView';
 import { CREWS_PER_STATION, CREW_STATUS_COLOUR, CREW_STATUS_LABEL, type CrewState } from '../crews';
@@ -60,7 +61,16 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
   const counts = (['open', 'special_access', 'blocked'] as StreetStatus[]).map(
     (s) => [s, streets.filter((p) => statusAt(p, now) === s).length] as const);
   const imagery = [...new Set(streets.map((p) => p.imagery_date).filter(Boolean))].sort();
-  const next = streets.filter((p) => (p.t ?? 0) > now && (p.t ?? 0) <= now + 4 * 3600000);
+  // What the forecast in force says about streets that are open now (never what will actually happen).
+  const ahead = useMemo(() => aheadContours(data.fire.features, now), [data, now]);
+  const aheadKey = ahead.map((c) => c.properties.id).join('|');
+  const nextContour = ahead[0];
+  const mayReach = useMemo(() => (nextContour ? data.streets.features.filter((s) => {
+    const lp = s.properties.label_point;
+    return lp && statusAt(s.properties, now) !== 'blocked' && inPolygon(lp, nextContour.geometry);
+  }).length : 0),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [data, aheadKey]);
   const closures = streets.map((p) => closureAt(p, now));
   const by = (k: 'model' | 'satellite' | 'both') => closures.filter((c) => c?.by === k).length;
   const hasSources = streets.some((p) => p.blocked_by);
@@ -211,9 +221,10 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
             <span className="ml-auto font-mono">{nearby}</span>
           </div>
         )}
-        {next.length > 0 && (
-          <p className="mt-1 text-xs" style={{ color: '#fca5a5' }}>
-            {next.length} more street{next.length > 1 ? 's' : ''} blocked within 4 h
+        {nextContour && mayReach > 0 && (
+          <p className="mt-1 text-xs" style={{ color: '#fdba74' }} data-forecast-reach>
+            Forecast (issued {fmtTime(nextContour.properties.issue_t ?? 0, timeZone)}): fire may reach {mayReach} more
+            street{mayReach > 1 ? 's' : ''} by {fmtTime(nextContour.properties.t, timeZone)} (+{nextContour.properties.horizon_hours} h)
           </p>
         )}
         <p className="mt-1 text-xs text-ink-400">

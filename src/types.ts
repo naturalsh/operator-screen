@@ -68,8 +68,12 @@ export interface StreetAccess extends Provenance {
   near_place?: string;
   near_place_km?: number;
   label_point?: [number, number];
-  /** Distance to the fire extent; far streets are drawn faint. */
-  fire_distance_km?: number;
+  /** First time a forecast in force came within 3 km of the street; until then the street is drawn faint. */
+  near_fire_from?: string;
+  /** Which forecast closed the street, and why each source closed it (shown only once that source has). */
+  model_forecast_issued_at?: string;
+  model_reason?: string;
+  satellite_reason?: string;
   /** Added on load: valid_at as epoch ms (0 = always) and the status before it; closure times per source
    * and the fire-nearby time as epoch ms (NEVER when absent). */
   t?: number;
@@ -77,6 +81,7 @@ export interface StreetAccess extends Provenance {
   tm?: number;
   ts?: number;
   tn?: number;
+  tnear?: number;
   imagery_source?: string;
   confirmed_by_operator: boolean;
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
-  STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL,
-  closureAt, closureSource, fireNearby, fmtAge, fmtTime, statusAt, streetLabel, streetsNear,
+  STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, URGENCY_COLOUR, URGENCY_LABEL,
+  aheadContours, closureAt, closureSource, fireNearby, fmtAge, fmtTime, forecastReach, statusAt, streetLabel, streetsNear,
 } from '../data';
 import { CREW_STATUS_COLOUR, CREW_STATUS_LABEL, type Candidate, type CrewStatus } from '../crews';
 import type { CallerReport, Stage, StreetFeature, Urgency } from '../types';
@@ -59,6 +59,8 @@ interface Props {
   /** Reports waiting for a crew, as targets for redirecting one that is en route. */
   awaiting: { id: string; label: string }[];
   labelOf: (reportId: string) => string;
+  /** Contours of the forecast in force that lie ahead: the only source for "fire may reach" notes. */
+  ahead: ReturnType<typeof aheadContours>;
   canRoute: boolean;
   onSelect: (id: string | null) => void;
   onTake: (c: CallerReport) => void;
@@ -293,8 +295,10 @@ export function CallerList(props: Props) {
                       const p = street.properties;
                       const st = statusAt(p, now);
                       const closure = closureAt(p, now);
-                      const soon = (p.t ?? 0) > now ? ` → ${STATUS_SHORT[p.status].toLowerCase()} ${fmtTime(p.t!, timeZone)}`
-                        : closure ? ` · ${closureSource(p, closure)}` : '';
+                      // Only what is known now: a closure that has happened, or what the forecast in force says.
+                      const reachBy = !closure ? forecastReach(street, props.ahead) : null;
+                      const soon = closure ? ` · ${closureSource(p, closure)}`
+                        : reachBy ? ` · forecast: fire may reach it by ${fmtTime(reachBy.at, timeZone)}` : '';
                       const warn = fireNearby(p, now);
                       return (
                         <li key={p.id} className="flex gap-1.5">
