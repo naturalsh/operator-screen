@@ -3,7 +3,7 @@ import {
   HORIZON_COLOURS, URGENCY_LABEL, aheadContours, fileKind, fmtTime, loadIndex, loadScenario, modelLabel, streetLabel, streetsNear, visibleCallers,
 } from './data';
 import {
-  CREW_STATUS_LABEL, DEFAULT_ON_SCENE_MIN, candidatesFor, crewStateAt, makeCrews, missionTimes, withReturn,
+  CREW_STATUS_LABEL, DEFAULT_ON_SCENE_MIN, candidatesFor, crewStateAt, makeCrews, missionTimes, reportMissionAt, rewriteFuture, withReturn,
   type Candidate, type Mission,
 } from './crews';
 import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
@@ -98,17 +98,31 @@ export function App() {
   const crews = useMemo(() => (data ? makeCrews(data.responders) : []), [data]);
   const crewStates = useMemo(() => crews.map((c) => crewStateAt(c, missions, now, streetById)), [crews, missions, now, streetById]);
 
+  // The operator's case state as it was at the time shown: dispatch and redirect follow the missions, so moving
+  // the clock back before a dispatch shows the report as not dispatched again.
+  const viewCases = useMemo(() => {
+    const out: Record<string, CaseState> = {};
+    for (const [id, cs] of Object.entries(cases)) {
+      const at = reportMissionAt(id, missions, now);
+      if (at.stage === 'dispatched') out[id] = { ...cs, stage: 'dispatched', missionId: at.mission!.id };
+      else if (at.stage === 'unassigned') out[id] = { ...cs, stage: 'unassigned', missionId: undefined };
+      else if (cs.stage === 'dispatched' || cs.stage === 'unassigned') out[id] = { ...cs, stage: 'confirmed', missionId: undefined, unassignedNote: undefined };
+      else out[id] = cs;
+    }
+    return out;
+  }, [cases, missions, now]);
+
   const urgencyOf = useCallback((c: CallerReport) => cases[c.id]?.urgency ?? c.urgency, [cases]);
   const callers = useMemo(
-    () => (data ? visibleCallers(data.callers, now, urgencyOf, (c) => cases[c.id]?.stage === 'unassigned') : []),
-    [data, now, urgencyOf, cases]);
+    () => (data ? visibleCallers(data.callers, now, urgencyOf, (c) => viewCases[c.id]?.stage === 'unassigned') : []),
+    [data, now, urgencyOf, viewCases]);
   const selected = callers.find((c) => c.id === selectedId) ?? null;
   const nearIds = useMemo(
     () => (data && selected ? streetsNear(data.streets.features, selected, NEAR_RADIUS_M).map((n) => n.street.properties.id) : []),
     [data, selected]);
 
   // Crews that could go to the selected report (only computed for the report the operator is looking at).
-  const selectedStage = selected ? cases[selected.id]?.stage : undefined;
+  const selectedStage = selected ? viewCases[selected.id]?.stage : undefined;
   const candidates = useMemo(() => {
     if (!graph || !selected || !(selectedStage === 'confirmed' || selectedStage === 'unassigned')) return null;
     return candidatesFor(graph, [selected.place.lon, selected.place.lat], crewStates, now);
@@ -118,7 +132,7 @@ export function App() {
   const cardCrews = useMemo(() => {
     const out: Record<string, CardCrew> = {};
     if (!graph) return out;
-    for (const [reportId, cs] of Object.entries(cases)) {
+    for (const [reportId, cs] of Object.entries(viewCases)) {
       const m = missions.find((x) => x.id === cs.missionId);
       const crew = m && crews.find((c) => c.id === m.crewId);
       if (!m || !crew || cs.stage !== 'dispatched') continue;
@@ -151,10 +165,10 @@ export function App() {
       };
     }
     return out;
-  }, [graph, cases, missions, crews, crewStates, streetById, now]);
+  }, [graph, viewCases, missions, crews, crewStates, streetById, now]);
 
-  const awaiting = useMemo(() => callers.filter((c) => ['confirmed', 'unassigned'].includes(cases[c.id]?.stage ?? 'new'))
-    .map((c) => ({ id: c.id, label: c.place.label ?? c.id })), [callers, cases]);
+  const awaiting = useMemo(() => callers.filter((c) => ['confirmed', 'unassigned'].includes(viewCases[c.id]?.stage ?? 'new'))
+    .map((c) => ({ id: c.id, label: c.place.label ?? c.id })), [callers, viewCases]);
 
   const record = useCallback((c: { id: string; synthetic?: boolean }, action: Decision['action'], previous: string | null,
     next: string | null, note?: string) => {
@@ -193,18 +207,19 @@ export function App() {
       lastStretchBlocked: k.lastStretchBlocked, lastStretchM: k.lastStretchM, onSceneMin, back: null,
       originSnapM: k.state.status === 'available' ? k.originSnapM : 0, targetSnapM: k.targetSnapM,
     }, k.crew, streetById);
-    // Whatever the crew was doing (driving elsewhere, or driving home) ends now.
-    setMissions((all) => [...all.map((m) => (old && m.id === old.id ? { ...m, cancelledAt: now } : m)), mission]);
+    // Decisions later on the timeline for this crew or this report are replaced by this one; whatever the crew
+    // was doing at `now` (driving elsewhere, or driving home) ends now.
+    setMissions((all) => [...rewriteFuture(all, now, k.crew.id, c.id).map((m) => (old && m.id === old.id ? { ...m, cancelledAt: now } : m)), mission]);
     const what = `${k.crew.name}, ETA ${mins(k.minutes)}, ${k.leg.km.toFixed(1)} km`;
     const blockedNote = k.lastStretchBlocked ? `caller's street is blocked: crew stops ${Math.round(k.lastStretchM)} m away` : undefined;
     if (taken) {
       const note = `${k.crew.name} was redirected to ${shortLabel(c.id)} at ${fmtTime(now, timeZone)}`;
       patchCase(taken.id, { stage: 'unassigned', missionId: undefined, unassignedNote: note });
       record(taken, 'unassigned', `${k.crew.name} ${CREW_STATUS_LABEL[k.state.status].toLowerCase()}`, 'unassigned', `crew redirected to ${shortLabel(c.id)}`);
-      record(c, 'reassign', cases[c.id]?.stage === 'unassigned' ? 'unassigned' : 'not dispatched', what,
+      record(c, 'reassign', viewCases[c.id]?.stage === 'unassigned' ? 'unassigned' : 'not dispatched', what,
         [`crew taken from ${shortLabel(taken.id)}`, blockedNote].filter(Boolean).join('; '));
     } else {
-      record(c, 'dispatch', cases[c.id]?.stage === 'unassigned' ? 'unassigned' : 'not dispatched', what,
+      record(c, 'dispatch', viewCases[c.id]?.stage === 'unassigned' ? 'unassigned' : 'not dispatched', what,
         [k.state.status === 'returning' ? 'crew was returning to its station' : '', blockedNote].filter(Boolean).join('; ') || undefined);
     }
     patchCase(c.id, { stage: 'dispatched', missionId: id, noAccessAt: undefined, noCrewAt: undefined, noCrewNote: undefined, unassignedNote: undefined });
@@ -235,7 +250,7 @@ export function App() {
   /** Accepts the new route for a crew whose route was cut: it drives on from where it is. */
   const onReroute = (c: CallerReport) => {
     if (!graph) return;
-    const m = missions.find((x) => x.id === cases[c.id]?.missionId);
+    const m = missions.find((x) => x.id === viewCases[c.id]?.missionId);
     const state = m && crewStates.find((s) => s.mission?.id === m.id);
     if (!m || !state || state.status !== 'holding' || state.node == null) return;
     const plan = planLegs(graph, m.target, [{ id: state.crew.id, name: state.crew.name, node: state.node }], now)[0];
@@ -256,7 +271,7 @@ export function App() {
   const onReassign = (from: CallerReport, toReportId: string) => {
     if (!data || !graph) return;
     const to = data.callers.find((c) => c.id === toReportId);
-    const m = missions.find((x) => x.id === cases[from.id]?.missionId);
+    const m = missions.find((x) => x.id === viewCases[from.id]?.missionId);
     if (!to || !m) return;
     const k = candidatesFor(graph, [to.place.lon, to.place.lat], crewStates, now).find((x) => x.crew.id === m.crewId);
     if (k) { send(to, k); return; }
@@ -298,7 +313,7 @@ export function App() {
       : s.status === 'holding' ? 'route cut' : 'on scene',
   })), [crewStates]);
   const ahead = useMemo(() => (data ? aheadContours(data.fire.features, now) : []), [data, now]);
-  const stages = useMemo(() => Object.fromEntries(Object.entries(cases).map(([id, cs]) => [id, cs.stage])), [cases]);
+  const stages = useMemo(() => Object.fromEntries(Object.entries(viewCases).map(([id, cs]) => [id, cs.stage])), [viewCases]);
 
   const syntheticLayers = data ? ([['caller reports', data.callersMeta], ['street access', data.streetsMeta],
     ['fire front', data.fireMeta]] as const).filter(([, m]) => m.synthetic === true).map(([n]) => n) : [];
@@ -313,7 +328,7 @@ export function App() {
   const callerList = data && (
     <CallerList callers={callers} streets={data.streets.features} now={now} timeZone={timeZone}
       synthetic={data.callersMeta.synthetic === true} selectedId={selected?.id ?? null}
-      cases={cases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf} ahead={ahead}
+      cases={viewCases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf} ahead={ahead}
       canRoute={data.responders.length > 0} onSelect={setSelectedId} onTake={onTake} onConfirm={onConfirm}
       onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} />
   );

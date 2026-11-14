@@ -46,6 +46,30 @@ export interface Mission {
   cancelledAt?: number;
 }
 
+/**
+ * What a report looks like at `now`, from the missions alone: dispatched (a mission created by then and not
+ * cancelled by then), unassigned (its crew was redirected by then) or not dispatched yet.
+ */
+export function reportMissionAt(reportId: string, missions: Mission[], now: number):
+  { stage: 'dispatched' | 'unassigned' | null; mission: Mission | null } {
+  const mine = missions.filter((m) => m.reportId === reportId && m.createdAt <= now);
+  if (!mine.length) return { stage: null, mission: null };
+  const latest = mine.reduce((a, b) => (b.createdAt >= a.createdAt ? b : a));
+  if (latest.cancelledAt == null || latest.cancelledAt > now) return { stage: 'dispatched', mission: latest };
+  return { stage: 'unassigned', mission: latest };
+}
+
+/**
+ * Missions after a new decision at `now`: anything decided later on the timeline for the same crew or the same
+ * report is dropped (the operator has rewound and decides again), and a cancellation that lay in that dropped
+ * future is undone.
+ */
+export function rewriteFuture(missions: Mission[], now: number, crewId: string, reportId: string): Mission[] {
+  const dropped = missions.filter((m) => m.createdAt > now && (m.crewId === crewId || m.reportId === reportId));
+  return missions.filter((m) => !dropped.includes(m)).map((m) => (m.cancelledAt != null && m.cancelledAt > now
+    && dropped.some((d) => d.crewId === m.crewId && d.createdAt === m.cancelledAt) ? { ...m, cancelledAt: undefined } : m));
+}
+
 export function makeCrews(responders: Responder[]): Crew[] {
   return responders.flatMap((r) => {
     const short = r.name.split(/\s+/)[0];
@@ -113,8 +137,10 @@ export interface CrewState {
 /** Status and position of a crew at scenario time `now`. */
 export function crewStateAt(crew: Crew, missions: Mission[], now: number, byId: Map<string, StreetFeature>): CrewState {
   const idle: CrewState = { crew, status: 'available', position: crew.home, mission: null, times: null, etaMin: null, node: null, cutOff: false };
-  const mine = missions.filter((m) => m.crewId === crew.id && m.createdAt <= now && !(m.cancelledAt != null && m.cancelledAt <= now));
-  const m = mine[mine.length - 1];
+  // The crew's mission at `now`: the latest one created by then and not cancelled by then. By creation time,
+  // not array order, so moving the clock back and forth always gives the same answer.
+  const m = missions.filter((x) => x.crewId === crew.id && x.createdAt <= now && !(x.cancelledAt != null && x.cancelledAt <= now))
+    .reduce<Mission | undefined>((a, b) => (!a || b.createdAt >= a.createdAt ? b : a), undefined);
   if (!m) return idle;
   // The leg in force at `now`: the last one already started.
   let li = 0;
