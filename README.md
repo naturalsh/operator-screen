@@ -49,9 +49,10 @@ The switch in the header changes how much the map shows (add `?mode=detailed` to
 
 - **Simple** (default): the forecast in force as an area (the next horizon not reached yet filled in orange with a
   white edge, later horizons as thin outlines, each tagged "+4 h / +8 h / +12 h"), everything satellites have
-  seen so far in one light colour, closed roads in one solid red, callers, crews and their routes.
+  seen so far in one light colour, closed roads (solid red: seen by satellite; orange dashed: forecast closure),
+  callers, crews and their routes.
 - **Detailed**: adds the satellite sensors in their own colours (VIIRS, MODIS, SLSTR, Sentinel-2 flame front and
-  burned area), closed roads split into model (solid) and satellite only (dashed), the initial forecast made at
+  burned area),  the initial forecast made at
   ignition and the "fire nearby" warning.
 
 The **legend** is a small button under the zoom buttons; it opens there, on a translucent panel, and lists the
@@ -82,7 +83,7 @@ Legend opened: [docs/simple_legend_open.png](docs/simple_legend_open.png).
 | Label on screen | Meaning |
 |---|---|
 | **REAL DATA** | Measured or observed: satellite detections, OpenStreetMap geometry and station locations. |
-| **MODEL OUTPUT** / **MODEL + SATELLITE** | Computed from real inputs; an estimate, not a survey. The forecast contours are model output. Street access in the sample scenario is MODEL + SATELLITE: a street is blocked when the modelled fire has reached it or a satellite has seen fire on it. |
+| **MODEL OUTPUT** / **MODEL + SATELLITE** | Computed from real inputs; an estimate, not a survey. The forecast contours are model output. Street access in the sample scenario is MODEL + SATELLITE: a street is **closed** (solid red) once a satellite has seen fire on it, and is a **forecast closure** (orange dashed) when only the forecast in force reaches it. |
 | **SYNTHETIC** | Invented sample data written for the demo so that a layer can be shown before the real tool's export exists. In the sample scenario every caller report is synthetic. No real caller data is in this repository. |
 
 ## What is real and what is synthetic
@@ -90,8 +91,8 @@ Legend opened: [docs/simple_legend_open.png](docs/simple_legend_open.png).
 | Layer | File | Status |
 |---|---|---|
 | Fire front | `public/scenarios/marmaris_2022/firefront.geojson` | **Real observations + model forecasts.** Fire-model contours (the initial 8 / 20 / 40 h forecast and 16 forecast updates of +4 / +8 / +12 h) and satellite observations (NASA FIRMS VIIRS and MODIS, Copernicus Sentinel-3 SLSTR, Sentinel-2), exported by the fire tool. |
-| Street access | `public/scenarios/marmaris_2022/street_access.geojson` | **Model + satellite.** Real OpenStreetMap streets (© OpenStreetMap contributors, ODbL). A street is `blocked` from its `valid_at` when the modelled fire reaches it (the fire repository's road-closure calculation: P ≥ 50 % contour every 2 h, 150 m safety buffer) **or** a satellite saw fire on it (a VIIRS 375 m pixel footprint crosses it, or the Sentinel-2 flame front or burned area is within 150 m, or MODIS/SLSTR 1 km pixels cover it in two separate overpasses between 30 minutes and 6 hours apart and a VIIRS or Sentinel-2 detection made by then lies within 1 km of it: "satellite (repeated MODIS/SLSTR)")"). A single MODIS or SLSTR pixel does not close a street; it raises a "fire nearby (satellite)" warning, drawn as an amber halo. Not a road survey: no width was measured. |
-| Caller reports | `public/scenarios/marmaris_2022/caller_reports.json` | **SYNTHETIC.** Invented reports, placed on streets the modelled fire reaches and timed around its arrival, so calls increase as the fire grows. |
+| Street access | `public/scenarios/marmaris_2022/street_access.geojson` | **Model + satellite.** Real OpenStreetMap streets (© OpenStreetMap contributors, ODbL). A street is `blocked` from its `valid_at` when the forecast in force reaches it (forecast closure: the fire repository's road-closure calculation on that forecast's P ≥ 50 % contour, 150 m safety buffer) **or** a satellite saw fire on it (observed closure) (a VIIRS 375 m pixel footprint crosses it, or the Sentinel-2 flame front or burned area is within 150 m, or MODIS/SLSTR 1 km pixels cover it in two separate overpasses between 30 minutes and 6 hours apart and a VIIRS or Sentinel-2 detection made by then lies within 1 km of it: "satellite (repeated MODIS/SLSTR)")"). A single MODIS or SLSTR pixel does not close a street; it raises a "fire nearby (satellite)" warning, drawn as an amber halo. Not a road survey: no width was measured. |
+| Caller reports | `public/scenarios/marmaris_2022/caller_reports.json` | **SYNTHETIC.** Invented reports generated from the fire scenario: placed on streets that close (by forecast or satellite) and timed around that closure, so calls increase as the fire grows. Their urgency comes from a rule in the build script, not from the voice agent; cards say "synthetic, generated from the fire scenario". They never enter any measurement. |
 
 Every synthetic record carries `"synthetic": true`, and each synthetic file has `"metadata": {"synthetic": true}`.
 A file derived from the fire model has a `metadata.basis` starting with `fire_model` and may set
@@ -158,12 +159,14 @@ box the offline map is empty. The three data layers are always local files.
 - **Caller reports** (left): reports received so far, life threat first, then urgent, then routine; newest first
   within a class. Click a report (or its marker) to see the caller's own words, the reasons for the suggested
   urgency and the streets within 600 m with their access class; those streets are outlined in white on the map.
-- **Street access**: green = open, orange = special access, red = blocked. In the sample, solid red = closed by
-  the fire model (or by both), dashed red = closed by a satellite detection only, amber halo = open but a 1 km
+- **Street access**: green = open, orange = special access, red = blocked. In the sample, solid red = closed, fire
+  seen there by a satellite; orange dashed = forecast closure, the forecast in force reaches the street but no
+  satellite has seen fire there yet (crews are routed around both); amber halo = open but a 1 km
   satellite pixel with fire covers it. The right panel splits the blocked count into model / satellite / both,
   and the popup names the source ("Blocked since 22 Jun, 04:02 — satellite (VIIRS N20)"). Road Check classes are open
   (free width ≥ 3 m), special access (2 m to under 3 m) and blocked (under 2 m). A status can start at a time
-  (`valid_at`): in the sample scenario a street turns red when the modelled fire reaches it. Click a street for details.
+  (`valid_at`): in the sample scenario a street turns orange dashed when the forecast in force reaches it and solid red
+  when a satellite has seen fire on it. Click a street for details.
 - **Right panel**: layer toggles, forecast and latest satellite pass, street counts, and which files are real.
 
 ## Forecast updates
@@ -281,7 +284,7 @@ the previous and the new value. **Download JSON** saves the log
   15 km/h for forest tracks. One-way restrictions, turn-out time and traffic are ignored.
 - `npm run routes` prints the drive time from every response point to every caller at the time of the call,
   using the same routing code as the screen. In the sample most callers are 7–45 minutes from the nearest
-  point. Two are about 95 minutes away because the modelled fire blocks the direct road and the only way in
+  point. Two are about 95 minutes away because closures block the direct road and the only way in
   is 16 km of forest tracks; the route line on the card shows the forest-track kilometres.
 - Routing needs `u`, `v` (junction node ids) on the street features and a connected network; without
   `responders.json` the Dispatch button is disabled.

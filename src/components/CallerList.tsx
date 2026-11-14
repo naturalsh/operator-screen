@@ -224,7 +224,7 @@ function Actions(props: { c: CallerReport; cs: CaseState; selected: boolean } & 
             {(Object.keys(URGENCY_LABEL) as Urgency[]).map((u) => <option key={u} value={u}>{URGENCY_LABEL[u]}</option>)}
           </select>
           <button className={`${btn} bg-emerald-300`} onClick={stop(() => onConfirm(c, choice))}>Confirm urgency</button>
-          {choice !== c.urgency && <span className="text-[11px] text-ink-400">agent suggested {URGENCY_LABEL[c.urgency]}</span>}
+          {choice !== c.urgency && <span className="text-[11px] text-ink-400">{c.synthetic ? 'scenario set' : 'agent suggested'} {URGENCY_LABEL[c.urgency]}</span>}
         </div>
       )}
       {(cs.stage === 'confirmed' || cs.stage === 'unassigned') && (
@@ -276,7 +276,7 @@ export function CallerList(props: Props) {
                 <span>{fmtTime(Date.parse(c.reported_at), timeZone)}</span>
                 <span>{c.language.toUpperCase()}{c.channel ? ` · ${c.channel}` : ''}</span>
                 <span>{cs.urgency ? (cs.urgency === c.urgency ? 'urgency confirmed' : `urgency changed from ${URGENCY_LABEL[c.urgency]}`)
-                  : 'urgency suggested by the agent'}</span>
+                  : c.synthetic ? 'synthetic, generated from the fire scenario' : 'urgency suggested by the agent'}</span>
                 {c.synthetic && <span className="synthetic-tag">SYNTHETIC</span>}
               </div>
               <Actions {...props} c={c} cs={cs} selected={selected} />

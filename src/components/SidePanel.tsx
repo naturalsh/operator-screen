@@ -198,19 +198,15 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
             <span className="ml-auto font-mono">{n}</span>
           </div>
         ))}
-        {hasSources && mode === 'detailed' && (
+        {hasSources && (
           <div className="ml-7 text-xs text-ink-200" data-blocked-split>
             <div className="flex items-center gap-2 py-0.5">
               <span className="inline-block h-0.5 w-5" style={{ background: STATUS_COLOUR.blocked }} />
-              model only<span className="ml-auto font-mono">{by('model')}</span>
+              seen by satellite<span className="ml-auto font-mono">{by('satellite') + by('both')}</span>
             </div>
             <div className="flex items-center gap-2 py-0.5">
-              <span className="inline-block w-5 border-t-2 border-dashed" style={{ borderColor: STATUS_COLOUR.blocked }} />
-              satellite only<span className="ml-auto font-mono">{by('satellite')}</span>
-            </div>
-            <div className="flex items-center gap-2 py-0.5">
-              <span className="inline-block h-0.5 w-5" style={{ background: STATUS_COLOUR.blocked }} />
-              both<span className="ml-auto font-mono">{by('both')}</span>
+              <span className="inline-block w-5 border-t-2 border-dashed" style={{ borderColor: '#fb923c' }} />
+              forecast only<span className="ml-auto font-mono">{by('model')}</span>
             </div>
           </div>
         )}
@@ -230,12 +226,11 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
         <p className="mt-1 text-xs text-ink-400">
           {streetKind === 'model'
             ? (hasSources
-              ? 'Blocked = the modelled fire has reached the street (solid) or a satellite saw fire on it: VIIRS 375 m pixel, '
-                + 'Sentinel-2 flame front or burned area, or MODIS/SLSTR 1 km pixels in two overpasses 30 min to 6 h apart '
-                + 'with a VIIRS/Sentinel-2 detection within 1 km (dashed until '
-                + 'the model agrees). A single MODIS/SLSTR pixel only warns "fire nearby" (amber halo). Not a road survey. '
-                + 'Click a street for details.'
-              : 'Blocked = the modelled fire has reached the street. Not a road survey. Click a street for details.')
+              ? 'Solid red: a satellite has seen fire on the street (VIIRS 375 m pixel, Sentinel-2 flame front or burned area, '
+                + 'or MODIS/SLSTR pixels in two passes 30 min to 6 h apart with a VIIRS/Sentinel-2 detection within 1 km). '
+                + 'Orange dashed: forecast closure, the forecast in force reaches the street but no satellite has seen fire there '
+                + 'yet. Crews are routed around both. Not a road survey. Click a street for details.'
+              : 'Blocked = the forecast in force has reached the street. Not a road survey. Click a street for details.')
             : `Imagery date: ${imagery.join(', ') || 'n/a'}. Click a street for its width.`}
         </p>
       </Section>

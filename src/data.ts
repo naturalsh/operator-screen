@@ -48,6 +48,11 @@ export interface Closure {
   since: number;
 }
 
+/** Closed only by the forecast in force (no satellite has seen fire on it yet): shown as a forecast closure. */
+export function forecastOnly(c: Closure | null): boolean {
+  return c?.by === 'model';
+}
+
 /** Who has closed a street by `now` (null = not blocked by the fire model or a satellite). */
 export function closureAt(p: StreetAccess, now: number): Closure | null {
   const m = (p.tm ?? NEVER) <= now, s = (p.ts ?? NEVER) <= now;
@@ -59,7 +64,7 @@ export function closureAt(p: StreetAccess, now: number): Closure | null {
 /** "satellite (VIIRS N20)", "model", "model and satellite (VIIRS N20)". */
 export function closureSource(p: StreetAccess, c: Closure): string {
   const sat = `satellite${p.satellite_source ? ` (${p.satellite_source})` : ''}`;
-  return c.by === 'both' ? `model and ${sat}` : c.by === 'model' ? 'model' : sat;
+  return c.by === 'both' ? `${sat} and forecast` : c.by === 'model' ? 'forecast only (no satellite detection yet)' : sat;
 }
 
 /** A 1 km satellite pixel with fire covers the street at `now` and the street is not blocked. */

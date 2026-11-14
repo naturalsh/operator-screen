@@ -3,7 +3,7 @@ import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map 
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL, URGENCY_ORDER,
-  HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, aheadContours, closureAt, closureSource, currentForecast, fireNearby, forecastReach,
+  HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, aheadContours, closureAt, closureSource, currentForecast, fireNearby, forecastOnly, forecastReach,
   modelLabel, fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
 } from '../data';
 import { resolveBasemap } from '../basemap';
@@ -19,12 +19,14 @@ export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'nearby
 export type MapMode = 'simple' | 'detailed';
 
 /** Layers that only exist in Detailed mode. */
-const DETAILED_ONLY = ['initial-pending', 'initial-reached', 'initial-label', 'streets-sat', 'streets-nearby', 'burned-area',
+const DETAILED_ONLY = ['initial-pending', 'initial-reached', 'initial-label', 'streets-nearby', 'burned-area',
   'forecast-pending', 'forecast-reached', 'forecast-label'];
 /** Layers that only exist in Simple mode: the forecast drawn as an area instead of lines. */
 const SIMPLE_ONLY = ['forecast-fill', 'forecast-fill-edge', 'forecast-outline', 'forecast-tag'];
 /** Simple-mode forecast: an orange area with a thin white edge, unlike any road colour. */
 export const FORECAST_FILL_COLOUR = '#f97316';
+/** Streets closed by the forecast only: orange, dashed; observed closures are solid red. */
+export const FORECAST_CLOSURE_COLOUR = '#fb923c';
 
 /** Satellite detections in Simple mode: one colour for every sensor. */
 const SIMPLE_FIRE_COLOUR = '#fb7185';
@@ -36,7 +38,7 @@ const LAYER_GROUPS: Record<LayerKey, string[]> = {
     'forecast-fill', 'forecast-fill-edge', 'forecast-outline', 'forecast-tag'],
   initial: ['initial-pending', 'initial-reached', 'initial-label'],
   observed: ['hotspots', 'burned-area', 'flame-front'],
-  streets: ['streets-near', 'streets', 'streets-sat'],
+  streets: ['streets-near', 'streets', 'streets-forecast'],
   nearby: ['streets-nearby'],
   callers: ['callers-selected', 'callers', 'callers-label'],
   crews: ['routes-casing', 'routes', 'routes-cut', 'responders', 'responders-label'],
@@ -153,11 +155,11 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.setFilter('burned-area', ['all', obs('burned_area'), upTo]);
     map.setFilter('streets-near', ['in', ['get', 'id'], ['literal', near]]);
     // Blocked by a satellite detection only (the model has not reached the street yet): dashed red.
-    const satOnly: ExpressionSpecification = ['all', ['<=', ['coalesce', ['get', 'ts'], 9e15], t], ['>', ['coalesce', ['get', 'tm'], 9e15], t]];
+    // Closed by the forecast only (no satellite detection yet): a forecast closure, orange dashed in both modes.
+    const forecastOnlyExpr: ExpressionSpecification = ['all', ['<=', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t]];
     const simple = latest.current.mode === 'simple';
-    // Simple: every closed street is the same solid red; Detailed: satellite-only closures are dashed.
-    map.setFilter('streets-sat', satOnly);
-    map.setFilter('streets', simple ? null : ['!', satOnly]);
+    map.setFilter('streets-forecast', forecastOnlyExpr);
+    map.setFilter('streets', ['!', forecastOnlyExpr]);
     map.setPaintProperty('hotspots', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : INSTRUMENT_COLOUR);
     // Every overpass adds its pixels, so overlaps build up: keep each layer of pixels very light in Simple.
     map.setPaintProperty('hotspots', 'fill-opacity', simple ? 0.06 : ['match', ['get', 'instrument'], 'VIIRS', 0.3, 0.1]);
@@ -291,9 +293,9 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             14, ['match', ['get', 'highway'], 'track', 2.2, 4.5]],
         } });
 
-      // Satellite-only closures: red like the model's, but dashed (on a dark casing so the gaps read).
-      map.addLayer({ id: 'streets-sat', type: 'line', source: 'streets',
-        paint: { 'line-color': STATUS_COLOUR.blocked, 'line-dasharray': [1.6, 1.4],
+      // Forecast closures: the forecast in force reaches the street but no satellite has seen fire there yet.
+      map.addLayer({ id: 'streets-forecast', type: 'line', source: 'streets',
+        paint: { 'line-color': FORECAST_CLOSURE_COLOUR, 'line-dasharray': [1.6, 1.4],
           'line-width': ['interpolate', ['linear'], ['zoom'],
             10, ['match', ['get', 'highway'], 'track', 1.2, 2.2],
             14, ['match', ['get', 'highway'], 'track', 2.6, 4.5]] } });
@@ -368,7 +370,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       }
 
       // One click handler, most specific feature first: caller, response point, street, fire front.
-      const CLICKABLE = ['callers', 'responders', 'streets', 'streets-sat', 'flame-front', 'forecast-reached', 'forecast-pending',
+      const CLICKABLE = ['callers', 'responders', 'streets', 'streets-forecast', 'flame-front', 'forecast-reached', 'forecast-pending',
         'initial-reached', 'initial-pending', 'hotspots', 'burned-area'];
       const muted = (text: string) => `<div class="ns-muted">${text}</div>`;
       const tag = (p: { synthetic?: boolean; basis?: string }) => (p.synthetic ? '<span class="synthetic-tag">SYNTHETIC</span>'
@@ -402,14 +404,16 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           html = `<b>${r.name}</b><div>${r.kind.replace('_', ' ')} · response point</div>`
             + muted(`Location: ${r.source} (${r.place.lat.toFixed(4)}° N, ${r.place.lon.toFixed(4)}° E)`)
             + muted('Crew availability here is an assumption of the demo.');
-        } else if (hit.layer.id === 'streets' || hit.layer.id === 'streets-sat') {
+        } else if (hit.layer.id === 'streets' || hit.layer.id === 'streets-forecast') {
           // Rendered features carry nested values (label_point) as JSON text, so read the street from the data.
           const p = d.streets.features.find((f) => f.properties.id === hit.properties.id)?.properties
             ?? (hit.properties as StreetAccess);
           const now = statusAt(p, t);
           const closure = closureAt(p, t);
           html = `<b>${streetLabel(p)}</b>` + muted(`${p.highway ?? 'road'} · OSM way ${p.osm_way_id}`)
-            + `<div><span style="color:${STATUS_COLOUR[now]}">■</span> ${STATUS_SHORT[now]}`
+            + (forecastOnly(closure)
+              ? `<div><span style="color:${FORECAST_CLOSURE_COLOUR}">■</span> Forecast closure`
+              : `<div><span style="color:${STATUS_COLOUR[now]}">■</span> ${STATUS_SHORT[now]}`)
             + (p.free_width_m != null ? `, free width ${p.free_width_m} m` : '')
             + (closure ? ` since ${fmtTime(closure.since, tz)} — ${closureSource(p, closure)}`
               : (p.t ?? 0) > 0 && (p.t ?? 0) <= t && p.status !== p.before ? ` since ${fmtTime(p.t!, tz)}` : '') + '</div>'
@@ -573,11 +577,8 @@ function Legend({ mode, nearby }: { mode: MapMode; nearby: boolean }) {
       {open && (
         <div className="mt-1 space-y-0.5">
           {row(<LineKey colour={STATUS_COLOUR.open} />, 'Open road')}
-          {simple ? row(<LineKey colour={STATUS_COLOUR.blocked} />, 'Closed road')
-            : <>
-              {row(<LineKey colour={STATUS_COLOUR.blocked} />, 'Closed (model, or model + satellite)')}
-              {row(<LineKey colour={STATUS_COLOUR.blocked} dashed />, 'Closed (satellite only)')}
-            </>}
+          {row(<LineKey colour={STATUS_COLOUR.blocked} />, 'Closed: fire seen by satellite')}
+          {row(<LineKey colour={FORECAST_CLOSURE_COLOUR} dashed />, 'Forecast closure (not seen yet)')}
           {!simple && nearby && row(<LineKey colour="#fbbf24" halo />, 'Fire nearby (satellite, 1 km pixel)')}
           {row(<LineKey colour="#22d3ee" casing="#083344" />, 'Crew route')}
           {row(<LineKey colour="#fbbf24" dashed casing="#083344" />, 'Route cut')}

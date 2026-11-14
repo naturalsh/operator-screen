@@ -177,8 +177,9 @@ export function App() {
   };
   const onConfirm = (c: CallerReport, urgency: Urgency) => {
     patchCase(c.id, { stage: 'confirmed', urgency });
-    record(c, 'confirm_urgency', `${URGENCY_LABEL[c.urgency]} (agent suggestion)`, URGENCY_LABEL[urgency],
-      urgency === c.urgency ? 'suggestion confirmed' : 'suggestion changed by the operator');
+    const suggested = c.synthetic ? 'synthetic scenario value' : 'agent suggestion';
+    record(c, 'confirm_urgency', `${URGENCY_LABEL[c.urgency]} (${suggested})`, URGENCY_LABEL[urgency],
+      urgency === c.urgency ? `${suggested} confirmed` : `${suggested} changed by the operator`);
   };
 
   /** Sends a crew to a report. A crew that was on its way elsewhere leaves that incident unassigned. */
