@@ -251,6 +251,9 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       if (box.isEmpty() && data.fireMeta.ignition) box.extend([data.fireMeta.ignition.lon, data.fireMeta.ignition.lat]);
       if (!box.isEmpty()) map.fitBounds(box, { padding: { top: 24, left: 24, right: 24 + insetRight, bottom: 24 + insetBottom }, animate: false });
     }
+    // A caller selected before the map existed (`?call=`, `?demo=1`): start on it.
+    const sel = data.callers.find((x) => x.id === latest.current.selectedId);
+    if (sel) map.jumpTo({ center: [sel.place.lon, sel.place.lat], zoom: Math.max(map.getZoom(), 13.2) });
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right');
 

@@ -145,7 +145,10 @@ export interface ScenarioEntry {
   zoom: number;
   start: string;
   end: string;
+  /** Opening time: a moment where calls are coming in and crews can reach most of them. */
   initial?: string;
+  /** A rehearsed scene (Demo button, `?demo=1`): the time and the call selected. */
+  demo?: { t: string; call?: string; note?: string };
   timezone?: string;
   files: { fire_front: string; caller_reports: string; street_access: string; responders?: string };
 }

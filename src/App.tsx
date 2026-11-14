@@ -17,8 +17,12 @@ import { useMediaQuery } from './useMediaQuery';
 
 const TICK_MS = 100;
 
-/** `?scenario=<id>&t=<ISO time>&call=<report id>&basemap=offline` deep-links to a moment (handy for rehearsals). */
+/**
+ * `?scenario=<id>&t=<ISO time>&call=<report id>&basemap=offline` deep-links to a moment (handy for rehearsals);
+ * `?demo=1` opens the scenario's rehearsed demo scene.
+ */
 const params = new URLSearchParams(location.search);
+const wantDemo = params.get('demo') === '1';
 
 const mins = (m: number) => `${Math.max(1, Math.ceil(m))} min`;
 
@@ -68,7 +72,9 @@ export function App() {
     setMissions([]);
     setDecisions([]);
     loadScenario(entry).then((d) => {
-      const t = Date.parse(params.get('t') ?? '') || Date.parse(entry.initial ?? entry.start);
+      const demo = wantDemo ? entry.demo : undefined;
+      const t = Date.parse(demo?.t ?? '') || Date.parse(params.get('t') ?? '') || Date.parse(entry.initial ?? entry.start);
+      if (demo?.call) setSelectedId(demo.call);
       setNow(Math.min(Math.max(t, Date.parse(entry.start)), Date.parse(entry.end)));
       setData(d);
     }).catch((e) => setError(String(e)));
@@ -345,6 +351,22 @@ export function App() {
   const mapProps = data && {
     data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
   };
+  /** Jump to the rehearsed scene: its time, its call selected and centred, the clock paused. */
+  const openDemo = () => {
+    const demo = data?.entry.demo;
+    if (!demo) return;
+    setPlaying(false);
+    setNow(Date.parse(demo.t));
+    const c = data!.callers.find((x) => x.id === demo.call);
+    if (c) { setSelectedId(c.id); setFocus({ lon: c.place.lon, lat: c.place.lat, key: Date.now() }); }
+  };
+  const demoButton = (compact: boolean) => data?.entry.demo && (
+    <button data-demo onClick={openDemo} title={data.entry.demo.note ?? 'Open the rehearsed demo scene'}
+      className={`shrink-0 rounded border border-sky-500 font-bold text-sky-300 hover:bg-sky-900 ${compact ? 'px-1.5 py-0.5 text-[11px]' : 'px-2 py-1 text-xs'}`}>
+      Demo
+    </button>
+  );
+
   const modeSwitch = (compact: boolean) => (
     <div role="group" aria-label="Map detail" className={`flex shrink-0 overflow-hidden rounded border border-ink-600 ${compact ? 'text-[11px]' : 'text-xs'}`}>
       {(['simple', 'detailed'] as const).map((m) => (
@@ -381,6 +403,7 @@ export function App() {
         <header className={`flex items-center gap-x-2 gap-y-1 border-b border-ink-700 bg-ink-900 px-2 ${landscape ? 'h-10 flex-nowrap' : 'flex-wrap py-1.5'}`}>
           <h1 className="whitespace-nowrap text-sm font-bold">Nature Shield</h1>
           {modeSwitch(true)}
+          {demoButton(true)}
           {syntheticLayers.length > 0 && <span className="synthetic-tag">SYNTHETIC calls</span>}
           {modelStreets && <span className="model-tag truncate">{modelLabel(data!.streetsMeta)} streets</span>}
           {landscape && <div className="ml-auto flex shrink-0 gap-1 text-xs font-bold" role="tablist">{tabButtons}</div>}
@@ -436,6 +459,7 @@ export function App() {
           {scenarioSelect}
         </label>
         {modeSwitch(false)}
+        {demoButton(false)}
         {syntheticLayers.length > 0 && (
           <span className="synthetic-tag" style={{ fontSize: 11, padding: '3px 8px' }}>
             SYNTHETIC {syntheticLayers.join(' and ')}

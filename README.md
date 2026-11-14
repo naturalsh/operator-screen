@@ -52,7 +52,7 @@ The switch in the header changes how much the map shows (add `?mode=detailed` to
   seen so far in one light colour, closed roads (solid red: seen by satellite; orange dashed: forecast closure),
   callers, crews and their routes.
 - **Detailed**: adds the satellite sensors in their own colours (VIIRS, MODIS, SLSTR, Sentinel-2 flame front and
-  burned area),  the initial forecast made at
+  burned area), the initial forecast made at
   ignition and the "fire nearby" warning.
 
 The **legend** is a small button under the zoom buttons; it opens there, on a translucent panel, and lists the
@@ -132,7 +132,15 @@ npm run build        # type-check and build into dist/
 npm run preview      # serve dist/ on http://localhost:4173
 ```
 
-Deep link to a moment, for rehearsals: `?t=2022-06-23T09:02:00Z&call=synthetic-call-005`
+The screen opens at 22 June 02:30 UTC (05:30 local): seven calls are in and crews can reach some of them.
+
+**Demo scene:** the **Demo** button in the header, or `?demo=1`, opens 23 June 08:40 UTC with the Akçaalan
+call reported at 08:35 UTC (`synthetic-call-016`) selected. Take → Confirm → Dispatch sends Armutalan-1 with an
+ETA of 9 min; moving the clock on about 6 minutes cuts the route (Sentinel-2 flame front on the Marmaris–Datça
+road) and the card offers the new route from where the vehicle stopped. Both are set in `public/scenarios/index.json`
+(`initial`, `demo`).
+
+Deep link to any other moment: `?t=2022-06-23T09:02:00Z&call=synthetic-call-005`
 (`t` = UTC time, `call` = id of the report to select, `scenario` = scenario id).
 
 ### Basemap, online and offline
