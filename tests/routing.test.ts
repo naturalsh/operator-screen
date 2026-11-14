@@ -36,11 +36,15 @@ for (const c of callers) {
   }
 }
 
-// The three calls inside a pocket cut off by closed roads (independent review, K1) have no access by road.
-for (const id of ['synthetic-call-022', 'synthetic-call-025', 'synthetic-call-027']) {
-  const c = callers.find((x) => x.id === id)!;
-  const now = Date.parse(c.reported_at) + 5 * 60000;
-  assert.equal(planLegs(g, [c.place.lon, c.place.lat], origins, now).length, 0, `${id} must have no access by road`);
+// The three calls the independent review found inside a pocket cut off by closed roads (K1; positions and times
+// of synthetic calls 022, 025 and 027 in the reviewed version): no access by road, never a 0-minute ETA.
+for (const [label, at, lon, lat] of [
+  ['review #022', '2022-06-23T16:51:00Z', 28.18414, 36.85527],
+  ['review #025', '2022-06-23T20:27:00Z', 28.19345, 36.88123],
+  ['review #027', '2022-06-23T23:36:00Z', 28.18748, 36.89512],
+] as const) {
+  const plans = planLegs(g, [lon, lat], origins, Date.parse(at));
+  assert.equal(plans.length, 0, `${label}: expected no access by road, got ${plans.map((p) => `${p.origin.name} ${p.leg.minutes.toFixed(0)} min`).join(', ')}`);
 }
 
 // Stations sit next to a mapped road: no warning in the sample.

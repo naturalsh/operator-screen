@@ -59,6 +59,10 @@ RESPONDERS = {("node", 6622303971): "fire_station", ("node", 12349466130): "fire
 FAR_FROM_FIRE_KM = 3.0
 #: Two coarse (1 km) detections count as separate overpasses when they are at least this far apart in time.
 REPEAT_GAP_MIN = 30
+#: ... and at most this far apart (otherwise they are not taken as the same fire).
+REPEAT_MAX_GAP_H = 6.0
+#: A repeated coarse detection closes a street only if a VIIRS / Sentinel-2 detection is this close to it.
+REPEAT_FINE_WITHIN_M = 1000.0
 
 
 def load_osm():
@@ -400,13 +404,31 @@ def compute_closures(ci: dict, cutoff: datetime | None = None) -> dict:
             "near_at": list(near_at), "near_src": list(near_src), "near_from": list(near_from)}
 
 
-def _repeated_coarse(coarse, sat_at, sat_src, geom_utm, fine_seen) -> None:
-    """Close a street from the second of two separate coarse (MODIS / SLSTR) overpasses with fire over it."""
+def _repeated_coarse(coarse, sat_at, sat_src, geom_utm, fine_seen, max_gap_h: float | None = REPEAT_MAX_GAP_H,
+                     fine_within_m: float | None = REPEAT_FINE_WITHIN_M) -> None:
+    """Close a street from the second of two separate coarse (MODIS / SLSTR) overpasses with fire over it.
+
+    The two overpasses must be at least REPEAT_GAP_MIN minutes apart (separate passes) and at most
+    ``max_gap_h`` hours apart (the same fire, not two unrelated events a day apart). With ``fine_within_m``,
+    a fine-resolution detection (VIIRS 375 m or Sentinel-2) acquired by the second overpass must lie within
+    that distance of the street, so a 1-3 km pixel alone never closes a road the fine sensors never saw near.
+    """
     for i, seen in enumerate(coarse):
-        again = next(((w, lab) for w, lab in seen[1:] if (w - seen[0][0]).total_seconds() >= REPEAT_GAP_MIN * 60), None)
-        if again and (sat_at[i] is None or again[0] < sat_at[i]):
-            sat_at[i] = again[0]
-            sat_src[i] = f"repeated MODIS/SLSTR: {seen[0][1]} + {again[1]}"
+        hit = None
+        for a in range(len(seen)):
+            for b in range(a + 1, len(seen)):
+                gap = (seen[b][0] - seen[a][0]).total_seconds()
+                if gap < REPEAT_GAP_MIN * 60 or (max_gap_h is not None and gap > max_gap_h * 3600):
+                    continue
+                if fine_within_m is not None and not any(
+                        t <= seen[b][0] and geom_utm.iloc[i].distance(g) <= fine_within_m for t, g in fine_seen):
+                    continue
+                if hit is None or seen[b][0] < hit[0]:
+                    hit = (seen[b][0], seen[a][1], seen[b][1])
+                break
+        if hit and (sat_at[i] is None or hit[0] < sat_at[i]):
+            sat_at[i] = hit[0]
+            sat_src[i] = f"repeated MODIS/SLSTR: {hit[1]} + {hit[2]}"
 
 
 def build_street_access(fire_root: Path, updates: list[dict], updates_cfg: dict):

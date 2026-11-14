@@ -231,7 +231,8 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
           {streetKind === 'model'
             ? (hasSources
               ? 'Blocked = the modelled fire has reached the street (solid) or a satellite saw fire on it: VIIRS 375 m pixel, '
-                + 'Sentinel-2 flame front or burned area, or MODIS/SLSTR 1 km pixels in two separate overpasses (dashed until '
+                + 'Sentinel-2 flame front or burned area, or MODIS/SLSTR 1 km pixels in two overpasses 30 min to 6 h apart '
+                + 'with a VIIRS/Sentinel-2 detection within 1 km (dashed until '
                 + 'the model agrees). A single MODIS/SLSTR pixel only warns "fire nearby" (amber halo). Not a road survey. '
                 + 'Click a street for details.'
               : 'Blocked = the modelled fire has reached the street. Not a road survey. Click a street for details.')
