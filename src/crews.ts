@@ -10,6 +10,7 @@
 import { NEVER } from './data';
 import { nodeOnLeg, planLegs, positionOnLeg, type Graph, type Leg, type Origin } from './routing';
 import type { Responder, StreetFeature } from './types';
+import { routeRisk, saferRoute, type RouteRisk, type SaferRoute } from './routeRisk';
 
 export const CREWS_PER_STATION = 2;
 export const DEFAULT_ON_SCENE_MIN = 45;
@@ -185,19 +186,30 @@ export interface Candidate {
   targetSnapM: number;
   /** The crew is on its way to another incident: sending it here needs the operator's explicit choice. */
   needsApproval: boolean;
+  /** The forecast in force reaches a street of this route around the time the crew drives it (null: no). */
+  risk?: RouteRisk | null;
+  /** A route that avoids those streets, when one exists. */
+  safer?: SaferRoute | null;
 }
+
+/** What route safety needs: the forecast in force's street reach times and street names. */
+export interface RouteSafety { reach: Map<string, number>; name: (streetId: string) => string }
 
 /**
  * Crews that can drive to `target` now, fastest first. Available and returning crews are offered freely;
  * crews en route elsewhere are listed but flagged; crews on scene are not offered.
  */
-export function candidatesFor(g: Graph, target: [number, number], states: CrewState[], now: number, excludeReport?: string): Candidate[] {
+export function candidatesFor(g: Graph, target: [number, number], states: CrewState[], now: number, excludeReport?: string,
+  safety?: RouteSafety): Candidate[] {
   const usable = states.filter((s) => s.status !== 'on_scene' && !(excludeReport != null && s.mission?.reportId === excludeReport));
   const origins: Origin[] = usable.map((s) => (s.node != null && s.status !== 'available'
     ? { id: s.crew.id, name: s.crew.name, node: s.node } : { id: s.crew.id, name: s.crew.name, place: s.crew.home }));
   return planLegs(g, target, origins, now).map((p) => {
     const state = usable.find((s) => s.crew.id === p.origin.id)!;
+    const risk = safety ? routeRisk(p.leg, safety.reach, now, safety.name) : null;
+    const safer = safety && risk ? saferRoute(g, target, p.origin, p.leg, risk, safety.reach, now, safety.name, p.lastStretchM) : null;
     return { crew: state.crew, state, leg: p.leg, minutes: p.leg.minutes, lastStretchBlocked: p.lastStretchBlocked,
-      lastStretchM: p.lastStretchM, originSnapM: p.originSnapM, targetSnapM: p.targetSnapM, needsApproval: state.status === 'en_route' || state.status === 'holding' };
+      lastStretchM: p.lastStretchM, originSnapM: p.originSnapM, targetSnapM: p.targetSnapM, needsApproval: state.status === 'en_route' || state.status === 'holding',
+      risk, safer };
   });
 }

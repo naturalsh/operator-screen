@@ -4,6 +4,7 @@ import {
   aheadContours, closureAt, closureSource, fireNearby, fmtAge, fmtTime, forecastReach, statusAt, streetLabel, streetsNear,
 } from '../data';
 import { CREW_STATUS_COLOUR, CREW_STATUS_LABEL, type Candidate, type CrewStatus } from '../crews';
+import type { RouteRisk } from '../routeRisk';
 import type { CallerReport, Stage, StreetFeature, Urgency } from '../types';
 
 export const NEAR_RADIUS_M = 600;
@@ -43,6 +44,10 @@ export interface CardCrew {
   alternative: { minutes: number; km: number } | null;
   /** Station or caller far from a mapped road. */
   snapWarnings: string[];
+  /** En route: the forecast in force reaches a street still ahead around the time the crew drives it. */
+  risk?: RouteRisk | null;
+  /** ... and a route from the vehicle's position that avoids it (minutes from now, extra minutes, its own risk). */
+  safer?: { minutes: number; km: number; extraMin: number; risk: RouteRisk | null } | null;
 }
 
 interface Props {
@@ -61,17 +66,34 @@ interface Props {
   labelOf: (reportId: string) => string;
   /** Contours of the forecast in force that lie ahead: the only source for "fire may reach" notes. */
   ahead: ReturnType<typeof aheadContours>;
+  /** When the forecast in force reaches a street (150 m buffer, to the half hour); preferred over `ahead`. */
+  reachOf?: (streetId: string) => number | undefined;
   canRoute: boolean;
   onSelect: (id: string | null) => void;
   onTake: (c: CallerReport) => void;
   onConfirm: (c: CallerReport, urgency: Urgency) => void;
-  onDispatch: (c: CallerReport, crewId?: string) => void;
+  onDispatch: (c: CallerReport, crewId?: string, viaSafer?: boolean) => void;
   onReroute: (c: CallerReport) => void;
+  /** En route crew: drive on by the safer route. */
+  onSaferRoute?: (c: CallerReport) => void;
   onReassign: (from: CallerReport, toReportId: string) => void;
 }
 
 const btn = 'rounded px-2.5 py-1 text-xs font-bold text-ink-950 hover:brightness-110';
 const mins = (m: number) => `${Math.max(1, Math.ceil(m))} min`;
+
+/** "Route may be cut by fire in ~12 min" with where and why, for a route the forecast in force reaches. */
+function RiskNote({ risk, timeZone }: { risk: RouteRisk; timeZone: string }) {
+  const passIn = Math.max(0, (risk.passAt - (risk.reachAt - risk.inMin * 60000)) / 60000);
+  return (
+    <div data-route-risk={risk.zone} className="mt-1 rounded border border-orange-500 bg-orange-950/60 p-1.5 text-orange-100">
+      <b>⚠ Route may be cut by fire in ~{mins(risk.inMin)}</b>: the forecast reaches {risk.street} by {fmtTime(risk.reachAt, timeZone)},
+      {risk.zone === 'before' ? ` before the crew gets there (the crew passes there in ${mins(passIn)})`
+        : ` ${risk.zone === 'h1' ? 'within 1 h' : 'within 2 h'} after the crew passes there (in ${mins(passIn)}): the way back may be cut`}
+      {risk.count > 1 ? `; ${risk.count} streets of the route in all` : ''}.
+    </div>
+  );
+}
 
 function candidateLabel(k: Candidate, labelOf: Props['labelOf']): string {
   const where = k.state.status === 'available' ? 'at station'
@@ -80,9 +102,9 @@ function candidateLabel(k: Candidate, labelOf: Props['labelOf']): string {
   return `${k.crew.name} · ETA ${mins(k.minutes)} · ${k.leg.km.toFixed(1)} km · ${where}`;
 }
 
-function DispatchControls({ c, cs, selected, candidates, canRoute, labelOf, onDispatch, timeZone }: {
+function DispatchControls({ c, cs, selected, candidates, canRoute, labelOf, onDispatch, timeZone, now }: {
   c: CallerReport; cs: CaseState; selected: boolean;
-} & Pick<Props, 'candidates' | 'canRoute' | 'labelOf' | 'onDispatch' | 'timeZone'>) {
+} & Pick<Props, 'candidates' | 'canRoute' | 'labelOf' | 'onDispatch' | 'timeZone' | 'now'>) {
   const [choice, setChoice] = useState<string>('');
   const list = selected ? candidates : null;
   const suggested = list?.find((k) => !k.needsApproval) ?? null;
@@ -115,9 +137,20 @@ function DispatchControls({ c, cs, selected, candidates, canRoute, labelOf, onDi
               {picked.crew.name} is on its way to another incident. Sending it here leaves that incident without a crew.
             </div>
           )}
+          {picked?.risk && <RiskNote risk={picked.risk} timeZone={timeZone} />}
+          {picked?.risk && (picked.safer ? (
+            <div className="mt-1 flex flex-wrap items-center gap-1.5" data-safer-route>
+              <span>Safer route: <b>ETA {mins(picked.safer.leg.minutes)}</b>
+                {picked.safer.extraMin >= 0.5 ? ` (+${mins(picked.safer.extraMin)})` : ''} · {picked.safer.leg.km.toFixed(1)} km,
+                {picked.safer.risk ? ` first risk later (~${mins(picked.safer.risk.inMin)})` : ' avoids the streets the forecast reaches within 2 h'}</span>
+              <button className={`${btn} bg-emerald-300`} data-dispatch-safer onClick={stop(() => onDispatch(c, picked.crew.id, true))}>
+                Send via safer route
+              </button>
+            </div>
+          ) : <div className="mt-1 text-ink-400" data-no-safer-route>No safer route for {picked.crew.name} at {fmtTime(now, timeZone)}.</div>)}
         </div>
       )}
-      <button className={`${btn} ${picked?.needsApproval ? 'bg-amber-300' : 'bg-cyan-300'} disabled:opacity-40`} disabled={!canRoute}
+      <button data-dispatch className={`${btn} ${picked?.needsApproval ? 'bg-amber-300' : 'bg-cyan-300'} disabled:opacity-40`} disabled={!canRoute}
         onClick={stop(() => onDispatch(c, picked?.crew.id))}>
         {picked ? (picked.needsApproval ? `Reassign ${picked.crew.name} here` : `Dispatch ${picked.crew.name}`)
           : cs.noAccessAt != null || cs.noCrewAt != null ? 'Try dispatch again' : 'Dispatch'}
@@ -138,9 +171,9 @@ function DispatchControls({ c, cs, selected, candidates, canRoute, labelOf, onDi
   );
 }
 
-function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign }: {
+function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign, onSaferRoute }: {
   c: CallerReport; cs: CaseState; crew: CardCrew; now: number;
-} & Pick<Props, 'timeZone' | 'awaiting' | 'onReroute' | 'onReassign'>) {
+} & Pick<Props, 'timeZone' | 'awaiting' | 'onReroute' | 'onReassign' | 'onSaferRoute'>) {
   const targets = awaiting.filter((a) => a.id !== c.id);
   const [to, setTo] = useState('');
   const target = targets.find((a) => a.id === to) ?? targets[0];
@@ -166,6 +199,14 @@ function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign }
         {crew.status === 'returning' && <>left the scene {fmtTime(crew.leftAt!, timeZone)} · back at the station in {mins(crew.etaMin ?? 0)}</>}
         {crew.status === 'available' && <>arrived {crew.arrivedAt ? fmtTime(crew.arrivedAt, timeZone) : '—'}, left {crew.leftAt ? fmtTime(crew.leftAt, timeZone) : '—'} · crew is back at its station</>}
       </div>
+      {crew.risk && crew.status === 'en_route' && <RiskNote risk={crew.risk} timeZone={timeZone} />}
+      {crew.risk && crew.status === 'en_route' && (crew.safer ? (
+        <div className="mt-1 flex flex-wrap items-center gap-1.5" data-safer-route>
+          <span>Safer route from the vehicle: <b>{mins(crew.safer.minutes)}</b>
+            {crew.safer.extraMin >= 0.5 ? ` (+${mins(crew.safer.extraMin)})` : ''} · {crew.safer.km.toFixed(1)} km</span>
+          {onSaferRoute && <button className={`${btn} bg-emerald-300`} data-use-safer onClick={stop(() => onSaferRoute(c))}>Use safer route</button>}
+        </div>
+      ) : <div className="mt-1 text-ink-400" data-no-safer-route>No safer route from the vehicle's position.</div>)}
       {crew.snapWarnings.map((w) => (
         <div key={w} className="mt-1 text-amber-200" data-snap-warning>⚠ {w}.</div>
       ))}
@@ -229,11 +270,11 @@ function Actions(props: { c: CallerReport; cs: CaseState; selected: boolean } & 
       )}
       {(cs.stage === 'confirmed' || cs.stage === 'unassigned') && (
         <DispatchControls c={c} cs={cs} selected={props.selected} candidates={props.candidates} canRoute={props.canRoute}
-          labelOf={props.labelOf} onDispatch={props.onDispatch} timeZone={props.timeZone} />
+          labelOf={props.labelOf} onDispatch={props.onDispatch} timeZone={props.timeZone} now={props.now} />
       )}
       {cs.stage === 'dispatched' && crew && (
         <CrewBox c={c} cs={cs} crew={crew} now={props.now} timeZone={props.timeZone} awaiting={props.awaiting}
-          onReroute={props.onReroute} onReassign={props.onReassign} />
+          onReroute={props.onReroute} onReassign={props.onReassign} onSaferRoute={props.onSaferRoute} />
       )}
     </div>
   );
@@ -296,7 +337,10 @@ export function CallerList(props: Props) {
                       const st = statusAt(p, now);
                       const closure = closureAt(p, now);
                       // Only what is known now: a closure that has happened, or what the forecast in force says.
-                      const reachBy = !closure ? forecastReach(street, props.ahead) : null;
+                      // The same reach time as forecast closures and route warnings, when the forecast has one.
+                      const reachAt = props.reachOf?.(p.id);
+                      const reachBy = closure ? null : props.reachOf ? (reachAt != null && reachAt > now ? { at: reachAt } : null)
+                        : forecastReach(street, props.ahead);
                       const soon = closure ? ` · ${closureSource(p, closure)}`
                         : reachBy ? ` · forecast: fire may reach it by ${fmtTime(reachBy.at, timeZone)}` : '';
                       const warn = fireNearby(p, now);

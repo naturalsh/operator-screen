@@ -221,15 +221,19 @@ function snapToStreet(g: Graph, p: [number, number], usable?: (edge: number) => 
  * - A vehicle (origin with a junction node) starts from that node.
  * - With `targetMustBeOpen` the target is approached by its nearest passable street (a station to return to);
  *   otherwise by its nearest street, blocked or not (a caller); the last stretch is then walked if blocked.
+ * - `avoid(streetId)`: streets not to drive through even though they are open (e.g. the forecast reaches them
+ *   soon). The target's own street and the origin's street are still used, as they cannot be avoided.
  */
-export function planLegs(g: Graph, target: [number, number], origins: Origin[], now: number, targetMustBeOpen = false): LegPlan[] {
-  const blocked = (edge: number) => statusAt(g.streets[edge].properties, now) === 'blocked';
+export function planLegs(g: Graph, target: [number, number], origins: Origin[], now: number, targetMustBeOpen = false,
+  avoid?: (streetId: string) => boolean): LegPlan[] {
+  const closed = (edge: number) => statusAt(g.streets[edge].properties, now) === 'blocked';
+  const blocked = closed;
   const tSnap = snapToStreet(g, target, targetMustBeOpen ? (e) => !blocked(e) : undefined);
   if (!tSnap) return [];
   const tEdge = tSnap.edge;
   const tp = g.streets[tEdge].properties;
   const lastStretchBlocked = blocked(tEdge);
-  const { dist, via } = reach(g, [tp.u!, tp.v!], blocked);
+  const { dist, via } = reach(g, [tp.u!, tp.v!], avoid ? (e) => closed(e) || (e !== tEdge && avoid(g.streets[e].properties.id)) : blocked);
   const speedOf = (e: number) => SPEED_KMH[g.streets[e].properties.highway ?? ''] ?? DEFAULT_SPEED_KMH;
   const out: LegPlan[] = [];
   for (const origin of origins) {

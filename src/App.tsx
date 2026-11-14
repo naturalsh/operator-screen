@@ -7,6 +7,7 @@ import {
   type Candidate, type Mission,
 } from './crews';
 import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
+import { routeRisk, saferRoute, streetNamer } from './routeRisk';
 import {
   LiveForecasts, PrecomputedForecasts, applyForecastClosures, autoLabel, autoLoads, forecastClosures, forecastInForce, loadAt,
   nowcastAt, type ForecastLoad, type ForecastSource,
@@ -181,6 +182,9 @@ export function App() {
   const streetById = useMemo(
     () => new Map<string, StreetFeature>((data?.streets.features ?? []).map((s) => [s.properties.id, s])), [data]);
   const timeZone = data?.entry.timezone ?? 'UTC';
+  // Route safety: the forecast in force says when the fire may reach each street (to the half hour).
+  const safety = useMemo(() => (inForce ? { reach: inForce.run.reach, name: streetNamer(streetById, streetLabel) } : undefined),
+    [inForce, streetById]);
   const labelOf = useCallback((id: string) => data?.callers.find((c) => c.id === id)?.place.label ?? id, [data]);
   const shortLabel = (id: string) => labelOf(id).split(' (')[0];
 
@@ -217,9 +221,9 @@ export function App() {
   const selectedStage = selected ? viewCases[selected.id]?.stage : undefined;
   const candidates = useMemo(() => {
     if (!graph || !selected || !(selectedStage === 'confirmed' || selectedStage === 'unassigned')) return null;
-    return candidatesFor(graph, [selected.place.lon, selected.place.lat], crewStates, now);
+    return candidatesFor(graph, [selected.place.lon, selected.place.lat], crewStates, now, undefined, safety);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, selected, selectedStage, crewStates, now, streetsVersion]);
+  }, [graph, selected, selectedStage, crewStates, now, streetsVersion, safety]);
 
   // What each dispatched report's card says about its crew at the time shown.
   const cardCrews = useMemo(() => {
@@ -237,6 +241,16 @@ export function App() {
       const status = mine ? state.status : 'available';
       let cutStreet: string | null = null;
       let alternative: CardCrew['alternative'] = null;
+      // On the way: does the forecast in force reach a street still ahead, and is there a safer way from here?
+      let risk: CardCrew['risk'] = null;
+      let safer: CardCrew['safer'] = null;
+      if (mine && state.status === 'en_route' && safety) {
+        risk = routeRisk(last, safety.reach, now, safety.name);
+        if (risk && state.node != null) {
+          const alt = saferRoute(graph, m.target, { id: crew.id, name: crew.name, node: state.node }, last, risk, safety.reach, now, safety.name, m.lastStretchM);
+          safer = alt ? { minutes: alt.leg.minutes, km: alt.leg.km, extraMin: alt.extraMin + (now - last.startAt) / 60000, risk: alt.risk } : null;
+        }
+      }
       if (mine && state.status === 'holding') {
         const leg = [...m.legs].reverse().find((l) => l.startAt <= now) ?? last;
         const cut = leg.spans.map((s) => streetById.get(s.edgeId)).find((s) => s && s.properties.status === 'blocked'
@@ -250,7 +264,7 @@ export function App() {
         km: m.legs.reduce((a, l) => a + l.km, 0), trackKm: m.legs.reduce((a, l) => a + l.trackKm, 0),
         sentAt: m.createdAt, arrivedAt: times.arriveAt, leftAt: times.leaveAt,
         lastStretchBlocked: m.lastStretchBlocked, lastStretchM: m.lastStretchM, cutOff: mine && state.cutOff,
-        holdFrom: times.holdFrom, cutStreet, alternative,
+        holdFrom: times.holdFrom, cutStreet, alternative, risk, safer,
         snapWarnings: [
           (m.originSnapM ?? 0) > SNAP_WARN_M ? `${crew.stationName} is ${Math.round(m.originSnapM!)} m from the nearest mapped road (straight connector assumed in the ETA)` : '',
           (m.targetSnapM ?? 0) > SNAP_WARN_M ? `the caller is ${Math.round(m.targetSnapM!)} m from the nearest mapped road; the route ends there` : '',
@@ -258,7 +272,7 @@ export function App() {
       };
     }
     return out;
-  }, [graph, viewCases, missions, crews, crewStates, streetById, now]);
+  }, [graph, viewCases, missions, crews, crewStates, streetById, now, safety]);
 
   const awaiting = useMemo(() => callers.filter((c) => ['confirmed', 'unassigned'].includes(viewCases[c.id]?.stage ?? 'new'))
     .map((c) => ({ id: c.id, label: c.place.label ?? c.id })), [callers, viewCases]);
@@ -289,9 +303,13 @@ export function App() {
       urgency === c.urgency ? `${suggested} confirmed` : `${suggested} changed by the operator`);
   };
 
-  /** Sends a crew to a report. A crew that was on its way elsewhere leaves that incident unassigned. */
-  const send = (c: CallerReport, k: Candidate) => {
+  /** Sends a crew to a report (by the safer route when asked). A crew that was on its way elsewhere leaves that
+   * incident unassigned. */
+  const send = (c: CallerReport, k0: Candidate, viaSafer = false) => {
     if (!graph) return;
+    const k: Candidate = viaSafer && k0.safer
+      ? { ...k0, leg: k0.safer.leg, minutes: k0.safer.leg.minutes, lastStretchBlocked: k0.safer.lastStretchBlocked, lastStretchM: k0.safer.lastStretchM, risk: k0.safer.risk }
+      : k0;
     const old = k.state.mission;
     const taken = old && k.needsApproval ? data?.callers.find((x) => x.id === old.reportId) : undefined;
     const id = ++missionSeq.current;
@@ -304,7 +322,10 @@ export function App() {
     // was doing at `now` (driving elsewhere, or driving home) ends now.
     setMissions((all) => [...rewriteFuture(all, now, k.crew.id, c.id).map((m) => (old && m.id === old.id ? { ...m, cancelledAt: now } : m)), mission]);
     const what = `${k.crew.name}, ETA ${mins(k.minutes)}, ${k.leg.km.toFixed(1)} km`;
-    const blockedNote = k.lastStretchBlocked ? `caller's street is blocked: crew stops ${Math.round(k.lastStretchM)} m away` : undefined;
+    const blockedNote = [k.lastStretchBlocked ? `caller's street is blocked: crew stops ${Math.round(k.lastStretchM)} m away` : '',
+      viaSafer ? `safer route, ${k0.safer!.extraMin >= 0.5 ? `+${mins(k0.safer!.extraMin)}` : 'no longer'}: avoids streets the forecast reaches within 2 h` : '',
+      !viaSafer && k.risk ? `route may be cut by fire in ~${mins(k.risk.inMin)} (${k.risk.street}); dispatched on it` : '']
+      .filter(Boolean).join('; ') || undefined;
     if (taken) {
       const note = `${k.crew.name} was redirected to ${shortLabel(c.id)} at ${fmtTime(now, timeZone)}`;
       patchCase(taken.id, { stage: 'unassigned', missionId: undefined, unassignedNote: note });
@@ -319,12 +340,12 @@ export function App() {
     setSelectedId(c.id);
   };
 
-  const onDispatch = (c: CallerReport, crewId?: string) => {
+  const onDispatch = (c: CallerReport, crewId?: string, viaSafer = false) => {
     if (!data || !graph) return;
     const target: [number, number] = [c.place.lon, c.place.lat];
-    const list = candidatesFor(graph, target, crewStates, now);
+    const list = candidatesFor(graph, target, crewStates, now, undefined, safety);
     const pick = crewId ? list.find((k) => k.crew.id === crewId) : list.find((k) => !k.needsApproval);
-    if (pick) { send(c, pick); return; }
+    if (pick) { send(c, pick, viaSafer); return; }
     // Nobody to send: is it the roads, or are all crews busy?
     const byRoad = planLegs(graph, target, data.responders.map((r) => ({ id: r.id, name: r.name, place: [r.place.lon, r.place.lat] as [number, number] })), now);
     if (!byRoad.length) {
@@ -360,13 +381,30 @@ export function App() {
       'new route from the vehicle\'s position');
   };
 
+  /** A crew on its way whose route the forecast may cut: drive on by the safer route from where it is. */
+  const onSaferRoute = (c: CallerReport) => {
+    if (!graph || !safety) return;
+    const m = missions.find((x) => x.id === viewCases[c.id]?.missionId);
+    const state = m && crewStates.find((s) => s.mission?.id === m.id);
+    if (!m || !state || state.status !== 'en_route' || state.node == null) return;
+    const last = m.legs[m.legs.length - 1];
+    const risk = routeRisk(last, safety.reach, now, safety.name);
+    const alt = risk && saferRoute(graph, m.target, { id: state.crew.id, name: state.crew.name, node: state.node }, last, risk, safety.reach, now, safety.name, m.lastStretchM);
+    if (!risk || !alt) return;
+    const next = withReturn(graph, { ...m, legs: [...m.legs.filter((l) => l.startAt < now), alt.leg],
+      lastStretchBlocked: alt.lastStretchBlocked, lastStretchM: alt.lastStretchM }, state.crew, streetById);
+    setMissions((all) => all.map((x) => (x.id === m.id ? next : x)));
+    record(c, 'reroute', `${state.crew.name} en route, route may be cut by fire in ~${mins(risk.inMin)} (${risk.street})`,
+      `${state.crew.name}, ETA ${mins(alt.leg.minutes)}, ${alt.leg.km.toFixed(1)} km`, 'safer route from the vehicle\'s position: avoids streets the forecast reaches within 2 h');
+  };
+
   /** Redirects the crew that is on its way to `from` to another report. */
   const onReassign = (from: CallerReport, toReportId: string) => {
     if (!data || !graph) return;
     const to = data.callers.find((c) => c.id === toReportId);
     const m = missions.find((x) => x.id === viewCases[from.id]?.missionId);
     if (!to || !m) return;
-    const k = candidatesFor(graph, [to.place.lon, to.place.lat], crewStates, now).find((x) => x.crew.id === m.crewId);
+    const k = candidatesFor(graph, [to.place.lon, to.place.lat], crewStates, now, undefined, safety).find((x) => x.crew.id === m.crewId);
     if (k) { send(to, k); return; }
     patchCase(to.id, { noAccessAt: now });
     record(to, 'dispatch_no_access', 'not dispatched', 'no access by road', `tried to redirect the crew from ${shortLabel(from.id)}`);
@@ -517,8 +555,9 @@ export function App() {
     <CallerList callers={callers} streets={data.streets.features} now={now} timeZone={timeZone}
       synthetic={data.callersMeta.synthetic === true} selectedId={selected?.id ?? null}
       cases={viewCases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf} ahead={ahead}
+      reachOf={safety ? (id) => safety.reach.get(id) : undefined}
       canRoute={data.responders.length > 0} onSelect={setSelectedId} onTake={onTake} onConfirm={onConfirm}
-      onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} />
+      onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} onSaferRoute={onSaferRoute} />
   );
   const sidePanel = data && (
     <SidePanel data={data} now={now} timeZone={timeZone} layers={layers} mode={mode} forecastRunId={forecastRunId} nowcast={nowcast}

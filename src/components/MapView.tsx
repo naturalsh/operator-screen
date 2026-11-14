@@ -484,6 +484,13 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             + (() => {
               // Not closed yet: only what the forecast in force says, never what will happen.
               if (closure) return '';
+              const run = latest.current.nowcast?.run;
+              if (run) {
+                // Same reach time as forecast closures and route warnings (150 m buffer, to the half hour).
+                const at = run.reach.get(p.id);
+                return at != null && at > t ? `<div>Forecast (issued ${fmtTime(run.issuedAt, tz)}): fire may reach this street by `
+                  + `${fmtTime(at, tz)}</div>` : '';
+              }
               const feature = d.streets.features.find((f) => f.properties.id === p.id);
               const reach = feature ? forecastReach(feature, aheadContours(d.fire.features, t, latest.current.forecastRunId)) : null;
               return reach ? `<div>Forecast (issued ${fmtTime(reach.issuedAt, tz)}): fire may reach this street by `

@@ -472,6 +472,20 @@ the previous and the new value. **Download JSON** saves the log
 - When the clock moves on and a street on a dispatched route becomes blocked, the route turns dashed amber
   and the card warns **"Route cut"** with the street; it offers a new route ("Use new route") or says there is
   no access.
+- **Route safety.** Before and after dispatch the route is checked against the forecast in force: for each street
+  the crew enters at the dispatch time plus its minutes along the route, and the forecast says when the fire may
+  reach that street (P ≥ 50 %, 150 m safety buffer, to the half hour). If that is before the crew gets there, or
+  within 1 or 2 hours after it passes (the +1 / +2 h zones at that time), the card warns **"Route may be cut by
+  fire in ~X min"**, with the street and when. The screen then looks for a route that avoids every street the
+  forecast reaches within the drive time plus 2 hours and still brings the crew as close to the caller; if one
+  exists the card offers it ("Safer route: ETA 7 min (+2 min)", **Send via safer route**, or **Use safer route**
+  for a crew already on its way), otherwise it says there is none. Only the forecast in force is used: a cut that
+  comes from a later satellite pass is not foreseen (the demo call is such a case: the route is cut at 08:46 by a
+  new Sentinel-2 image). `tests/routeRisk.test.ts` checks every call at five times: each warning comes from the
+  forecast in force; each "before the crew gets there" warning comes true at the warned minute when nothing new
+  arrives first (42 of 42); a safer route is never riskier and never stops further from the caller.
+
+  ![Route may be cut by fire](docs/c5_route_warning.png)
 - Drive times are free-flow: road-class speeds as in the fire repository's evacuation settings (trunk 70,
   secondary 50, tertiary 40, residential and unclassified 30 km/h), plus our own 20 km/h for service roads and
   15 km/h for forest tracks. One-way restrictions, turn-out time and traffic are ignored.
