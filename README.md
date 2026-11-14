@@ -174,7 +174,12 @@ Before a presentation: open the site once on the presenting laptop (and on each 
 ## Using the screen
 
 - **Scenario** (top): picks an entry of `public/scenarios/index.json`.
-- **Time bar** (bottom): play / pause, slider in 10-minute steps, speed. Marks show when each forecast becomes valid.
+- **Time bar** (bottom): play / pause, slider in 1-minute steps, speed. Above the slider, small marks show every
+  forecast load up to the time shown (yellow: automatic at a satellite pass; blue: by the operator). There is no
+  text on the bar: hovering a mark (tapping it on a phone) opens a tooltip with the time and what happened. Marks
+  closer than 16 px are merged into one, slightly wider mark ("3 passes"), and the tooltip lists each of them.
+
+  ![Time bar tooltip](docs/c6_timebar.png)
   Everything follows this clock: reports appear at `reported_at`, satellite observations at `valid_at`,
   a forecast contour turns solid at `valid_at` and is dashed before that.
 - **Map markers**: caller colour = urgency, ring = the operator's step; the label shows the people at risk.

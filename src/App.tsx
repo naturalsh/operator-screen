@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  HORIZON_COLOURS, URGENCY_LABEL, aheadContours, fileKind, fmtTime, loadIndex, loadScenario, modelLabel, streetLabel, streetsNear, visibleCallers,
+  URGENCY_LABEL, aheadContours, fileKind, fmtTime, loadIndex, loadScenario, modelLabel, streetLabel, streetsNear, visibleCallers,
 } from './data';
 import {
   CREW_STATUS_LABEL, DEFAULT_ON_SCENE_MIN, candidatesFor, crewStateAt, makeCrews, missionTimes, reportMissionAt, rewriteFuture, withReturn,
@@ -22,7 +22,7 @@ import { CallerList, NEAR_RADIUS_M, type CardCrew, type CaseState } from './comp
 import { DecisionLog } from './components/DecisionLog';
 import { MapView, type LayerKey, type MapMode, type Vehicle } from './components/MapView';
 import { SidePanel } from './components/SidePanel';
-import { TimeBar } from './components/TimeBar';
+import { TimeBar, type TimeMark } from './components/TimeBar';
 import { useMediaQuery } from './useMediaQuery';
 
 const TICK_MS = 100;
@@ -508,19 +508,18 @@ export function App() {
     setOnSceneMin(v);
   };
 
-  // Time-bar marks: when each forecast was issued (or, without updates, when the initial horizons are reached).
-  const marks = useMemo(() => {
+  // Time-bar marks: every forecast load up to now (automatic at a pass, or by the operator); without a forecast
+  // library, when each update was issued. Only up to now: a mark for a later load would announce a pass in advance.
+  const marks: TimeMark[] = useMemo(() => {
     if (!data) return [];
-    const fc = data.fire.features.map((f) => f.properties).filter((p) => p.kind === 'forecast');
-    if (!fc.some((p) => p.set === 'update')) {
-      return fc.map((p) => ({ t: p.t, label: `+${p.horizon_hours} h`, colour: HORIZON_COLOURS[p.rank ?? 0] as string }));
+    if (precomputed) {
+      return allLoads.filter((l) => l.at <= now).map((l) => (l.kind === 'auto'
+        ? { t: l.at, kind: 'auto' as const, text: `forecast updated: ${l.run.lastObsLabel?.startsWith('Sentinel-2') ? 'Sentinel-2 image' : `${l.run.lastObsLabel} pass`}` }
+        : { t: l.at, kind: 'operator' as const, text: l.kind === 'rerun' ? 'forecast re-run with current weather (operator)'
+          : `forecast loaded${l.run.reports.length ? ` with ${l.run.reports.length} confirmed reports` : ''} (operator)` }));
     }
-    // With precomputed forecasts: every load (automatic at a pass, or by the operator). Otherwise when each update
-    // was issued. Only up to now: a tick for a later forecast would announce a satellite pass in advance.
-    const times = precomputed ? allLoads.map((l) => ({ t: l.at, auto: l.kind === 'auto' }))
-      : [...new Set(fc.filter((p) => p.set === 'update').map((p) => p.issue_t!))].map((t) => ({ t, auto: true }));
-    return times.filter((x) => x.t <= now).sort((a, b) => a.t - b.t)
-      .map((x, i) => ({ t: x.t, label: i === 0 ? (precomputed ? 'forecast loaded' : 'forecast issued') : '', colour: x.auto ? '#fde047' : '#38bdf8' }));
+    const fc = data.fire.features.map((f) => f.properties).filter((p) => p.kind === 'forecast' && p.set === 'update');
+    return [...new Set(fc.map((p) => p.issue_t!))].filter((t) => t <= now).map((t) => ({ t, kind: 'auto' as const, text: 'forecast issued' }));
   }, [data, now, precomputed, allLoads]);
 
   // Routes and vehicles on the map: the leg each crew is driving at the time shown.
