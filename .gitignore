@@ -6,3 +6,5 @@ tools/.cache/
 vite.config.ts.timestamp-*
 .env
 .env.*
+__pycache__/
+*.pyc
