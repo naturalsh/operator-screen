@@ -78,7 +78,7 @@ at 88 cut-off times and checks that the result matches the full scenario up to t
 |---|---|
 | ![Simple, 22 June 04:30](docs/simple_0430.png) | ![Simple, 23 June 11:51](docs/simple_1151.png) |
 
-Side by side with Detailed (before the forecast area was added to Simple):
+Older screenshots, side by side with Detailed (before "Fire now" was added):
 [22 June 04:30](docs/simple_vs_detailed_0430.png), [23 June 11:51](docs/simple_vs_detailed_1151.png).
 Legend opened: [docs/simple_legend_open.png](docs/simple_legend_open.png).
 
@@ -180,6 +180,7 @@ Before a presentation: open the site once on the presenting laptop (and on each 
   closer than 16 px are merged into one, slightly wider mark ("3 passes"), and the tooltip lists each of them.
 
   ![Time bar tooltip](docs/c6_timebar.png)
+  On a phone (tap): [docs/c6_timebar_phone.png](docs/c6_timebar_phone.png).
   Everything follows this clock: reports appear at `reported_at`, satellite observations at `valid_at`,
   a forecast contour turns solid at `valid_at` and is dashed before that.
 - **Map markers**: caller colour = urgency, ring = the operator's step; the label shows the people at risk.
@@ -491,6 +492,7 @@ the previous and the new value. **Download JSON** saves the log
   arrives first (42 of 42); a safer route is never riskier and never stops further from the caller.
 
   ![Route may be cut by fire](docs/c5_route_warning.png)
+  Safer route offered: [docs/c5_route_safer.png](docs/c5_route_safer.png).
 - Drive times are free-flow: road-class speeds as in the fire repository's evacuation settings (trunk 70,
   secondary 50, tertiary 40, residential and unclassified 30 km/h), plus our own 20 km/h for service roads and
   15 km/h for forest tracks. One-way restrictions, turn-out time and traffic are ignored.
