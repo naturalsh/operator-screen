@@ -9,7 +9,7 @@ import {
 import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
 import {
   LiveForecasts, PrecomputedForecasts, applyForecastClosures, forecastClosures, forecastInForce, historyLoads, loadAt, newObservations,
-  type ForecastLoad, type ForecastSource,
+  nowcastAt, type ForecastLoad, type ForecastSource,
 } from './forecast';
 import { ForecastControl } from './components/ForecastControl';
 import { ConceptPanel } from './components/ConceptPanel';
@@ -157,6 +157,8 @@ export function App() {
   }, [data, precomputed, loads]);
   const inForce = useMemo(() => (precomputed ? forecastInForce(loads, precomputed.first, now) : null), [precomputed, loads, now]);
   const forecastRunId: string | null | undefined = precomputed ? inForce?.run.id ?? null : undefined;
+  // "Fire now (estimated)": the forecast in force advanced to the time shown, and the horizons from there.
+  const nowcast = useMemo(() => nowcastAt(inForce?.run ?? null, now), [inForce, now]);
   const streetById = useMemo(
     () => new Map<string, StreetFeature>((data?.streets.features ?? []).map((s) => [s.properties.id, s])), [data]);
   const timeZone = data?.entry.timezone ?? 'UTC';
@@ -508,7 +510,7 @@ export function App() {
       onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} />
   );
   const sidePanel = data && (
-    <SidePanel data={data} now={now} timeZone={timeZone} layers={layers} mode={mode} forecastRunId={forecastRunId}
+    <SidePanel data={data} now={now} timeZone={timeZone} layers={layers} mode={mode} forecastRunId={forecastRunId} nowcast={nowcast}
       conceptPanel={conceptOn && data.concept ? (
         <ConceptPanel clusters={clusterStates} inForecast={inForce?.run.reports ?? []} now={now} timeZone={timeZone}
           reportsUntil={Date.parse(data.concept.metadata.window_end)} onConfirm={onConfirmReport} onAsk={onAsk}
@@ -525,7 +527,7 @@ export function App() {
   );
   const mapProps = data && {
     data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
-    forecastRunId, streetsVersion, fireVersion, concept: clusterStates,
+    forecastRunId, streetsVersion, fireVersion, concept: clusterStates, nowcast,
   };
   // CONCEPT DEMO: the full label stays on the map while the synthetic reports are shown.
   const conceptBanner = conceptOn && (
@@ -536,7 +538,7 @@ export function App() {
   const forecastControl = (compact: boolean) => precomputed && (
     <ForecastControl load={inForce} previous={previousLoad} newObs={newObs} updateTo={forecastOptions.updateTo}
       rerunTo={forecastOptions.rerunTo} blockedNote={forecastOptions.blockedNote} sourceKind={source?.kind ?? 'precomputed'}
-      newReports={forecastOptions.newReports}
+      newReports={forecastOptions.newReports} nowcast={nowcast}
       busy={forecastBusy} timeZone={timeZone} compact={compact} onUpdate={onUpdateForecast} />
   );
   // With one tabbed panel, picking a caller (on the map or by a deep link) shows its card.

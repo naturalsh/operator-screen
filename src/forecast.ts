@@ -251,3 +251,67 @@ export function obsLabel(p: FireFront): string {
   if (p.observation_type === 'burned_area' || p.observation_type === 'flame_front') return `Sentinel-2 ${p.observation_type.replace('_', ' ')}`;
   return `${p.instrument} ${SAT_NAME[p.satellite ?? ''] ?? p.satellite ?? ''}`.trim();
 }
+
+/** Horizons drawn from the time shown: +1 h is the "danger zone", +6 h only an outline. */
+export const NOWCAST_HORIZONS = [1, 2, 3, 6] as const;
+
+export interface NowcastFeatureProps {
+  role: 'now' | 'h1' | 'h2' | 'h3' | 'h6';
+  /** Hours from the time shown (0 for "fire now"). */
+  h: number;
+  /** Time the contour is for (epoch ms), the forecast's issue time and its hours after the issue. */
+  valid_t: number;
+  issue_t: number;
+  step: number;
+  area_km2: number;
+  run_id: string;
+}
+
+export interface Nowcast {
+  run: ForecastRun;
+  /** The contour drawn as "Fire now": the forecast's last 30-minute step not after the time shown. */
+  stepAt: number;
+  /** Hours since the forecast was issued. */
+  elapsedH: number;
+  /** Horizons from the time shown that the forecast covers (it runs 12 h). */
+  horizons: number[];
+  /** Horizons beyond the forecast (Update forecast re-runs from the fire now). */
+  beyond: number[];
+  fc: GeoJSON.FeatureCollection<Geometry, NowcastFeatureProps>;
+}
+
+/**
+ * "Fire now (estimated)": the forecast in force advanced from its issue time to `now`, and the +1 / +2 / +3 / +6 h
+ * horizons from there. Only the forecast in force is used (it was issued by `now`), so nothing here comes from
+ * later than the time shown.
+ */
+export function nowcastAt(run: ForecastRun | null, now: number): Nowcast | null {
+  if (!run || run.issuedAt > now || !run.steps.length) return null;
+  const elapsedH = (now - run.issuedAt) / 3600000;
+  const at = (h: number) => run.steps.find((s) => Math.abs(s.horizon - h) < 1e-6);
+  const max = run.steps[run.steps.length - 1].horizon;
+  const k = Math.min(Math.floor(elapsedH * 2 + 1e-9) / 2, max);
+  const base = at(k) ?? run.steps.filter((s) => s.horizon <= k).pop() ?? run.steps[0];
+  const features: GeoJSON.Feature<Geometry, NowcastFeatureProps>[] = [];
+  const horizons: number[] = [];
+  const beyond: number[] = [];
+  // Largest first, so the inner (stronger) areas are drawn on top.
+  for (const h of [...NOWCAST_HORIZONS].reverse()) {
+    const s = at(base.horizon + h);
+    if (!s) { beyond.push(h); continue; }
+    horizons.push(h);
+    features.push({ type: 'Feature', geometry: s.geometry, properties: {
+      role: `h${h}` as NowcastFeatureProps['role'], h, valid_t: s.validAt, issue_t: run.issuedAt, step: s.horizon, area_km2: s.areaKm2, run_id: run.id } });
+  }
+  features.push({ type: 'Feature', geometry: base.geometry, properties: {
+    role: 'now', h: 0, valid_t: base.validAt, issue_t: run.issuedAt, step: base.horizon, area_km2: base.areaKm2, run_id: run.id } });
+  return { run, stepAt: base.validAt, elapsedH, horizons: horizons.reverse(), beyond: beyond.reverse(),
+    fc: { type: 'FeatureCollection', features } };
+}
+
+/** "estimated from last satellite pass at 04:02 (VIIRS N20) + model". */
+export function nowcastSource(run: ForecastRun, fmt: (t: number) => string): string {
+  return run.lastObsAt != null
+    ? `estimated from last satellite pass at ${fmt(run.lastObsAt)} (${run.lastObsLabel}) + model`
+    : 'estimated from the ignition point + model (no satellite pass yet)';
+}

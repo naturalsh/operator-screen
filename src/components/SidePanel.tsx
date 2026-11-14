@@ -1,4 +1,6 @@
 import { useMemo } from 'react';
+import { NOWCAST_COLOUR, NOWCAST_EDGE, ZONE_COLOUR } from './MapView';
+import { nowcastSource, type Nowcast } from '../forecast';
 import { HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, STATUS_COLOUR, STATUS_LABEL, STATUS_SHORT, aheadContours, closureAt, currentForecast, inPolygon, fileKind, fireNearby, fmtAge, fmtTime, modelLabel, statusAt } from '../data';
 import type { ScenarioData, StreetStatus } from '../types';
 import type { LayerKey, MapMode } from './MapView';
@@ -32,6 +34,8 @@ interface Props {
   forecastRunId?: string | null;
   /** CONCEPT DEMO panel (fire reports), shown under the layers when the concept layer is on. */
   conceptPanel?: React.ReactNode;
+  /** "Fire now (estimated)" and the horizons from the time shown. */
+  nowcast?: Nowcast | null;
 }
 
 type Kind = 'synthetic' | 'model' | 'real';
@@ -54,7 +58,7 @@ function Section({ title, kind, label, children }: { title: string; kind?: Kind;
   );
 }
 
-export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew, forecastRunId, conceptPanel }: Props) {
+export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew, forecastRunId, conceptPanel, nowcast }: Props) {
   const fire = data.fire.features.map((f) => f.properties);
   const cur = currentForecast(fire, now, forecastRunId);
   const hasUpdates = cur?.set === 'update';
@@ -154,7 +158,21 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
             <span className="text-ink-400"> · model, P ≥ 50 %{forecastRunId !== undefined ? ' · precomputed, loaded by the operator' : hasUpdates ? ` · update ${cur.index} of ${cur.count}` : ''}</span>
           </p>
         ) : <p className="mb-1 text-xs text-ink-400">No forecast issued yet.</p>}
-        {forecasts.map((p) => (
+        {nowcast ? (
+          <div data-nowcast-list>
+            {nowcast.fc.features.slice().reverse().map(({ properties: f }) => (
+              <div key={f.role} className="flex items-center gap-2 py-0.5">
+                <span className="inline-block h-2.5 w-5 rounded-sm"
+                  style={f.role === 'now' ? { background: NOWCAST_COLOUR, border: `1.5px solid ${NOWCAST_EDGE}` }
+                    : f.role === 'h6' ? { border: `1.5px solid ${ZONE_COLOUR.h6}` }
+                      : { background: ZONE_COLOUR[f.role as 'h1' | 'h2' | 'h3'], opacity: f.role === 'h1' ? 0.8 : f.role === 'h2' ? 0.55 : 0.35 }} />
+                <span>{f.role === 'now' ? 'Fire now (est.)' : f.role === 'h1' ? '+1 h danger zone' : `+${f.h} h`} · {f.area_km2.toFixed(1)} km²</span>
+                <span className="ml-auto text-xs text-ink-400">{f.role === 'now' ? `for ${fmtTime(f.valid_t, timeZone)}` : `by ${fmtTime(f.valid_t, timeZone)}`}</span>
+              </div>
+            ))}
+            <p className="mt-0.5 text-[11px] text-ink-400">{nowcastSource(nowcast.run, (x) => fmtTime(x, timeZone))}.</p>
+          </div>
+        ) : forecasts.map((p) => (
           <div key={p.id} className="flex items-center gap-2 py-0.5">
             <span className="inline-block h-1 w-5 rounded"
               style={{ background: HORIZON_COLOURS[p.rank ?? 0], opacity: p.t <= now ? 1 : 0.4 }} />

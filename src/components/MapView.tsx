@@ -3,12 +3,13 @@ import maplibregl, { type ExpressionSpecification, type GeoJSONSource, type Map 
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, STATUS_SHORT, URGENCY_COLOUR, URGENCY_LABEL, URGENCY_ORDER,
-  HORIZON_COLOURS, INITIAL_FORECAST_COLOUR, aheadContours, closureAt, closureSource, currentForecast, fireNearby, forecastOnly, forecastReach,
+  INITIAL_FORECAST_COLOUR, aheadContours, closureAt, closureSource, currentForecast, fireNearby, forecastOnly, forecastReach,
   modelLabel, fmtAge, fmtTime, statusAt, streetLabel, visibleCallers,
 } from '../data';
 import { resolveBasemap } from '../basemap';
 import { CONCEPT_LABEL, STATEMENT_LABEL, circle, type ClusterState } from '../reports';
 import { CREW_STATUS_COLOUR, type CrewStatus } from '../crews';
+import { nowcastSource, type Nowcast } from '../forecast';
 import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
 
 /** A crew vehicle that is away from its station. */
@@ -20,25 +21,30 @@ export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'nearby
 export type MapMode = 'simple' | 'detailed';
 
 /** Layers that only exist in Detailed mode. */
-const DETAILED_ONLY = ['initial-pending', 'initial-reached', 'initial-label', 'streets-nearby', 'burned-area',
-  'forecast-pending', 'forecast-reached', 'forecast-label'];
-/** Layers that only exist in Simple mode: the forecast drawn as an area instead of lines. */
-const SIMPLE_ONLY = ['forecast-fill', 'forecast-fill-edge', 'forecast-outline', 'forecast-tag'];
-/** Simple-mode forecast: an orange area with a thin white edge, unlike any road colour. */
-export const FORECAST_FILL_COLOUR = '#f97316';
+const DETAILED_ONLY = ['initial-pending', 'initial-reached', 'initial-label', 'streets-nearby', 'burned-area'];
+/** Layers that only exist in Simple mode. */
+const SIMPLE_ONLY: string[] = [];
+/** "Fire now (estimated)": the strongest thing on the map, bright orange-red with a clear edge. */
+export const NOWCAST_COLOUR = '#ff4d1a';
+export const NOWCAST_EDGE = '#ff2a00';
+/** Horizons from the time shown: +1 h a clear "danger zone", +2 / +3 h lighter, +6 h only an outline. */
+export const ZONE_COLOUR = { h1: '#f97316', h2: '#fb923c', h3: '#fdba74', h6: '#fed7aa' } as const;
+/** Kept for the legend of the forecast closure and older references. */
+export const FORECAST_FILL_COLOUR = ZONE_COLOUR.h1;
+/** Satellite detections of the last ACTIVE_FIRE_H hours are bright (active fire); older ones dark grey (burned). */
+export const ACTIVE_FIRE_H = 6;
+export const ACTIVE_FIRE_COLOUR = '#fde047';
+export const OLD_FIRE_COLOUR = '#4b5563';
 /** Streets closed by the forecast only: orange, dashed; observed closures are solid red. */
 export const FORECAST_CLOSURE_COLOUR = '#fb923c';
 
-/** Satellite detections in Simple mode: one colour for every sensor. */
-const SIMPLE_FIRE_COLOUR = '#fb7185';
 /** Radius around the selected caller and the active routes in which "fire nearby" is drawn. */
 const NEARBY_RADIUS_M = 1000;
 
 const LAYER_GROUPS: Record<LayerKey, string[]> = {
-  forecast: ['forecast-pending', 'forecast-reached', 'forecast-label',
-    'forecast-fill', 'forecast-fill-edge', 'forecast-outline', 'forecast-tag'],
+  forecast: ['forecast-zones', 'forecast-zone-lines', 'nowcast-fill', 'nowcast-casing', 'nowcast-edge', 'forecast-tag'],
   initial: ['initial-pending', 'initial-reached', 'initial-label'],
-  observed: ['hotspots', 'burned-area', 'flame-front'],
+  observed: ['hotspots-old', 'hotspots', 'burned-area', 'flame-front'],
   streets: ['streets-near', 'streets', 'streets-forecast'],
   nearby: ['streets-nearby'],
   callers: ['callers-selected', 'callers', 'callers-label'],
@@ -64,7 +70,6 @@ function conceptFc(clusters: ClusterState[]): [GeoJSON.FeatureCollection, GeoJSO
   return [{ type: 'FeatureCollection', features: points }, { type: 'FeatureCollection', features: discs }];
 }
 
-const HORIZON_COLOUR = ['match', ['get', 'rank'], 0, HORIZON_COLOURS[0], 1, HORIZON_COLOURS[1], 2, HORIZON_COLOURS[2], HORIZON_COLOURS[3]] as unknown as string;
 const INSTRUMENT_COLOUR = ['match', ['get', 'instrument'], 'MODIS', '#a855f7', 'SLSTR', '#14b8a6', '#ef4444'] as unknown as string;
 
 function callersFc(callers: CallerReport[], stages: Record<string, Stage>,
@@ -114,10 +119,12 @@ interface Props {
   /** CONCEPT DEMO: report clusters at the time shown (empty when the concept layer is off). */
   concept?: ClusterState[];
   fireVersion?: number;
+  /** "Fire now (estimated)" and the +1 / +2 / +3 / +6 h horizons from the time shown. */
+  nowcast?: Nowcast | null;
 }
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
-  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [] }: Props) {
+  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
@@ -145,8 +152,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       && pts.some((p) => near(p, s.properties.label_point!))).map((s) => s.properties.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, selectedId, routesKey]);
-  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId, concept });
-  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId, concept };
+  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId, concept, nowcast });
+  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId, concept, nowcast };
+  // The nowcast changes every 30 minutes of scenario time (or when another forecast is in force): reload it then.
+  const nowcastKey = nowcast ? `${nowcast.run.id}|${nowcast.stepAt}` : '';
   const vehicleMarkers = useRef(new Map<string, maplibregl.Marker>());
 
   /** Push the current time, selection and toggles into the map. */
@@ -157,29 +166,16 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     const upTo: ExpressionSpecification = ['<=', ['get', 't'], t];
     const kind = (k: string): ExpressionSpecification => ['==', ['get', 'kind'], k];
     const obs = (o: string): ExpressionSpecification => ['==', ['get', 'observation_type'], o];
-    // The forecast in force: the latest update issued by now (dashed until each horizon is reached).
+    // "Fire now (estimated)" and the horizons from now come from their own source (see the nowcast effect).
     const cur = currentForecast(d.fire.features.map((f) => f.properties), t, latest.current.forecastRunId);
-    const runId = latest.current.forecastRunId;
-    const inForce: ExpressionSpecification = runId !== undefined
-      ? ['all', kind('forecast'), ['==', ['get', 'run_id'], runId ?? 'none']]
-      : ['all', kind('forecast'), ['==', ['get', 'set'], cur?.set ?? 'none'], ['==', ['get', 'issue_t'], cur?.issuedAt ?? -1]];
-    map.setFilter('forecast-reached', ['all', inForce, upTo]);
-    map.setFilter('forecast-label', inForce);
-    map.setFilter('forecast-pending', ['all', inForce, ['>', ['get', 't'], t]]);
-    // Simple: only the next horizon not reached yet is a filled area (the last one once all are reached);
-    // the other horizons of the same forecast are thin, faint outlines. Each carries a "+1 h" tag.
-    const next = cur?.contours.find((p) => p.t > t) ?? cur?.contours[cur.contours.length - 1];
-    const isNext: ExpressionSpecification = ['==', ['get', 'id'], next?.id ?? ''];
-    map.setFilter('forecast-fill', ['all', inForce, isNext]);
-    map.setFilter('forecast-fill-edge', ['all', inForce, isNext]);
-    map.setFilter('forecast-outline', ['all', inForce, ['!', isNext]]);
-    map.setFilter('forecast-tag', inForce);
     // Optional: the single forecast made at ignition, for comparison (only when updates exist).
-    const initial: ExpressionSpecification = ['all', kind('forecast'), ['==', ['get', 'set'], cur?.set === 'update' ? 'initial' : 'none']];
+    const initial: ExpressionSpecification = ['all', kind('forecast'), ['==', ['get', 'set'], cur?.set === 'update' || latest.current.nowcast ? 'initial' : 'none']];
     map.setFilter('initial-reached', ['all', initial, upTo]);
     map.setFilter('initial-label', ['all', initial, upTo]);
     map.setFilter('initial-pending', ['all', initial, ['>', ['get', 't'], t]]);
-    map.setFilter('hotspots', ['all', obs('hotspots'), upTo]);
+    // Satellite detections: the last ACTIVE_FIRE_H hours are active fire (bright), older ones burned (dark grey).
+    const recent: ExpressionSpecification = ['>', ['get', 't'], t - ACTIVE_FIRE_H * 3600000];
+    map.setFilter('hotspots', ['all', obs('hotspots'), upTo, recent]);
     map.setFilter('flame-front', ['all', obs('flame_front'), upTo]);
     map.setFilter('burned-area', ['all', obs('burned_area'), upTo]);
     map.setFilter('streets-near', ['in', ['get', 'id'], ['literal', near]]);
@@ -189,16 +185,16 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     const simple = latest.current.mode === 'simple';
     map.setFilter('streets-forecast', forecastOnlyExpr);
     map.setFilter('streets', ['!', forecastOnlyExpr]);
-    map.setPaintProperty('hotspots', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : INSTRUMENT_COLOUR);
-    // Every overpass adds its pixels, so overlaps build up: keep each layer of pixels very light in Simple.
-    map.setPaintProperty('hotspots', 'fill-opacity', simple ? 0.06 : ['match', ['get', 'instrument'], 'VIIRS', 0.3, 0.1]);
-    // The forecast is the main fire line in Simple: draw the not-yet-reached part clearly too.
-    map.setPaintProperty('forecast-pending', 'line-width', simple ? 2.2 : 1.4);
-    map.setPaintProperty('forecast-pending', 'line-opacity', simple ? 0.95 : 0.55);
-    map.setPaintProperty('forecast-reached', 'line-width', simple ? 4 : 3.5);
+    // Active fire: one bright colour in Simple, the sensor colours in Detailed. The 1 km MODIS / SLSTR pixels stay
+    // light so they do not hide the estimated fire under them.
+    map.setPaintProperty('hotspots', 'fill-color', simple ? ACTIVE_FIRE_COLOUR : INSTRUMENT_COLOUR);
+    map.setPaintProperty('hotspots', 'fill-opacity', ['match', ['get', 'instrument'], 'VIIRS', simple ? 0.32 : 0.4, simple ? 0.1 : 0.15]);
     map.setPaintProperty('hotspots', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : INSTRUMENT_COLOUR);
-    map.setPaintProperty('flame-front', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : '#fde047');
-    map.setPaintProperty('flame-front', 'fill-opacity', simple ? 0.6 : 0.95);
+    // Older detections (burned): dark grey in both modes, the 1 km pixels hardly at all.
+    map.setFilter('hotspots-old', ['all', obs('hotspots'), upTo, ['!', recent]]);
+    map.setPaintProperty('flame-front', 'fill-color', ['case', recent, ACTIVE_FIRE_COLOUR, OLD_FIRE_COLOUR]);
+    map.setPaintProperty('flame-front', 'fill-opacity', ['case', recent, 0.9, 0.5]);
+
     // Fire nearby: a coarse pixel covers the street and neither source has closed it yet. (Not `t > now`:
     // a street that is never closed has t = scenario start.)
     map.setFilter('streets-nearby', ['all', ['<=', ['coalesce', ['get', 'tn'], 9e15], t],
@@ -291,7 +287,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
 
     map.on('load', () => {
       map.addSource('fire', { type: 'geojson', data: data.fire });
-      map.addSource('forecast-tags', { type: 'geojson', data: forecastTagPoints(data) });
+      map.addSource('nowcast', { type: 'geojson', data: latest.current.nowcast?.fc ?? { type: 'FeatureCollection', features: [] } });
+      map.addSource('forecast-tags', { type: 'geojson', data: nowcastTagPoints(latest.current.nowcast) });
       map.addSource('streets', { type: 'geojson', data: data.streets });
       map.addSource('callers', { type: 'geojson', data: callersFc([], {}, (c) => c.urgency) });
       map.addSource('responders', { type: 'geojson', data: {
@@ -300,16 +297,25 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           properties: { id: r.id, name: r.name, kind: r.kind } })),
       } });
 
+      // Older detections (burned) at the bottom, then the horizons from now, the estimated fire now, and the
+      // active fire of the last hours on top of it. All under the streets, so roads stay readable.
+      map.addLayer({ id: 'hotspots-old', type: 'fill', source: 'fire',
+        paint: { 'fill-color': OLD_FIRE_COLOUR, 'fill-opacity': ['match', ['get', 'instrument'], 'VIIRS', 0.32, 0.05] } });
+      map.addLayer({ id: 'forecast-zones', type: 'fill', source: 'nowcast', filter: ['match', ['get', 'role'], ['h1', 'h2', 'h3'], true, false],
+        paint: { 'fill-color': ['match', ['get', 'role'], 'h1', ZONE_COLOUR.h1, 'h2', ZONE_COLOUR.h2, ZONE_COLOUR.h3],
+          'fill-opacity': ['match', ['get', 'role'], 'h1', 0.3, 'h2', 0.15, 0.09] } });
+      map.addLayer({ id: 'nowcast-fill', type: 'fill', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
+        paint: { 'fill-color': NOWCAST_COLOUR, 'fill-opacity': 0.62 } });
       map.addLayer({ id: 'hotspots', type: 'fill', source: 'fire',
         paint: { 'fill-color': INSTRUMENT_COLOUR, 'fill-opacity': ['match', ['get', 'instrument'], 'VIIRS', 0.3, 0.1] } });
       map.addLayer({ id: 'burned-area', type: 'line', source: 'fire',
-        paint: { 'line-color': '#ffffff', 'line-width': 1.5, 'line-opacity': 0.8 } });
+        paint: { 'line-color': '#9ca3af', 'line-width': 1.5, 'line-opacity': 0.8 } });
       map.addLayer({ id: 'flame-front', type: 'fill', source: 'fire',
-        paint: { 'fill-color': '#fde047', 'fill-opacity': 0.95, 'fill-outline-color': '#fef08a' } });
-
-      // Simple-mode forecast area: under the streets, so roads stay readable on top of it.
-      map.addLayer({ id: 'forecast-fill', type: 'fill', source: 'fire',
-        paint: { 'fill-color': FORECAST_FILL_COLOUR, 'fill-opacity': 0.28 } });
+        paint: { 'fill-color': ACTIVE_FIRE_COLOUR, 'fill-opacity': 0.9, 'fill-outline-color': '#fef08a' } });
+      map.addLayer({ id: 'forecast-zone-lines', type: 'line', source: 'nowcast', filter: ['!=', ['get', 'role'], 'now'],
+        paint: { 'line-color': ['match', ['get', 'role'], 'h1', '#fb923c', 'h2', ZONE_COLOUR.h2, 'h3', ZONE_COLOUR.h3, ZONE_COLOUR.h6],
+          'line-width': ['match', ['get', 'role'], 'h1', 2, 'h6', 1.3, 1],
+          'line-opacity': ['match', ['get', 'role'], 'h1', 0.95, 'h6', 0.9, 0.7] } });
 
       map.addLayer({ id: 'streets-near', type: 'line', source: 'streets',
         layout: { 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.9 } });
@@ -335,6 +341,12 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             10, ['match', ['get', 'highway'], 'track', 1.2, 2.2],
             14, ['match', ['get', 'highway'], 'track', 2.6, 4.5]] } });
 
+      // The edge of the estimated fire now: over the streets, so it stays the clearest line on the map.
+      map.addLayer({ id: 'nowcast-casing', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
+        layout: { 'line-join': 'round' }, paint: { 'line-color': '#fff7ed', 'line-width': 4, 'line-opacity': 0.75 } });
+      map.addLayer({ id: 'nowcast-edge', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
+        layout: { 'line-join': 'round' }, paint: { 'line-color': NOWCAST_EDGE, 'line-width': 2.2 } });
+
       // Crew routes: drawn over the streets; a route cut by a newly blocked street turns dashed amber.
       map.addLayer({ id: 'routes-casing', type: 'line', source: 'streets', layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: { 'line-color': '#083344', 'line-width': 9, 'line-opacity': 0.9 } });
@@ -351,21 +363,9 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         layout: { 'symbol-placement': 'line', 'text-field': ['concat', 'initial +', ['to-string', ['get', 'horizon_hours']], ' h'],
           'text-font': ['Noto Sans Regular'], 'text-size': 11, 'symbol-spacing': 400 },
         paint: { 'text-color': INITIAL_FORECAST_COLOUR, 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
-      map.addLayer({ id: 'forecast-pending', type: 'line', source: 'fire',
-        paint: { 'line-color': HORIZON_COLOUR, 'line-width': 1.4, 'line-dasharray': [3, 3], 'line-opacity': 0.55 } });
-      map.addLayer({ id: 'forecast-reached', type: 'line', source: 'fire',
-        paint: { 'line-color': HORIZON_COLOUR, 'line-width': 3.5 } });
-      map.addLayer({ id: 'forecast-label', type: 'symbol', source: 'fire',
-        layout: { 'symbol-placement': 'line', 'text-field': ['concat', 'forecast +', ['to-string', ['get', 'horizon_hours']], ' h'],
-          'text-font': ['Noto Sans Regular'], 'text-size': 11, 'symbol-spacing': 400 },
-        paint: { 'text-color': '#fde68a', 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
-      map.addLayer({ id: 'forecast-outline', type: 'line', source: 'fire',
-        paint: { 'line-color': '#fdba74', 'line-width': 1, 'line-opacity': 0.45 } });
-      map.addLayer({ id: 'forecast-fill-edge', type: 'line', source: 'fire',
-        paint: { 'line-color': '#ffffff', 'line-width': 1.4, 'line-opacity': 0.9 } });
-      // Two tags per horizon at most, at two tips of its contour (see forecastTagPoints).
+      // Two tags per horizon at most, at two tips of its contour (see nowcastTagPoints); "Fire now" once.
       map.addLayer({ id: 'forecast-tag', type: 'symbol', source: 'forecast-tags',
-        layout: { 'text-field': ['concat', '+', ['to-string', ['get', 'horizon_hours']], ' h'],
+        layout: { 'text-field': ['get', 'text'],
           'text-font': ['Noto Sans Regular'], 'text-size': 11,
           // Just outside the contour, on the side the tip faces.
           'text-anchor': ['match', ['get', 'side'], 'n', 'bottom', 's', 'top', 'e', 'left', 'w', 'right', 'ne', 'bottom-left',
@@ -374,7 +374,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             'w', ['literal', [-0.3, 0]], 'ne', ['literal', [0.2, -0.2]], 'nw', ['literal', [-0.2, -0.2]], 'se', ['literal', [0.2, 0.2]],
             ['literal', [-0.2, 0.2]]],
           'text-allow-overlap': false, 'text-padding': 2, 'symbol-sort-key': ['get', 'horizon_hours'] },
-        paint: { 'text-color': '#ffffff', 'text-halo-color': '#7c2d12', 'text-halo-width': 1.6 } });
+        paint: { 'text-color': '#ffffff', 'text-halo-color': ['case', ['==', ['get', 'role'], 'now'], NOWCAST_EDGE, '#7c2d12'], 'text-halo-width': 1.6 } });
 
       map.addLayer({ id: 'responders', type: 'circle', source: 'responders',
         paint: { 'circle-radius': 8, 'circle-color': '#0e7490', 'circle-stroke-color': '#a5f3fc', 'circle-stroke-width': 2.5 } });
@@ -423,8 +423,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       }
 
       // One click handler, most specific feature first: caller, response point, street, fire front.
-      const CLICKABLE = ['callers', 'report-points', 'cluster-fill', 'responders', 'streets', 'streets-forecast', 'flame-front', 'forecast-reached', 'forecast-pending',
-        'initial-reached', 'initial-pending', 'hotspots', 'burned-area'];
+      const CLICKABLE = ['callers', 'report-points', 'cluster-fill', 'responders', 'streets', 'streets-forecast', 'flame-front', 'hotspots',
+        'nowcast-fill', 'forecast-zones', 'forecast-zone-lines', 'initial-reached', 'initial-pending', 'burned-area', 'hotspots-old'];
       const muted = (text: string) => `<div class="ns-muted">${text}</div>`;
       const tag = (p: { synthetic?: boolean; basis?: string }) => (p.synthetic ? '<span class="synthetic-tag">SYNTHETIC</span>'
         : p.basis === 'fire_model' ? '<span class="model-tag">MODEL OUTPUT</span>'
@@ -495,6 +495,18 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             + (closure && (p.ts ?? 9e15) <= t && (p.satellite_reason ?? p.reason) ? muted(p.satellite_reason ?? p.reason ?? '') : '')
             + (p.imagery_date ? muted(`Imagery: ${p.imagery_date}`) : '')
             + muted(p.confirmed_by_operator ? 'Confirmed by operator' : 'Not confirmed by an operator') + tag(p);
+        } else if (['nowcast-fill', 'forecast-zones', 'forecast-zone-lines'].includes(hit.layer.id)) {
+          const nc = latest.current.nowcast;
+          if (!nc) return;
+          const role = hit.properties.role as string;
+          const f = nc.fc.features.find((x) => x.properties.role === role)!.properties;
+          const src = nowcastSource(nc.run, (x) => fmtTime(x, tz));
+          html = role === 'now'
+            ? `<b>Fire now (estimated)</b><div>Modelled fire extent for ${fmtTime(f.valid_t, tz)}, P ≥ 50 % · ${f.area_km2.toFixed(1)} km²</div>`
+              + `<div>${src}</div>` + muted(`Forecast issued ${fmtTime(nc.run.issuedAt, tz)}, advanced ${f.step} h. A model estimate, not an observation.`)
+            : `<b>${role === 'h1' ? 'Danger zone: fire within 1 h' : `Forecast +${f.h} h`}</b>`
+              + `<div>Modelled fire extent by ${fmtTime(f.valid_t, tz)}, P ≥ 50 % · ${f.area_km2.toFixed(1)} km²</div>`
+              + muted(`Forecast issued ${fmtTime(nc.run.issuedAt, tz)} from ${nc.run.from}`);
         } else {
           const p = hit.properties as FireFront & { t: number };
           const when = `${fmtTime(p.t, tz)} local`;
@@ -510,7 +522,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             html = `<b>${what}</b><div>${p.instrument ?? ''} ${p.satellite ?? ''} · ${when}</div>`
               + (p.detections ? `<div>${p.detections} hotspot pixel${p.detections > 1 ? 's' : ''} · FRP ${Number(p.frp_mw ?? 0).toFixed(0)} MW</div>` : '')
               + (p.area_km2 != null ? `<div>Pixel footprint ${Number(p.area_km2).toFixed(1)} km²</div>` : '')
-              + muted(`${p.source} · observed, ${fmtAge(t - p.t)} before the time shown`);
+              + muted(`${p.source} · observed, ${fmtAge(t - p.t)} before the time shown`
+                + (t - p.t > ACTIVE_FIRE_H * 3600000 ? ` · older than ${ACTIVE_FIRE_H} h: drawn as burned` : ` · within ${ACTIVE_FIRE_H} h: active fire`));
           }
         }
         popupRef.current?.remove();
@@ -550,10 +563,16 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     const map = mapRef.current;
     if (!map || !ready.current || !fireVersion) return;
     (map.getSource('fire') as maplibregl.GeoJSONSource | undefined)?.setData(data.fire);
-    (map.getSource('forecast-tags') as maplibregl.GeoJSONSource | undefined)?.setData(forecastTagPoints(data));
     sync();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fireVersion]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready.current) return;
+    (map.getSource('nowcast') as maplibregl.GeoJSONSource | undefined)?.setData(nowcast?.fc ?? { type: 'FeatureCollection', features: [] });
+    (map.getSource('forecast-tags') as maplibregl.GeoJSONSource | undefined)?.setData(nowcastTagPoints(nowcast));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nowcastKey]);
 
   // Bring a newly selected caller into view.
   useEffect(() => {
@@ -578,7 +597,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   return (
     <>
       <div ref={container} className="h-full w-full" />
-      <Legend mode={mode} nearby={layers.nearby} />
+      <Legend mode={mode} nearby={layers.nearby} nowcast={nowcast} timeZone={data.entry.timezone ?? 'UTC'} />
       {offline && (
         <span className="absolute left-2 top-2 rounded bg-ink-800/90 px-2 py-1 text-[11px] text-ink-200">
           Offline basemap (packaged copy, demo area only)
@@ -588,28 +607,29 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   );
 }
 
-/** Label points of the forecast contours: two tips of each contour, on different sides for each horizon
- * (first: north and south, second: east and west, third: north-east and south-west) so nested contours do
- * not put their tags on top of each other. Points carry the contour's properties for the same filter. */
-function forecastTagPoints(data: ScenarioData): GeoJSON.FeatureCollection {
+/** Label points of the nowcast contours: two tips of each horizon, on different sides for each (+1 h: north and
+ * south, +2 h: east and west, +3 h: north-east and south-west, +6 h: north-west and south-east) so nested contours
+ * do not put their tags on top of each other; "Fire now" once, at its southern tip. */
+function nowcastTagPoints(nc: Nowcast | null): GeoJSON.FeatureCollection {
   const features: GeoJSON.Feature[] = [];
-  for (const f of data.fire.features) {
+  const sides: Record<string, [string, (c: number[]) => number][]> = {
+    now: [['s', (c) => -c[1]]],
+    h1: [['n', (c) => c[1]], ['e', (c) => c[0]]],
+    h2: [['e', (c) => c[0]], ['w', (c) => -c[0]]],
+    h3: [['ne', (c) => c[0] + c[1]], ['sw', (c) => -c[0] - c[1]]],
+    h6: [['nw', (c) => c[1] - c[0]], ['se', (c) => c[0] - c[1]]],
+  };
+  for (const f of nc?.fc.features ?? []) {
     const p = f.properties;
-    if (p.kind !== 'forecast') continue;
     const rings = f.geometry.type === 'Polygon' ? [f.geometry.coordinates[0]]
       : f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates.map((poly) => poly[0]) : [];
     const pts = rings.flat();
     if (!pts.length) continue;
     const tip = (score: (c: number[]) => number) => pts.reduce((a, b) => (score(b) > score(a) ? b : a));
-    const sides: [string, (c: number[]) => number][][] = [
-      [['n', (c) => c[1]], ['s', (c) => -c[1]]],
-      [['e', (c) => c[0]], ['w', (c) => -c[0]]],
-      [['ne', (c) => c[0] + c[1]], ['sw', (c) => -c[0] - c[1]]],
-      [['nw', (c) => c[1] - c[0]], ['se', (c) => c[0] - c[1]]],
-    ];
-    const props = { id: p.id, kind: p.kind, set: p.set, issue_t: p.issue_t, horizon_hours: p.horizon_hours, t: p.t, run_id: p.run_id ?? '' };
-    for (const [side, score] of sides[Math.min(p.rank ?? 0, 3)]) {
-      features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: tip(score) }, properties: { ...props, side } });
+    const text = p.role === 'now' ? 'Fire now (est.)' : p.role === 'h1' ? '+1 h danger zone' : `+${p.h} h`;
+    for (const [side, score] of sides[p.role]) {
+      features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: tip(score) },
+        properties: { role: p.role, horizon_hours: p.h, text, side, run_id: p.run_id } });
     }
   }
   return { type: 'FeatureCollection', features };
@@ -644,7 +664,7 @@ function AreaKey({ fill, opacity, edge }: { fill: string; opacity: number; edge?
 }
 
 /** Small legend under the zoom buttons; starts as a "Legend" button so it never hides callers. */
-function Legend({ mode, nearby }: { mode: MapMode; nearby: boolean }) {
+function Legend({ mode, nearby, nowcast, timeZone }: { mode: MapMode; nearby: boolean; nowcast: Nowcast | null; timeZone: string }) {
   const [open, setOpen] = useState(false);
   const simple = mode === 'simple';
   const row = (key: React.ReactNode, text: string) => (
@@ -663,21 +683,26 @@ function Legend({ mode, nearby }: { mode: MapMode; nearby: boolean }) {
           {!simple && nearby && row(<LineKey colour="#fbbf24" halo />, 'Fire nearby (satellite, 1 km pixel)')}
           {row(<LineKey colour="#22d3ee" casing="#083344" />, 'Crew route')}
           {row(<LineKey colour="#fbbf24" dashed casing="#083344" />, 'Route cut')}
-          {simple ? <>
-            {row(<AreaKey fill={FORECAST_FILL_COLOUR} opacity={0.4} edge="#ffffff" />, 'Fire forecast, next horizon')}
-            {row(<LineKey colour="#fdba74" />, 'Later horizons (to +6 h)')}
-          </> : <>
-            {row(<LineKey colour={HORIZON_COLOURS[0]} />, 'Fire forecast (+1 / +2 / +3 / +6 h)')}
-            {row(<LineKey colour={HORIZON_COLOURS[0]} dashed />, 'Forecast, time not reached yet')}
-          </>}
+          <div className="pt-0.5" />
+          {row(<AreaKey fill={NOWCAST_COLOUR} opacity={0.75} edge={NOWCAST_EDGE} />, 'Fire now (estimated)')}
+          {nowcast && (
+            <div className="whitespace-normal pl-8 text-[10px] leading-tight text-ink-400" data-legend-nowcast>
+              {nowcastSource(nowcast.run, (x) => fmtTime(x, timeZone))}
+            </div>
+          )}
+          {row(<AreaKey fill={ZONE_COLOUR.h1} opacity={0.45} edge="#fb923c" />, '+1 h danger zone')}
+          {row(<AreaKey fill={ZONE_COLOUR.h2} opacity={0.25} />, '+2 h')}
+          {row(<AreaKey fill={ZONE_COLOUR.h3} opacity={0.15} />, '+3 h')}
+          {row(<LineKey colour={ZONE_COLOUR.h6} />, '+6 h (outline)')}
           {!simple && row(<LineKey colour={INITIAL_FORECAST_COLOUR} />, 'Initial forecast (at ignition)')}
-          {simple ? row(<AreaKey fill={SIMPLE_FIRE_COLOUR} opacity={0.35} />, 'Fire seen by satellite')
+          {simple ? row(<AreaKey fill={ACTIVE_FIRE_COLOUR} opacity={0.6} />, `Active fire, satellite (last ${ACTIVE_FIRE_H} h)`)
             : <>
-              {row(<AreaKey fill="#ef4444" opacity={0.45} />, 'VIIRS 375 m')}
+              {row(<AreaKey fill="#ef4444" opacity={0.45} />, `VIIRS 375 m (last ${ACTIVE_FIRE_H} h)`)}
               {row(<AreaKey fill="#a855f7" opacity={0.3} />, 'MODIS 1 km')}
               {row(<AreaKey fill="#14b8a6" opacity={0.3} />, 'SLSTR 1 km')}
-              {row(<AreaKey fill="#fde047" opacity={0.9} />, 'Flame front (Sentinel-2)')}
+              {row(<AreaKey fill={ACTIVE_FIRE_COLOUR} opacity={0.9} />, 'Flame front (Sentinel-2)')}
             </>}
+          {row(<AreaKey fill={OLD_FIRE_COLOUR} opacity={0.6} />, `Burned / older detections (> ${ACTIVE_FIRE_H} h)`)}
           <div className="pt-0.5" />
           {row(<DotKey fill={URGENCY_COLOUR.life_threat} />, 'Caller: life threat')}
           {row(<DotKey fill={URGENCY_COLOUR.urgent} />, 'Caller: urgent')}

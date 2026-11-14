@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { fmtTime } from '../data';
-import type { ForecastLoad, ForecastRun, NewObservation } from '../forecast';
+import { nowcastSource, type ForecastLoad, type ForecastRun, type NewObservation, type Nowcast } from '../forecast';
 
 interface Props {
   load: ForecastLoad | null;
@@ -19,13 +19,15 @@ interface Props {
   busy: boolean;
   timeZone: string;
   compact?: boolean;
+  /** "Fire now (estimated)" at the time shown. */
+  nowcast?: Nowcast | null;
   onUpdate: (kind: 'update' | 'rerun') => void;
 }
 
 const SOURCE_LABEL = { precomputed: 'PRECOMPUTED', live: 'LIVE MODEL' } as const;
 
 /** The forecast in force and the operator's "Update forecast" button (map overlay, top left). */
-export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blockedNote, newReports = 0, sourceKind, busy, timeZone, compact, onUpdate }: Props) {
+export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blockedNote, newReports = 0, sourceKind, busy, timeZone, compact, nowcast, onUpdate }: Props) {
   const [open, setOpen] = useState(!compact);
   const run = load?.run;
   const t = (x: number) => fmtTime(x, timeZone);
@@ -44,7 +46,7 @@ export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blo
     );
   }
   return (
-    <div data-forecast-control="open"
+    <div data-forecast-control="open" data-forecast-run={run?.id ?? ''} data-forecast-issued={run?.issuedAt ?? ''}
       className={`absolute left-2 top-2 z-10 rounded-lg border border-ink-600 bg-ink-900/90 p-2.5 text-xs text-ink-100 shadow-lg backdrop-blur ${compact ? 'w-[min(300px,calc(100%-70px))]' : 'w-[300px]'}`}>
       <div className="mb-1 flex items-center gap-2">
         <span className="font-bold uppercase tracking-wider text-ink-400">Forecast</span>
@@ -72,6 +74,17 @@ export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blo
             </div>
           )}
           {run.sourceNote && <div className="mt-1 text-amber-300">{run.sourceNote}</div>}
+          {nowcast && (
+            <div data-nowcast className="mt-1.5 flex gap-1.5 rounded bg-ink-800 px-1.5 py-1">
+              <span className="mt-0.5 h-3 w-3 shrink-0 rounded-sm border-2" style={{ background: '#ff4d1a', borderColor: '#ff2a00' }} />
+              <span>
+                <b>Fire now (estimated)</b> for {t(nowcast.stepAt)}: {nowcastSource(nowcast.run, t)}.
+                {nowcast.beyond.length > 0 && (
+                  <span className="text-ink-400"> +{nowcast.beyond.join(' / +')} h beyond this forecast's 12 h.</span>
+                )}
+              </span>
+            </div>
+          )}
         </div>
       ) : <div className="text-ink-400">No forecast yet.</div>}
 

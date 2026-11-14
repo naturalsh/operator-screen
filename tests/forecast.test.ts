@@ -7,7 +7,7 @@
  *   npx tsx tests/forecast.test.ts
  */
 import { readFileSync } from 'node:fs';
-import { PrecomputedForecasts, applyForecastClosures, forecastClosures, forecastInForce, loadAt, type ForecastLoad } from '../src/forecast';
+import { PrecomputedForecasts, applyForecastClosures, forecastClosures, forecastInForce, loadAt, nowcastAt, type ForecastLoad } from '../src/forecast';
 import { NEVER, prepareStreets } from '../src/data';
 import type { ConceptReports, FireReport, ForecastLibrary, StreetFeature } from '../src/types';
 import { HALF_LIFE_MIN, clustersAt, currentConfidence, mockAnswer, type ConfirmationAnswer, type ConfirmationAsk } from '../src/reports';
@@ -129,6 +129,26 @@ for (const c of concept.clusters.filter((x) => x.candidate_at)) {
   if (m.answered_at <= crew.sent_at || m.answer !== 'yes' || mockAnswer(crew, false, true).answer !== 'no') fail('mock answers');
 }
 
+// 7. "Fire now (estimated)": the contour drawn is the forecast's last step not after the time shown, and the
+// horizons are exactly +1 / +2 / +3 / +6 h after it (as far as the forecast runs).
+let nowcasts = 0;
+for (const r of pre.runs) {
+  if (r.steps[0]?.horizon !== 0) fail(`${r.id}: no horizon-0 contour (the area it started from)`);
+  for (let at = r.issuedAt - 10 * 60e3; at <= r.issuedAt + 13 * 3600e3; at += 17 * 60e3) {
+    const nc = nowcastAt(r, at);
+    if (at < r.issuedAt) { if (nc) fail(`${r.id}: nowcast before its issue time`); continue; }
+    nowcasts++;
+    if (!nc) { fail(`${r.id}: no nowcast at ${new Date(at).toISOString()}`); continue; }
+    if (nc.stepAt > at) fail(`${r.id}: "fire now" for ${new Date(nc.stepAt).toISOString()} is after the time shown ${new Date(at).toISOString()}`);
+    if (at - nc.stepAt >= 30 * 60e3 && at < r.issuedAt + 12 * 3600e3) fail(`${r.id}: "fire now" lags more than 30 min`);
+    const now = nc.fc.features.find((f) => f.properties.role === 'now')!.properties;
+    for (const f of nc.fc.features) {
+      if (f.properties.run_id !== r.id) fail(`${r.id}: nowcast feature from another forecast`);
+      if (f.properties.role !== 'now' && Math.abs(f.properties.valid_t - now.valid_t - f.properties.h * 3600e3) > 1) fail(`${r.id}: +${f.properties.h} h is not ${f.properties.h} h after fire now`);
+    }
+  }
+}
+
 console.log(`forecast: ${pre.runs.length} forecasts checked; ${compared} causality comparisons; closures by 23 Jun 08:40: `
-  + `${a} without updates, ${b} updating at every pass; ${conceptChecked} concept cluster states; ${failures} failures`);
+  + `${a} without updates, ${b} updating at every pass; ${conceptChecked} concept cluster states; ${nowcasts} nowcasts; ${failures} failures`);
 process.exit(failures ? 1 : 0);

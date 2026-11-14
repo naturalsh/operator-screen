@@ -47,13 +47,17 @@ Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_over
 
 The switch in the header changes how much the map shows (add `?mode=detailed` to a link to open in Detailed).
 
-- **Simple** (default): the forecast in force as an area (the next horizon not reached yet filled in orange with a
-  white edge, later horizons as thin outlines, each tagged "+1 h / +2 h / +3 h / +6 h"), everything satellites have
-  seen so far in one light colour, closed roads (solid red: seen by satellite; orange dashed: forecast closure),
-  callers, crews and their routes.
+- **Simple** (default):
+  - **Fire now (estimated)**, the strongest layer: the forecast in force advanced from its issue time to the time
+    shown (its last 30-minute contour not after it), bright orange-red with a clear edge. It is a model estimate,
+    and the forecast box, the legend and the popup say so: "estimated from last satellite pass at 04:02 (VIIRS N20)
+    + model".
+  - The horizons from the time shown, lighter and thinner on top of it: **+1 h** a clear "danger zone", **+2 h**
+    and **+3 h** lighter, **+6 h** only an outline. Each is tagged on the map.
+  - Satellite detections of the **last 6 hours** bright (active fire); older ones dark grey ("burned / older").
+  - Closed roads (solid red: seen by satellite; orange dashed: forecast closure), callers, crews and their routes.
 - **Detailed**: adds the satellite sensors in their own colours (VIIRS, MODIS, SLSTR, Sentinel-2 flame front and
-  burned area), the initial forecast made at
-  ignition and the "fire nearby" warning.
+  burned area), the initial forecast made at ignition and the "fire nearby" warning.
 
 The **legend** is a small button under the zoom buttons; it opens there, on a translucent panel, and lists the
 lines and colours of the mode shown. "Fire nearby (satellite)" is a separate layer, off by default; when on,
