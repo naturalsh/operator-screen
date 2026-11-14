@@ -251,50 +251,87 @@ def forecast_features(updates: list[dict]) -> list[dict]:
     return feats
 
 
+SKILL_NOTE = ("In-sample parameters (r0_multiplier, gust fraction, wind-direction spread and length-to-breadth cap "
+              "were set on this same fire), hindcast weather (archived Open-Meteo historical forecast, not the forecast "
+              "available at the time) and zero satellite latency (each update is issued at the overpass minute; real "
+              "near-real-time data arrive hours later). This is a replay of one fire, not a validation.")
+
+
 def forecast_skill(fire_root: Path, cfg: dict, updates: list[dict], initial: gpd.GeoDataFrame, t0: datetime) -> pd.DataFrame:
-    """Share of satellite hotspots inside the forecast, updated forecasts vs. the single forecast at ignition.
+    """How well forecasts match later satellite data: updated forecasts vs. the single forecast at ignition.
 
     For every update and horizon h, the hotspots (FIRMS VIIRS and MODIS centres, low confidence dropped)
-    acquired between the issue time and issue + h are counted; "new ground" are those outside the perimeter
-    the update started from. The one-shot forecast is the ignition run's contour for the same clock time.
+    acquired between the issue time and issue + h are counted. A hotspot falls in several overlapping updates,
+    so the detection counts are larger than the number of distinct hotspots, which is given too.
+    "New ground" are hotspots outside the area the update started from. The one-shot forecast is the ignition
+    run's contour for the same clock time.
+
+    Recall alone rewards large forecasts, so the over-prediction side is reported as well: of the area the
+    forecast adds beyond its starting area, the share that any VIIRS or Sentinel-2 observation of the whole
+    event ever saw burning.
+
+    Rows: all updates, the updates started from the ignition point, and those started from a satellite perimeter.
     """
     from fireproj.data.firms_timeline import load_timeline
 
     det, _ = load_timeline(cfg, EVENT)
     utm = initial.estimate_utm_crs()
-    det = det.to_crs(utm)
+    det = det.to_crs(utm).reset_index(drop=True)
+    det["_id"] = np.arange(len(det))
     init = initial.to_crs(utm).sort_values("horizon_hours")
+    ff = gpd.read_file(fire_root / "exports" / f"{EVENT}_firefront.geojson").to_crs(utm)
+    fine = ff[(ff["kind"] == "observed") & ((ff["instrument"] == "VIIRS") | ff["observation_type"].isin(["burned_area", "flame_front"]))]
+    ever_burned = unary_union(list(fine.geometry))
     rows = []
     for u in updates:
         con = u["contours"].to_crs(utm)
         perim = None if u["perimeter"] is None else gpd.GeoSeries([u["perimeter"]], crs=u["contours"].estimate_utm_crs()).to_crs(utm).iloc[0]
+        start = "ignition point" if perim is None else "satellite perimeter"
         for h in UPDATE_SHOWN_H:
             valid = u["issued"] + timedelta(hours=h)
-            pts = det[(det["acq_datetime"] > pd.Timestamp(u["issued"])) & (det["acq_datetime"] <= pd.Timestamp(valid))]
-            if pts.empty:
-                continue
             new_geom = con[np.isclose(con["horizon_hours"], h)].geometry.iloc[0]
             old = init[init["horizon_hours"] <= (valid - t0).total_seconds() / 3600.0]
             old_geom = old.geometry.iloc[-1] if len(old) else None
+            pts = det[(det["acq_datetime"] > pd.Timestamp(u["issued"])) & (det["acq_datetime"] <= pd.Timestamp(valid))]
             fresh = pts if perim is None else pts[~pts.within(perim)]
+            added = new_geom if perim is None else new_geom.difference(perim)
+            added_old = (old_geom if perim is None else old_geom.difference(perim)) if old_geom is not None else None
             rows.append({
-                "horizon": h, "hotspots": len(pts),
-                "in_updated": int(pts.within(new_geom).sum()),
-                "in_one_shot": int(pts.within(old_geom).sum()) if old_geom is not None else 0,
+                "start": start, "horizon": h, "hotspots": len(pts), "ids": set(pts["_id"]), "new_ids": set(fresh["_id"]),
+                "in_updated": int(pts.within(new_geom).sum()) if len(pts) else 0,
+                "in_one_shot": int(pts.within(old_geom).sum()) if len(pts) and old_geom is not None else 0,
                 "new_ground": len(fresh),
-                "new_in_updated": int(fresh.within(new_geom).sum()),
-                "new_in_one_shot": int(fresh.within(old_geom).sum()) if old_geom is not None else 0,
+                "new_in_updated": int(fresh.within(new_geom).sum()) if len(fresh) else 0,
+                "new_in_one_shot": int(fresh.within(old_geom).sum()) if len(fresh) and old_geom is not None else 0,
+                "added_km2": added.area / 1e6, "added_burned_km2": added.intersection(ever_burned).area / 1e6,
+                "added_old_km2": added_old.area / 1e6 if added_old is not None else 0.0,
+                "added_old_burned_km2": added_old.intersection(ever_burned).area / 1e6 if added_old is not None else 0.0,
+                "update": u["issued"],
             })
-    df = pd.DataFrame(rows).groupby("horizon").sum()
-    pct = lambda a, b: (100.0 * a / b.where(b > 0)).round(1)
-    return pd.DataFrame({
-        "hotspots": df["hotspots"],
-        "inside updated forecast %": pct(df["in_updated"], df["hotspots"]),
-        "inside one-shot forecast %": pct(df["in_one_shot"], df["hotspots"]),
-        "hotspots on new ground": df["new_ground"],
-        "new ground inside updated %": pct(df["new_in_updated"], df["new_ground"]),
-        "new ground inside one-shot %": pct(df["new_in_one_shot"], df["new_ground"]),
-    })
+    raw = pd.DataFrame(rows)
+    pct = lambda a, b: round(100.0 * a / b, 1) if b > 0 else float("nan")
+    out = []
+    for label, sel in (("all updates", raw), ("started from ignition point", raw[raw["start"] == "ignition point"]),
+                       ("started from satellite perimeter", raw[raw["start"] == "satellite perimeter"])):
+        for h in UPDATE_SHOWN_H:
+            g = sel[sel["horizon"] == h]
+            if g.empty:
+                continue
+            out.append({
+                "updates": label, "horizon": f"+{h:g} h", "n updates": g["update"].nunique(),
+                "hotspot detections (counted per update)": int(g["hotspots"].sum()),
+                "distinct hotspots": len(set().union(*g["ids"])),
+                "inside updated %": pct(g["in_updated"].sum(), g["hotspots"].sum()),
+                "inside one-shot %": pct(g["in_one_shot"].sum(), g["hotspots"].sum()),
+                "new-ground detections": int(g["new_ground"].sum()),
+                "distinct new-ground hotspots": len(set().union(*g["new_ids"])),
+                "new ground inside updated %": pct(g["new_in_updated"].sum(), g["new_ground"].sum()),
+                "new ground inside one-shot %": pct(g["new_in_one_shot"].sum(), g["new_ground"].sum()),
+                "forecast new area km2 (summed)": round(float(g["added_km2"].sum()), 1),
+                "of it seen burning, updated %": pct(g["added_burned_km2"].sum(), g["added_km2"].sum()),
+                "of it seen burning, one-shot %": pct(g["added_old_burned_km2"].sum(), g["added_old_km2"].sum()),
+            })
+    return pd.DataFrame(out)
 
 
 # --------------------------------------------------------------------------- street access (model output)
@@ -687,9 +724,15 @@ def main() -> int:
     print("forecast updates:", len(updates), [f"{u['issued']:%d %H:%M}{'' if u['new_obs'] else '*'}" for u in updates])
     print(skill.to_string())
     (OUT.parent.parent.parent / "docs" / "forecast_skill.md").write_text(
-        "Share of satellite hotspots inside the forecast (Marmaris 2022; hotspots acquired between the issue "
-        "time and issue + horizon; 'new ground' = outside the perimeter the update started from).\n\n"
-        + _markdown(skill.reset_index()) + "\n", encoding="utf-8")
+        "# Forecast overlap with later satellite data (Marmaris 2022)\n\n"
+        "Written by `tools/build_marmaris_scenario.py`. For every forecast update and horizon, the FIRMS hotspots "
+        "(VIIRS and MODIS, low confidence dropped) acquired between the issue time and issue + horizon are "
+        "counted; a hotspot falls in several overlapping updates, so 'detections' count it once per update and "
+        "'distinct hotspots' once. 'New ground' = outside the area the update started from. The share of hotspots "
+        "inside a forecast is a recall: larger forecasts score higher. The last three columns give the other "
+        "side: of the area each forecast adds beyond its starting area, the share that any VIIRS or Sentinel-2 "
+        "observation of the whole event saw burning.\n\n"
+        + _markdown(skill) + "\n\n**Caveats.** " + SKILL_NOTE + "\n", encoding="utf-8")
     callers = build_caller_reports(status_gdf, t0, places)
     for name, data in (("street_access.geojson", streets), ("caller_reports.json", callers),
                        ("responders.json", responders)):

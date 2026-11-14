@@ -182,15 +182,34 @@ reaches the street.
 
 ![Latest and initial forecast](docs/22_latest_and_initial_forecast.png)
 
-Share of satellite hotspots inside the forecast, updated forecasts against the single forecast at ignition
-(16 updates; hotspots acquired between the issue time and issue + horizon, summed over the updates;
-"new ground" = hotspots outside the perimeter the update started from):
+How the forecasts compare with later satellite data, updated forecasts against the single forecast made at
+ignition. For each update and horizon, the FIRMS hotspots (VIIRS and MODIS) acquired between the issue time and
+issue + horizon are counted. Overlapping updates count a hotspot once each, so the number of distinct hotspots is
+given too. "New ground" means outside the area the update started from. The share of hotspots inside a forecast is
+a recall and rewards large forecasts; the last column gives the other side: of the area a forecast adds beyond
+its starting area, the share that any VIIRS or Sentinel-2 observation of the whole event saw burning.
 
-| Horizon | Hotspots | Inside updated forecast | Inside one-shot forecast | On new ground | New ground inside updated | New ground inside one-shot |
-|---:|---:|---:|---:|---:|---:|---:|
-| +4 h | 807 | 74.5 % | 8.9 % | 331 | 37.8 % | 3.3 % |
-| +8 h | 1267 | 63.0 % | 11.4 % | 706 | 33.6 % | 6.4 % |
-| +12 h | 1741 | 71.6 % | 13.4 % | 974 | 49.3 % | 7.9 % |
+| Updates | Horizon | Hotspot detections (distinct) | Inside updated | Inside one-shot | New ground: detections (distinct) | New ground inside updated | New ground inside one-shot | Forecast new area seen burning (updated / one-shot) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all 16 | +4 h | 807 (478) | 74.5 % | 8.9 % | 331 (258) | 37.8 % | 3.3 % | 52.7 % / 39.5 % |
+| all 16 | +8 h | 1267 (536) | 63.0 % | 11.4 % | 706 (417) | 33.6 % | 6.4 % | 43.8 % / 42.5 % |
+| all 16 | +12 h | 1741 (539) | 71.6 % | 13.4 % | 974 (448) | 49.3 % | 7.9 % | 36.8 % / 45.6 % |
+| 2 started from the ignition point | +4 h | 167 (167) | 1.8 % | 3.0 % | 167 (167) | 1.8 % | 3.0 % | 100 % / 99.1 % |
+| 2 started from the ignition point | +8 h | 323 (167) | 3.4 % | 5.6 % | 323 (167) | 3.4 % | 5.6 % | 95.4 % / 95.2 % |
+| 2 started from the ignition point | +12 h | 351 (195) | 6.8 % | 9.1 % | 351 (195) | 6.8 % | 9.1 % | 93.5 % / 92.7 % |
+| 14 started from a satellite perimeter | +4 h | 640 (423) | 93.4 % | 10.5 % | 164 (121) | 74.4 % | 3.7 % | 52.4 % / 37.1 % |
+| 14 started from a satellite perimeter | +8 h | 944 (481) | 83.4 % | 13.5 % | 383 (280) | 59.0 % | 7.0 % | 43.2 % / 39.0 % |
+| 14 started from a satellite perimeter | +12 h | 1390 (484) | 88.0 % | 14.5 % | 623 (296) | 73.2 % | 7.2 % | 36.0 % / 41.3 % |
+
+Reading it: started from the ignition point, the model misses almost all of the first night's spread. Started
+from a satellite perimeter, the forecast contains most later hotspots on new ground, but more than half of the new
+area it forecasts at +8 and +12 h was never seen burning: it over-predicts, increasingly with the horizon.
+
+**Caveats: in-sample parameters, hindcast weather, zero satellite latency.** Four model parameters
+(r0_multiplier, gust fraction, wind-direction spread, length-to-breadth cap) were set on this same fire; the
+weather is the archived Open-Meteo historical forecast, not the forecast available at the time; each update is
+issued at the overpass minute, while real near-real-time data arrive hours later. This is a replay of one fire,
+not a validation. Full table: [docs/forecast_skill.md](docs/forecast_skill.md).
 
 The updates are computed by `tools/build_marmaris_scenario.py` with the fire repository's model, on its
 reconstruction grid (forecasts stop at that grid's edge) and its cached weather, which ends on 23 June:
