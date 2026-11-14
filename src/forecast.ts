@@ -1,8 +1,8 @@
 /**
- * Forecasts the operator loads with "Update forecast".
+ * The forecast in force: updated automatically at every new satellite pass, and by the operator's "Update forecast".
  *
- * The forecast in force no longer changes by itself: it is the last one the operator loaded. Where a
- * forecast comes from is a `ForecastSource`:
+ * At each new VIIRS / Sentinel-2 observation the forecast started from it is loaded automatically (`autoLoads`);
+ * in between the operator can re-run it with the current weather. Where a forecast comes from is a `ForecastSource`:
  * - `PrecomputedForecasts`: the scenario's forecast library (tools/build_forecast_library.py), one forecast
  *   at ignition, at every new VIIRS / Sentinel-2 observation and every 30 minutes; works on a static site.
  * - `LiveForecasts`: a model server (FastAPI on localhost, docs/forecast_api.md). Not set up yet; used only
@@ -149,12 +149,12 @@ export class LiveForecasts implements ForecastSource {
   }
 }
 
-/** A forecast the operator loaded, at scenario time `at`. */
+/** A forecast loaded at scenario time `at`: automatically at a new pass (`auto`, seq 0) or by the operator. */
 export interface ForecastLoad {
   seq: number;
   at: number;
   run: ForecastRun;
-  kind: 'history' | 'opening' | 'update' | 'rerun' | 'demo';
+  kind: 'auto' | 'opening' | 'update' | 'rerun' | 'demo';
   /** E.g. "same perimeter, new weather". */
   label?: string;
 }
@@ -168,15 +168,23 @@ export function forecastInForce(loads: ForecastLoad[], ignition: ForecastRun | n
 }
 
 /**
- * What happened before the screen opened at `until` (another operator's shift): the forecast was updated at
- * every new satellite pass. From the opening time on, only the operator's own loads count.
+ * The automatic updates: at every new VIIRS / Sentinel-2 pass, the forecast started from it, loaded at the pass
+ * time. CONCEPT DEMO: a report cluster the operator confirmed by then goes into it (`confirmations`: cluster ->
+ * scenario time of the confirmation). Each load only depends on what was known at its time.
  */
-export function historyLoads(pre: PrecomputedForecasts, until: number, firstSeq = 1): ForecastLoad[] {
-  return pre.runs.filter((r) => r.trigger === 'observation' && r.issuedAt <= until)
-    .map((run, i) => ({ seq: firstSeq + i, at: run.issuedAt, run, kind: 'history' as const }));
+export function autoLoads(pre: PrecomputedForecasts, confirmations?: Map<string, number>): ForecastLoad[] {
+  return pre.runs.filter((r) => r.trigger === 'observation').map((run) => {
+    const confirmed = [...(confirmations ?? new Map<string, number>())].filter(([, at]) => at <= run.issuedAt).map(([id]) => id);
+    return { seq: 0, at: run.issuedAt, run: confirmed.length ? pre.withConfirmed(run, confirmed) : run, kind: 'auto' as const };
+  });
 }
 
-/** Loads after a new one at `now`: later loads are dropped (the operator went back and decided again). */
+/** "new VIIRS pass", "new Sentinel-2 image": what triggered an automatic update. */
+export function autoLabel(run: ForecastRun): string {
+  return run.lastObsLabel?.startsWith('Sentinel-2') ? 'new Sentinel-2 image' : `new ${run.lastObsLabel?.split(' ')[0] ?? 'satellite'} pass`;
+}
+
+/** Operator loads after a new one at `now`: later ones are dropped (the operator went back and decided again). */
 export function loadAt(loads: ForecastLoad[], load: ForecastLoad): ForecastLoad[] {
   return [...loads.filter((l) => l.at <= load.at), load];
 }

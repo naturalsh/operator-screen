@@ -8,7 +8,7 @@ import {
 } from './crews';
 import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
 import {
-  LiveForecasts, PrecomputedForecasts, applyForecastClosures, forecastClosures, forecastInForce, historyLoads, loadAt, newObservations,
+  LiveForecasts, PrecomputedForecasts, applyForecastClosures, autoLabel, autoLoads, forecastClosures, forecastInForce, loadAt,
   nowcastAt, type ForecastLoad, type ForecastSource,
 } from './forecast';
 import { ForecastControl } from './components/ForecastControl';
@@ -79,10 +79,12 @@ export function App() {
   }, []);
   const mainRef = useRef<HTMLElement>(null);
   const missionSeq = useRef(0);
-  // Forecasts: the precomputed library and the forecasts the operator has loaded (the one in force is the last
-  // loaded by the time shown; it never changes by itself).
+  // Forecasts: the precomputed library and the forecasts the operator loaded with "Update forecast". The one in
+  // force is the last load by the time shown, the automatic ones at each new satellite pass included.
   const [precomputed, setPrecomputed] = useState<PrecomputedForecasts | null>(null);
   const [loads, setLoads] = useState<ForecastLoad[]>([]);
+  // A short notice when the forecast updates itself at a new pass while the clock runs forward.
+  const [toast, setToast] = useState<{ key: number; text: string; at: number } | null>(null);
   const loadSeq = useRef(0);
   const [forecastBusy, setForecastBusy] = useState(false);
   const [fireVersion, setFireVersion] = useState(0);
@@ -116,15 +118,10 @@ export function App() {
       const t0 = Date.parse(demo?.t ?? '') || Date.parse(params.get('t') ?? '') || Date.parse(entry.initial ?? entry.start);
       const t = Math.min(Math.max(t0, Date.parse(entry.start)), Date.parse(entry.end));
       if (demo?.call) setSelectedId(demo.call);
-      // Before the opening time the forecast was updated at every new satellite pass (the previous shift);
-      // from then on it changes only when the operator loads one.
+      // The forecast updates itself at every new satellite pass (autoLoads); the operator's loads come on top.
       const pre = d.library ? new PrecomputedForecasts(d.library, d.concept) : null;
-      if (pre) {
-        d.fire.features.push(...pre.runs.flatMap((r) => r.features));
-        const history = historyLoads(pre, t);
-        loadSeq.current = history.length;
-        setLoads(history);
-      }
+      if (pre) d.fire.features.push(...pre.runs.flatMap((r) => r.features));
+      loadSeq.current = 0;
       setPrecomputed(pre);
       setNow(t);
       setData(d);
@@ -147,15 +144,37 @@ export function App() {
   const graph = useMemo(() => (data ? buildGraph(data.streets.features) : null), [data]);
   const source: ForecastSource | null = useMemo(
     () => (precomputed && forecastApi ? new LiveForecasts(forecastApi, precomputed) : precomputed), [precomputed]);
-  // Forecast closures follow the forecasts the operator loaded; written into the street records, which routing and
+  // Every load: the automatic ones at each new pass (with the concept reports confirmed by then) and the operator's.
+  const allLoads = useMemo(() => (precomputed ? [...autoLoads(precomputed, layers.concept ? confirmations : undefined), ...loads] : []),
+    [precomputed, loads, confirmations, layers.concept]);
+  // Forecast closures follow the forecasts in force over time; written into the street records, which routing and
   // the map read. `streetsVersion` changes whenever they do.
+  const closureVersion = useRef(0);
   const streetsVersion = useMemo(() => {
     if (!data || !precomputed) return 0;
     const tz = data.entry.timezone ?? 'UTC';
-    applyForecastClosures(data.streets.features, forecastClosures(loads, precomputed.first), (x) => `${fmtTime(x, tz)} local`);
-    return loadSeq.current * 1000 + loads.length;
-  }, [data, precomputed, loads]);
-  const inForce = useMemo(() => (precomputed ? forecastInForce(loads, precomputed.first, now) : null), [precomputed, loads, now]);
+    applyForecastClosures(data.streets.features, forecastClosures(allLoads, precomputed.first), (x) => `${fmtTime(x, tz)} local`);
+    return ++closureVersion.current;
+  }, [data, precomputed, allLoads]);
+  const inForce = useMemo(() => (precomputed ? forecastInForce(allLoads, precomputed.first, now) : null), [precomputed, allLoads, now]);
+  // The toast: the forecast in force became an automatic update while the clock moved forward past it.
+  const lastSeen = useRef<{ id: string | null; now: number }>({ id: null, now: 0 });
+  useEffect(() => {
+    const prev = lastSeen.current;
+    const id = inForce ? `${inForce.run.id}@${inForce.at}` : null;
+    if (prev.id && id !== prev.id && inForce?.kind === 'auto' && inForce.at > prev.now && inForce.at <= now) {
+      const tz = data?.entry.timezone ?? 'UTC';
+      setToast({ key: Date.now(), at: inForce.at, text: `Forecast updated: ${autoLabel(inForce.run)} (${inForce.run.lastObsLabel}, ${fmtTime(inForce.at, tz)})` });
+    } else if (now < prev.now) {
+      setToast(null);                         // going back: a notice about a later pass must not stay on screen
+    }
+    lastSeen.current = { id, now };
+  }, [inForce, now, data]);
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(id);
+  }, [toast]);
   const forecastRunId: string | null | undefined = precomputed ? inForce?.run.id ?? null : undefined;
   // "Fire now (estimated)": the forecast in force advanced to the time shown, and the horizons from there.
   const nowcast = useMemo(() => nowcastAt(inForce?.run ?? null, now), [inForce, now]);
@@ -360,61 +379,53 @@ export function App() {
   const confirmedNow = useMemo(() => clusterStates.filter((c) => c.candidate && c.confirmedAt != null).map((c) => c.cluster.id),
     [clusterStates]);
 
-  // "Update forecast": new observations since the forecast in force, and what the button would load.
-  const fireProps = useMemo(() => (data ? data.fire.features.map((f) => f.properties) : []), [data, fireVersion]);
-  const newObs = useMemo(() => (inForce ? newObservations(fireProps, inForce.run, now) : []), [fireProps, inForce, now]);
+  // "Update forecast": what the button loads now. It always works: with no new information it re-runs the forecast
+  // from the fire estimated now with the current weather (the newest precomputed run, at most 30 minutes old).
   const forecastOptions = useMemo(() => {
-    if (!precomputed || !inForce) return { updateTo: null, rerunTo: null, blockedNote: null, newReports: 0 };
+    if (!precomputed || !inForce) return { updateTo: null, blockedNote: null, newReports: 0 };
     const tz = data?.entry.timezone ?? 'UTC';
     const newest = precomputed.latest(now);
-    const newer = newest && newest.issuedAt > inForce.run.issuedAt ? newest : null;
-    const lastNew = newObs[newObs.length - 1];
     // Confirmed reports the newest forecast could start from but the one in force does not have.
     const usable = newest ? precomputed.usableReports(newest.issuedAt, confirmedNow) : [];
     const newReports = usable.filter((id) => !inForce.run.reports.includes(id)).length;
-    const withReports = newest ? precomputed.withConfirmed(newest, confirmedNow) : null;
-    let blockedNote: string | null = null;
-    if (now > precomputed.lastIssueAt && (!newer || (lastNew && (newer.lastObsAt ?? 0) < lastNew.at))) {
-      blockedNote = `No forecast can be issued after ${fmtTime(precomputed.lastIssueAt, tz)} (end of the precomputed forecasts).`;
-    } else if (!newObs.length && !newer && !newReports) {
-      blockedNote = `The newest run is loaded; the next one can be issued at ${fmtTime(
-        (precomputed.runs.find((r) => r.issuedAt > now)?.issuedAt ?? precomputed.lastIssueAt), tz)}.`;
-    }
-    const covers = newer && (!lastNew || (newer.lastObsAt ?? 0) >= lastNew.at);
-    const updateTo = newObs.length ? (covers ? withReports : null) : newReports ? withReports : null;
-    const rerunTo = !newObs.length && !newReports && newer ? withReports : null;
-    return { updateTo, rerunTo, blockedNote, newReports };
-  }, [precomputed, inForce, newObs, now, data, confirmedNow]);
+    const updateTo = newest ? precomputed.withConfirmed(newest, confirmedNow) : null;
+    const blockedNote = now > precomputed.lastIssueAt + 30 * 60000
+      ? `No forecast can be issued after ${fmtTime(precomputed.lastIssueAt, tz)} (end of the precomputed forecasts).` : null;
+    return { updateTo, blockedNote, newReports };
+  }, [precomputed, inForce, now, data, confirmedNow]);
   const previousLoad = useMemo(() => {
     if (!inForce) return null;
-    const before = loads.filter((l) => l.at <= inForce.at && l !== inForce);
+    const before = allLoads.filter((l) => l.at <= inForce.at && l !== inForce).sort((a, b) => a.at - b.at || a.seq - b.seq);
     return before[before.length - 1] ?? (precomputed?.first && inForce.run !== precomputed.first
       ? { seq: 0, at: precomputed.first.issuedAt, run: precomputed.first, kind: 'opening' as const } : null);
-  }, [loads, inForce, precomputed]);
+  }, [allLoads, inForce, precomputed]);
 
   const describeRun = (r: { issuedAt: number; from: string }) => `issued ${fmtTime(r.issuedAt, timeZone)} from ${r.from.replace(' (no new pass)', '')}`;
-  const onUpdateForecast = async (kind: 'update' | 'rerun') => {
-    if (!source || !data || !inForce) return;
+  const onUpdateForecast = async () => {
+    if (!source || !data || !inForce || !precomputed) return;
     setForecastBusy(true);
     const at = now;
+    const kind = forecastOptions.newReports ? 'update' : 'rerun';
     try {
       const run = await source.run({ scenario: data.entry.id, at, kind, reports: conceptOn ? confirmedNow : [] });
-      if (!run || run.id === inForce.run.id) return;
+      if (!run) return;
       if (!data.fire.features.some((f) => f.properties.run_id === run.id)) {
         data.fire.features.push(...run.features);
         setFireVersion((v) => v + 1);
       }
-      // No observation newer than the forecast in force: a re-run from the estimated fire with new weather.
-      const samePerimeter = run.lastObsAt === inForce.run.lastObsAt;
+      const t = (x: number) => fmtTime(x, timeZone);
       const withReports = run.reports.length
         ? `with ${run.reports.length} confirmed report${run.reports.length > 1 ? 's' : ''} (CONCEPT DEMO)` : '';
-      const label = (samePerimeter && !withReports ? 'same perimeter, new weather' : withReports) || undefined;
+      // A precomputed re-run exists every 30 minutes: when the newest is already in force, say when the next one is.
+      const same = run.id === inForce.run.id;
+      const next = precomputed.runs.find((r) => r.issuedAt > at);
+      const label = withReports || `re-run with current weather at ${t(run.issuedAt)}`
+        + (same ? ` (already the newest run${next && run.source !== 'live' ? `; the next can be issued at ${t(next.issuedAt)}` : ''})` : '');
       const load: ForecastLoad = { seq: ++loadSeq.current, at, run, kind, label };
       setLoads((all) => loadAt(all, load));
       const six = (r: typeof run) => r.contours.find((c) => c.horizon === 6)?.areaKm2;
       record({ id: 'forecast' }, 'update_forecast', describeRun(inForce.run), describeRun(run),
-        [kind === 'rerun' ? 'Re-run with current weather' : [newObs.length ? `${newObs.length} new observation${newObs.length === 1 ? '' : 's'}` : '',
-          forecastOptions.newReports ? `${forecastOptions.newReports} confirmed report${forecastOptions.newReports === 1 ? '' : 's'}` : ''].filter(Boolean).join(', '),
+        [kind === 'rerun' ? 'Re-run with current weather' : `${forecastOptions.newReports} confirmed report${forecastOptions.newReports === 1 ? '' : 's'}`,
           label, run.source === 'live' ? 'live model' : 'precomputed', run.sourceNote,
           six(run) != null && six(inForce.run) != null ? `+6 h ${six(run)!.toFixed(1)} km² (was ${six(inForce.run)!.toFixed(1)})` : '',
         ].filter(Boolean).join('; '));
@@ -466,13 +477,13 @@ export function App() {
     if (!fc.some((p) => p.set === 'update')) {
       return fc.map((p) => ({ t: p.t, label: `+${p.horizon_hours} h`, colour: HORIZON_COLOURS[p.rank ?? 0] as string }));
     }
-    // With precomputed forecasts: when the operator loaded one. Otherwise when each update was issued.
-    // Only up to now: a tick for a later forecast would announce a satellite pass in advance.
-    const times = precomputed ? loads.map((l) => l.at)
-      : [...new Set(fc.filter((p) => p.set === 'update').map((p) => p.issue_t!))];
-    return [...new Set(times)].filter((t) => t <= now).sort((a, b) => a - b)
-      .map((t, i) => ({ t, label: i === 0 ? (precomputed ? 'forecast loaded' : 'forecast issued') : '', colour: '#fde047' }));
-  }, [data, now, precomputed, loads]);
+    // With precomputed forecasts: every load (automatic at a pass, or by the operator). Otherwise when each update
+    // was issued. Only up to now: a tick for a later forecast would announce a satellite pass in advance.
+    const times = precomputed ? allLoads.map((l) => ({ t: l.at, auto: l.kind === 'auto' }))
+      : [...new Set(fc.filter((p) => p.set === 'update').map((p) => p.issue_t!))].map((t) => ({ t, auto: true }));
+    return times.filter((x) => x.t <= now).sort((a, b) => a.t - b.t)
+      .map((x, i) => ({ t: x.t, label: i === 0 ? (precomputed ? 'forecast loaded' : 'forecast issued') : '', colour: x.auto ? '#fde047' : '#38bdf8' }));
+  }, [data, now, precomputed, allLoads]);
 
   // Routes and vehicles on the map: the leg each crew is driving at the time shown.
   const routes = useMemo(() => crewStates.flatMap((s) => {
@@ -536,10 +547,20 @@ export function App() {
     </div>
   );
   const forecastControl = (compact: boolean) => precomputed && (
-    <ForecastControl load={inForce} previous={previousLoad} newObs={newObs} updateTo={forecastOptions.updateTo}
-      rerunTo={forecastOptions.rerunTo} blockedNote={forecastOptions.blockedNote} sourceKind={source?.kind ?? 'precomputed'}
-      newReports={forecastOptions.newReports} nowcast={nowcast}
-      busy={forecastBusy} timeZone={timeZone} compact={compact} onUpdate={onUpdateForecast} />
+    <>
+      <ForecastControl load={inForce} previous={previousLoad} updateTo={forecastOptions.updateTo}
+        blockedNote={forecastOptions.blockedNote} sourceKind={source?.kind ?? 'precomputed'}
+        newReports={forecastOptions.newReports} nowcast={nowcast}
+        busy={forecastBusy} timeZone={timeZone} compact={compact} onUpdate={onUpdateForecast} />
+      {toast && toast.at <= now && (
+        <div key={toast.key} role="status" data-forecast-toast
+          className="ns-toast pointer-events-none absolute z-20 rounded-lg border border-amber-300 bg-ink-900/95 px-3 py-1.5 text-xs font-bold text-amber-100 shadow-lg"
+          // Beside the forecast box on wide screens, under its closed button on phones.
+          style={compact ? { left: 8, top: 52, maxWidth: 'calc(100% - 64px)' } : { left: 318, top: 8, maxWidth: 'calc(100% - 380px)' }}>
+          {toast.text}
+        </div>
+      )}
+    </>
   );
   // With one tabbed panel, picking a caller (on the map or by a deep link) shows its card.
   useEffect(() => { if (medium && selectedId) setTab('reports'); }, [medium, selectedId]);
@@ -552,12 +573,8 @@ export function App() {
     setTab('reports');
     const t = Date.parse(demo.t);
     setNow(t);
-    // The scene starts as if the forecast had been updated at every pass until then.
-    if (precomputed) {
-      const history = historyLoads(precomputed, t, loadSeq.current + 1);
-      loadSeq.current += history.length;
-      setLoads(history);
-    }
+    // The scene starts with the automatic updates only (the operator's own loads are cleared).
+    setLoads([]);
     const c = data!.callers.find((x) => x.id === demo.call);
     if (c) { setSelectedId(c.id); setFocus({ lon: c.place.lon, lat: c.place.lat, key: Date.now() }); }
   };

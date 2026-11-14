@@ -89,7 +89,7 @@ export function ConceptPanel({ clusters, inForecast, scores, reportsUntil, now, 
             <div className="mt-1 text-violet-200" data-confirmed>
               Confirmed {t(c.confirmedAt)} · {inForecast.includes(c.cluster.id) ? 'in the forecast in force'
                 : now > reportsUntil ? 'reports are only used in forecasts of the first night'
-                : 'goes into the next "Update forecast"'}
+                : 'goes into the next forecast update (the next pass, or "Update forecast")'}
             </div>
           )}
         </div>

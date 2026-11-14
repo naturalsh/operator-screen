@@ -1,17 +1,14 @@
 import { useState } from 'react';
 import { fmtTime } from '../data';
-import { nowcastSource, type ForecastLoad, type ForecastRun, type NewObservation, type Nowcast } from '../forecast';
+import { autoLabel, nowcastSource, type ForecastLoad, type ForecastRun, type Nowcast } from '../forecast';
 
 interface Props {
   load: ForecastLoad | null;
   /** The load before the one in force (for "was ... km²"). */
   previous: ForecastLoad | null;
-  newObs: NewObservation[];
-  /** The forecast "Update forecast" would load now (null: none newer than the one in force). */
+  /** What "Update forecast" loads now (null: nothing can be issued, see `blockedNote`). */
   updateTo: ForecastRun | null;
-  /** The forecast "Re-run with current weather" would load now (same perimeter, later start). */
-  rerunTo: ForecastRun | null;
-  /** Why neither is possible, e.g. the precomputed forecasts end. */
+  /** Why the button cannot load anything, e.g. after the end of the precomputed forecasts. */
   blockedNote: string | null;
   /** CONCEPT DEMO: confirmed reports the forecast in force does not have yet. */
   newReports?: number;
@@ -21,30 +18,40 @@ interface Props {
   compact?: boolean;
   /** "Fire now (estimated)" at the time shown. */
   nowcast?: Nowcast | null;
-  onUpdate: (kind: 'update' | 'rerun') => void;
+  onUpdate: () => void;
 }
 
 const SOURCE_LABEL = { precomputed: 'PRECOMPUTED', live: 'LIVE MODEL' } as const;
 
-/** The forecast in force and the operator's "Update forecast" button (map overlay, top left). */
-export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blockedNote, newReports = 0, sourceKind, busy, timeZone, compact, nowcast, onUpdate }: Props) {
+/** "Last updated 04:02 from VIIRS N20" and the like: when and why the forecast in force was loaded. */
+export function lastUpdated(load: ForecastLoad, t: (x: number) => string): string {
+  const run = load.run;
+  if (load.kind === 'opening') return `Made at ignition, ${t(run.issuedAt)}`;
+  if (load.kind === 'auto') return `Last updated ${t(load.at)} from ${run.lastObsLabel ?? 'the latest pass'}`;
+  return `Last updated ${t(load.at)} by the operator`;
+}
+
+/**
+ * The forecast in force and the operator's "Update forecast" button (map overlay, top left). The forecast updates
+ * itself at every new satellite pass; the button re-runs it with the weather at the time shown.
+ */
+export function ForecastControl({ load, previous, updateTo, blockedNote, newReports = 0, sourceKind, busy, timeZone, compact, nowcast, onUpdate }: Props) {
   const [open, setOpen] = useState(!compact);
   const run = load?.run;
   const t = (x: number) => fmtTime(x, timeZone);
-  const last = run?.lastObsAt != null ? `${t(run.lastObsAt)} (${run.lastObsLabel})` : null;
   const six = (r?: ForecastRun | null) => r?.contours.find((c) => c.horizon === 6)?.areaKm2 ?? r?.contours[r.contours.length - 1]?.areaKm2;
-  const badge = newObs.length + newReports;
-  const badgeText = [newObs.length ? `${newObs.length} new observation${newObs.length > 1 ? 's' : ''}` : '',
-    newReports ? `${newReports} confirmed report${newReports > 1 ? 's' : ''}` : ''].filter(Boolean).join(' + ') + ' since forecast';
   if (compact && !open) {
     return (
-      <button data-forecast-control="closed" onClick={() => setOpen(true)}
+      <button data-forecast-control="closed" data-forecast-run={run?.id ?? ''} data-forecast-issued={run?.issuedAt ?? ''} onClick={() => setOpen(true)}
         className="absolute left-2 top-2 z-10 flex h-9 items-center gap-1.5 rounded-lg border border-ink-600 bg-ink-900/90 px-2.5 text-xs font-bold text-ink-100 shadow">
-        Forecast {run ? t(run.issuedAt) : '—'}
-        {badge > 0 && <span data-new-obs-badge className="rounded-full bg-sky-500 px-1.5 text-[11px] text-ink-950">{badge} new</span>}
+        Forecast {load ? t(load.at) : '—'}
+        {load?.kind === 'auto' && <span className="rounded-full bg-ink-700 px-1.5 text-[10px] font-normal text-ink-200">auto</span>}
       </button>
     );
   }
+  const what = newReports > 0
+    ? `with ${newReports} confirmed report${newReports > 1 ? 's' : ''} (CONCEPT DEMO)`
+    : `re-run with current weather at ${updateTo ? t(updateTo.issuedAt) : '—'}`;
   return (
     <div data-forecast-control="open" data-forecast-run={run?.id ?? ''} data-forecast-issued={run?.issuedAt ?? ''}
       className={`absolute left-2 top-2 z-10 rounded-lg border border-ink-600 bg-ink-900/90 p-2.5 text-xs text-ink-100 shadow-lg backdrop-blur ${compact ? 'w-[min(300px,calc(100%-70px))]' : 'w-[300px]'}`}>
@@ -58,15 +65,13 @@ export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blo
         </span>
         {compact && <button onClick={() => setOpen(false)} aria-label="Close forecast panel" className="ml-auto px-1 text-ink-400">✕</button>}
       </div>
-      {run ? (
+      {run && load ? (
         <div data-forecast-in-force>
-          <div><b>Issued {t(run.issuedAt)}</b> from {run.from.replace(' (no new pass)', '')}</div>
+          <div data-forecast-last-updated={load.kind}><b>{lastUpdated(load, t)}</b></div>
           <div className="text-ink-400">
-            {load!.kind === 'opening' && load!.seq === 0 ? 'made at ignition'
-              : load!.kind === 'history' ? 'updated at that pass (before this screen opened)' : `loaded ${t(load!.at)}`}
-            {last ? ` · last pass used ${last}` : ''}
+            issued {t(run.issuedAt)} from {run.from}
           </div>
-          {load?.label && (
+          {load.label && (
             <div data-forecast-label className="mt-1 rounded bg-ink-800 px-1.5 py-0.5 text-amber-200">
               {load.label}
               {previous && six(run) != null && six(previous.run) != null
@@ -89,31 +94,15 @@ export function ForecastControl({ load, previous, newObs, updateTo, rerunTo, blo
       ) : <div className="text-ink-400">No forecast yet.</div>}
 
       <div className="mt-2 border-t border-ink-700 pt-2">
-        {badge > 0 ? (
-          <>
-            <button data-update-forecast disabled={busy || !updateTo} onClick={() => onUpdate('update')}
-              className="flex w-full items-center justify-between rounded bg-sky-500 px-2.5 py-1.5 font-bold text-ink-950 disabled:opacity-50">
-              <span>Update forecast</span>
-              <span data-new-obs-badge className="rounded-full bg-ink-950 px-2 py-0.5 text-[11px] text-sky-300">
-                {badgeText}
-              </span>
-            </button>
-            <div className="mt-1 text-ink-400" data-new-obs-list>
-              {newObs.slice(-3).map((o) => `${t(o.at)} ${o.label}`).join(' · ')}
-            </div>
-          </>
-        ) : (
-          <>
-            <div data-no-new-obs className="text-ink-200">
-              No new observations since {last ?? (run ? `${t(run.issuedAt)} (ignition)` : 'the start')}
-            </div>
-            <button data-rerun-forecast disabled={busy || !rerunTo} onClick={() => onUpdate('rerun')}
-              title="Same starting area, a later start time and the weather from then on. Not new information about the fire."
-              className="mt-1.5 w-full rounded border border-ink-500 px-2.5 py-1.5 font-bold text-ink-100 hover:bg-ink-800 disabled:opacity-50">
-              Re-run with current weather{rerunTo ? ` (${t(rerunTo.issuedAt)})` : ''}
-            </button>
-          </>
-        )}
+        <button data-update-forecast disabled={busy || !updateTo} onClick={onUpdate}
+          title="Runs the forecast again from the fire estimated now, with the weather from now on. New satellite passes update it automatically."
+          className="flex w-full flex-col items-start rounded bg-sky-500 px-2.5 py-1.5 text-left font-bold text-ink-950 hover:bg-sky-400 disabled:opacity-50">
+          <span>Update forecast</span>
+          <span data-update-what className="text-[11px] font-normal">{what}</span>
+        </button>
+        <div className="mt-1 text-ink-400" data-auto-note>
+          Updates automatically at each new VIIRS or Sentinel-2 pass{load?.kind === 'auto' ? ` (last: ${autoLabel(load.run).replace('new ', '')}, ${t(load.at)})` : ''}.
+        </div>
         {blockedNote && <div data-forecast-blocked className="mt-1 text-ink-400">{blockedNote}</div>}
       </div>
     </div>

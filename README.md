@@ -195,39 +195,40 @@ Before a presentation: open the site once on the presenting laptop (and on each 
 
 ## Forecast updates
 
-### "Update forecast"
+### Automatic updates and "Update forecast"
 
-The forecast on the screen does not change by itself. It is the one the operator last loaded, shown in the box at
-the top left of the map with its issue time, what it started from and the last satellite pass it used.
+The box at the top left of the map shows the forecast in force: "Last updated 04:02 from VIIRS N20", what it
+started from, and "Fire now (estimated)".
 
-- **New observations:** when VIIRS or Sentinel-2 (burned area) passes arrive after the forecast, the button
-  **Update forecast** shows a badge ("2 new observations since forecast") and lists them. Clicking it loads the
-  forecast started from everything seen so far.
-- **No new observations:** the box says "No new observations since 04:02 (VIIRS N20)" and offers **Re-run with
-  current weather**: it starts from the fire the forecast in force estimates for that time (no new observation),
-  with the weather from then on. The result is labelled "same perimeter, new weather" with the +6 h area against
-  the previous run, so it is not mistaken for new information about the fire.
+- **Automatic:** at every new VIIRS pass or Sentinel-2 image, the forecast started from everything observed so
+  far is loaded by itself, at the pass time, and a short notice appears on the map ("Forecast updated: new VIIRS
+  pass"). Passes less than 20 minutes apart are one update.
+- **Update forecast** always works. With no new observation it re-runs the forecast from the fire estimated now,
+  with the weather from now on, and the result is labelled "re-run with current weather at 04:30" with the +6 h
+  area against the previous run, so it is not mistaken for new information about the fire. Precomputed re-runs
+  exist every 30 minutes; pressed again before the next one, the box says so. CONCEPT DEMO: with confirmed fire
+  reports the button loads the forecast started from them ("with 3 confirmed reports").
 - **Source:** the box says where the forecast comes from. **PRECOMPUTED**: a static site cannot run the model,
   so `tools/build_forecast_library.py` computes in advance every forecast that can be asked for, at ignition, at
   every new pass and every 30 minutes until the end of the scenario (127 forecasts, `forecast_library.json`,
   11 MB, 2 MB as served compressed). Each holds its contours every 30 minutes to 12 h and the area it started
-  from. **LIVE MODEL** is for a
-  model server on the demo laptop (`?forecast_api=http://localhost:8000`); not set up yet, see
-  [docs/forecast_api.md](docs/forecast_api.md). If that server does not answer within 3 s the precomputed
-  forecast is used and the box says so.
-- **Forecast closures:** forecast closures (orange dashed) come from the forecasts actually loaded. A forecast is
-  in force from when it is loaded until the next load; a street its contour reaches in that time closes, at the
-  reach time or at the load time if that is later. Before the screen opens, the forecast is taken to have been
-  updated at every new pass (the previous shift).
-- **Rewind and log:** each load is in the decision log, and the yellow ticks on the time bar mark the loads.
-  Moving the clock back before a load brings back the forecast that was in force then; loading another one there
-  replaces the later loads.
-- **No hindsight:** every precomputed forecast only uses observations acquired by its issue time.
-  `tools/test_no_hindsight.py` checks the library. `tests/forecast.test.ts` checks that closures at a time never
-  depend on loads made later.
+  from. **LIVE MODEL** is for a model server on the demo laptop (`?forecast_api=http://localhost:8000`); not set up
+  yet, see [docs/forecast_api.md](docs/forecast_api.md). If that server does not answer within 3 s the
+  precomputed forecast is used and the box says so.
+- **Forecast closures:** forecast closures (orange dashed) come from the forecasts in force over time. A forecast
+  is in force from its load until the next one (automatic or by the operator); a street its contour reaches in
+  that time closes, at the reach time or at the load time if that is later.
+- **Rewind and log:** the operator's loads are in the decision log, and the ticks on the time bar mark every
+  load up to the time shown. Moving the clock back before a load brings back the forecast that was in force
+  then; loading another one there replaces the operator's later loads (the automatic ones stay, they follow the
+  satellite passes).
+- **No hindsight:** every precomputed forecast only uses observations acquired by its issue time, and an
+  automatic update is loaded at its pass time, never earlier; the notice and the time-bar ticks only appear once
+  the pass has happened. `tools/test_no_hindsight.py` checks the library; `tests/forecast.test.ts` checks that
+  closures at a time never depend on later loads and that an automatic update only uses fire reports confirmed by
+  then.
 
-![Update forecast: new observations](docs/b1_update_forecast_badge.png)
-![Re-run with current weather](docs/b1_update_forecast_rerun.png)
+![Automatic update at a new pass](docs/c3_auto_update.png)
 
 ### The standing sequence
 

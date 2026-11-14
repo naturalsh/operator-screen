@@ -7,7 +7,7 @@
  *   npx tsx tests/forecast.test.ts
  */
 import { readFileSync } from 'node:fs';
-import { PrecomputedForecasts, applyForecastClosures, forecastClosures, forecastInForce, loadAt, nowcastAt, type ForecastLoad } from '../src/forecast';
+import { PrecomputedForecasts, applyForecastClosures, autoLoads, forecastClosures, forecastInForce, loadAt, nowcastAt, type ForecastLoad } from '../src/forecast';
 import { NEVER, prepareStreets } from '../src/data';
 import type { ConceptReports, FireReport, ForecastLibrary, StreetFeature } from '../src/types';
 import { HALF_LIFE_MIN, clustersAt, currentConfidence, mockAnswer, type ConfirmationAnswer, type ConfirmationAsk } from '../src/reports';
@@ -147,6 +147,23 @@ for (const r of pre.runs) {
       if (f.properties.role !== 'now' && Math.abs(f.properties.valid_t - now.valid_t - f.properties.h * 3600e3) > 1) fail(`${r.id}: +${f.properties.h} h is not ${f.properties.h} h after fire now`);
     }
   }
+}
+
+// 8. Automatic updates: one at each new pass, loaded at the pass time, started from observations acquired by then;
+// with concept confirmations, only the clusters confirmed by then.
+const autos = autoLoads(pre);
+if (!autos.length) fail('no automatic updates');
+for (const l of autos) {
+  if (l.at !== l.run.issuedAt || l.run.trigger !== 'observation' || (l.run.lastObsAt ?? Infinity) > l.at) fail(`auto load ${l.run.id} at ${new Date(l.at).toISOString()}`);
+}
+{
+  // Confirmed one minute after the first pass of the night: not in that update, in the next ones of the night.
+  const preC = new PrecomputedForecasts(lib, concept);
+  const cand = concept.clusters.find((x) => x.candidate_at)!;
+  const late = Math.max(autos[0].at, Date.parse(cand.candidate_at!)) + 60e3;
+  const withLate = autoLoads(preC, new Map([[cand.id, late]]));
+  for (const l of withLate) if (l.at < late && l.run.reports.length) fail(`auto load at ${new Date(l.at).toISOString()} uses a report confirmed later`);
+  if (!withLate.some((l) => l.at > late && l.run.reports.includes(cand.id))) fail('no automatic update after the confirmation uses the confirmed report');
 }
 
 console.log(`forecast: ${pre.runs.length} forecasts checked; ${compared} causality comparisons; closures by 23 Jun 08:40: `
