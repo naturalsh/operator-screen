@@ -33,6 +33,16 @@ export const NOWCAST_OPACITY = 0.5;
 export const FRONT_COLOUR = '#f0532b';
 export const FRONT_EDGE = '#ffe2d4';
 export const FRONT_WIDTH_M = 300;
+/** The band is at most this share of the fire's equivalent radius (a small fire gets a narrow band)... */
+export const FRONT_SHARE_OF_RADIUS = 0.2;
+/** ...and below this width only an edge line is drawn. */
+export const FRONT_MIN_M = 25;
+
+/** Width of the front band for a fire of `areaKm2`: 20 % of the equivalent radius, at most 300 m; 0 = edge only. */
+export function frontWidthM(areaKm2: number): number {
+  const w = Math.min(FRONT_WIDTH_M, FRONT_SHARE_OF_RADIUS * Math.sqrt((areaKm2 * 1e6) / Math.PI));
+  return w >= FRONT_MIN_M ? w : 0;
+}
 /** Kept for swatches that show the estimated fire by its edge. */
 export const NOWCAST_EDGE = FRONT_COLOUR;
 /** The look-ahead line (the one horizon chosen): dashed yellow. Detailed also draws the others, faint. */
@@ -147,10 +157,12 @@ interface Props {
   lookAhead?: number;
   /** Called once, when the map has first drawn everything it shows (tiles, data). */
   onFirstIdle?: () => void;
+  /** Changes when the clock comes to rest (playback paused, slider released): every layer of ours is redrawn. */
+  settleKey?: number;
 }
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
-  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle }: Props) {
+  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
@@ -268,6 +280,18 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       map.setPaintProperty('flame-front', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : ['case', recent, ACTIVE_FIRE_COLOUR, OLD_FIRE_COLOUR]);
       map.setPaintProperty('flame-front', 'fill-opacity', simple ? 0.35 : ['case', recent, 0.9, 0.5]);
       map.setPaintProperty('flame-front', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : '#fef08a');
+    });
+    // The front band scales with the fire: a small fire gets a narrow band, a very small one only an edge line
+    // (a 300 m band around a fire a few hundred metres across folded over itself).
+    const nowArea = latest.current.nowcast?.fc.features.find((f) => f.properties.role === 'now')?.properties.area_km2 ?? 0;
+    const w = frontWidthM(nowArea);
+    once('front', String(Math.round(w)), () => {
+      map.setPaintProperty('front-band', 'line-width', w ? metresWidth(w) : 0);
+      map.setPaintProperty('front-edges', 'line-gap-width', w ? metresWidth(w) : 0);
+      map.setPaintProperty('front-edges', 'line-color', w ? FRONT_EDGE : FRONT_COLOUR);
+      map.setPaintProperty('front-edges', 'line-width', w ? 0.8 : 1.8);
+      map.setPaintProperty('front-edges', 'line-opacity', w ? 0.75 : 0.95);
+      (window as unknown as { __nsFrontWidthM?: number }).__nsFrontWidthM = w;    // for tests
     });
     // Look ahead: one horizon, dashed; Detailed also draws the other horizons faint.
     const look = `h${latest.current.lookAhead}`;
@@ -628,7 +652,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             : role === 'now' || role === 'spot'
             ? `<b>Fire now (model estimate)</b><div>Estimate, not observed: modelled fire extent for ${fmtTime(f.valid_t, tz)}, P ≥ 50 %`
               + `${role === 'now' ? ` · ${f.area_km2.toFixed(1)} km²` : ''}</div>`
-              + `<div>Dark inside: burned ground. Bright band: the active front (${FRONT_WIDTH_M} m along the estimated edge).`
+              + `<div>Dark inside: burned ground. Bright band: the active front along the estimated edge (${frontWidthM(f.area_km2) ? `${Math.round(frontWidthM(f.area_km2))} m: 20 % of the fire's radius, at most ${FRONT_WIDTH_M} m` : 'a small fire: edge line only'}).`
               + ` Parts under ${'0.3'} km² apart from the main fire are small marks.</div>`
               + `<div>${src}</div>` + muted(`Forecast issued ${fmtTime(nc.run.issuedAt, tz)}, advanced ${f.step} h.`)
             : `<b>Expected by ${fmtTime(f.valid_t, tz)} (${lookLabel(f.h)})</b>`
@@ -713,6 +737,18 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nowcastKey, layers.forecast]);
 
+  // The clock came to rest: reload the tiles of our sources from the data the map already has and redraw the tags,
+  // so no tile can stay on an older state after fast changes (a safety net: MapLibre 4.7 could leave tiles behind).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready.current || !settleKey) return;
+    const caches = (map.style as unknown as { sourceCaches?: Record<string, { reload: () => void }> }).sourceCaches ?? {};
+    for (const id of ['fire', 'nowcast', 'streets', 'callers', 'report-points', 'clusters']) caches[id]?.reload();
+    placeTags();
+    map.triggerRepaint();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settleKey]);
+
   // Bring a newly selected caller into view.
   useEffect(() => {
     const c = data.callers.find((x) => x.id === selectedId);
@@ -738,7 +774,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       <div ref={container} className="h-full w-full" />
       <Legend mode={mode} nearby={layers.nearby} nowcast={nowcast} timeZone={data.entry.timezone ?? 'UTC'} />
       {offline && (
-        <span className="absolute left-2 top-2 rounded bg-ink-800/90 px-2 py-1 text-[11px] text-ink-200">
+        <span data-packaged-basemap className="pointer-events-none absolute max-w-[60%] rounded bg-ink-800/90 px-2 py-1 text-right text-[11px] text-ink-200"
+          style={{ bottom: insetBottom + 44, right: insetRight + 8 }}>
           Packaged basemap (stored on this device, demo area only)
         </span>
       )}

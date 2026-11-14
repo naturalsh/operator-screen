@@ -53,7 +53,8 @@ The switch in the header changes how much the map shows (add `?mode=detailed` to
     tagged "Seen by satellite 04:02". It moves at every new pass.
   - **Fire now (model estimate)**: the forecast in force advanced from its issue time to the time shown (its last
     30-minute contour not after it). Inside, burned ground, dark and quiet (#2a1a14 at 50 %); along its edge the
-    active front, a 300 m band in one red-orange with thin light edges. Parts under 0.3 km² apart from the main
+    active front, a band in one red-orange with thin light edges, 20 % of the fire's equivalent radius wide (at
+    most 300 m; a fire under about 125 m across gets only an edge line). Parts under 0.3 km² apart from the main
     fire get no band, only a small mark. The legend, the forecast box and the popup say "estimate, not observed".
   - **Forecast**: one line at a time, dashed yellow, tagged "Expected by 04:55 (+1 h)". The **Look ahead** switch
     on the map picks it: Now (none) · +30 min · +1 h · +2 h · +3 h (default +1 h; Detailed adds +6 h and draws the
@@ -88,6 +89,12 @@ Observed / model estimate / forecast kept apart, before and after (desktop; phon
 |---|---|---|---|
 | before | ![](docs/lines_before_22-0900_desktop.png) | ![](docs/lines_before_23-2316_desktop.png) | ![](docs/lines_before_24-0400_desktop.png) |
 | after | ![](docs/lines_after_22-0900_desktop.png) | ![](docs/lines_after_23-2316_desktop.png) | ![](docs/lines_after_24-0400_desktop.png) |
+
+The first hour and a half of the fire (21 June 20:30, 21:00, 21:30 local): the front band is 20 % of the fire's
+radius, so a small fire keeps its shape ([20:30](docs/early_fire_21jun_2030_desktop.png),
+[21:00](docs/early_fire_21jun_2100_desktop.png), [21:30](docs/early_fire_21jun_2130_desktop.png); phone:
+[20:30](docs/early_fire_21jun_2030_phone.png), [21:00](docs/early_fire_21jun_2100_phone.png),
+[21:30](docs/early_fire_21jun_2130_phone.png)).
 
 Calmer fire styling in Simple, before and after (desktop; phone:
 [before](docs/calm_before_0900_phone.png) / [after](docs/calm_after_0900_phone.png) at 22 June 09:00,
@@ -200,7 +207,11 @@ scenario data and the packaged basemap (963 files, about 45 MB; GitHub Pages ser
 - **New version:** a new deployment is downloaded in the background but does not take over an open page (that
   would mix the old page with the new data, and reloading by itself would lose open work). The page shows
   **New version available, tap to reload**; the new version is used from that tap, or the next time all tabs of
-  the site are closed. (Pages opened before this change update the old way once.)
+  the site are closed. The page also asks the network for `version.json` after loading and whenever its tab comes
+  back to the front, so a tab left open on a phone notices a new deployment too.
+- **Which version is running:** the Layers panel ends with "Version 36a4a31 · built …" (the commit). A phone that
+  still shows an older behaviour is running an older stored copy: pages opened before the update notice existed
+  (before 36a4a31) cannot show it, so close every tab of the site once (or clear the site's data) and reopen it.
 
 Before a presentation: open the site once on the presenting laptop (and on each tablet) while online and wait for
 **✓ Offline ready**. To check, switch the network off and reload. `npm run dev` does not use the service worker.

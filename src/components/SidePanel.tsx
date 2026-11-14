@@ -291,6 +291,9 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
             <div className="text-xs text-ink-400">{note}</div>
           </div>
         ))}
+        <p className="mt-2 text-[11px] text-ink-400" data-app-version={__APP_VERSION__.commit}>
+          Version {__APP_VERSION__.commit} · built {__APP_VERSION__.built.replace('T', ' ')}
+        </p>
       </Section>
     </div>
   );

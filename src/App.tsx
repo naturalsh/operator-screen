@@ -29,6 +29,19 @@ import { registerSW } from 'virtual:pwa-register';
 
 const TICK_MS = 100;
 
+/** Gets the newest service worker, lets it take over and reloads (or just reloads after a while). */
+async function reloadToNewVersion(): Promise<void> {
+  setTimeout(() => location.reload(), 12000);
+  if (!('serviceWorker' in navigator)) { location.reload(); return; }
+  navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) { location.reload(); return; }
+  await reg.update().catch(() => {});
+  for (let i = 0; i < 40 && !reg.waiting; i++) await new Promise((r) => setTimeout(r, 250));
+  if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+  else location.reload();
+}
+
 /**
  * `?scenario=<id>&t=<ISO time>&call=<report id>&basemap=offline` deep-links to a moment (handy for rehearsals);
  * `?demo=1` opens the scenario's rehearsed demo scene.
@@ -49,6 +62,17 @@ export function App() {
   const [playing, setPlaying] = useState(false);
   // True while the time slider is being dragged: route planning waits until it is released.
   const [scrubbing, setScrubbing] = useState(false);
+  // Counts the moments the clock comes to rest (playback paused, slider released, a jump such as "back to start"),
+  // 600 ms after the last change: the map then redraws all of our layers.
+  const [settleKey, setSettleKey] = useState(0);
+  const moving = playing || scrubbing;
+  const settledOnce = useRef(false);
+  useEffect(() => {
+    if (moving || !now) return;
+    if (!settledOnce.current) { settledOnce.current = true; return; }      // not at the first render
+    const id = setTimeout(() => setSettleKey((k) => k + 1), 600);
+    return () => clearTimeout(id);
+  }, [now, moving]);
   // "Update forecast" requests: a result that is not the latest (or comes back after the clock moved) is dropped.
   const forecastRequests = useRef(new LatestRequest());
   const [speed, setSpeed] = useState(1);
@@ -108,6 +132,24 @@ export function App() {
     };
     const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o: { timeout: number }) => void }).requestIdleCallback;
     if (idle) idle(start, { timeout: 5000 }); else setTimeout(start, 2000);
+  }, [mapIdle]);
+  // The deployed version, from the network: a page kept open in a phone tab (or served by an older offline package)
+  // learns that it is out of date even when the service worker has not told it.
+  useEffect(() => {
+    if (!mapIdle || !import.meta.env.PROD) return;
+    const check = async () => {
+      if (!navigator.onLine) return;                       // offline: nothing to compare with
+      try {
+        const res = await fetch(`${import.meta.env.BASE_URL}version.json?t=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const live = (await res.json()) as { commit: string };
+        if (live.commit && live.commit !== __APP_VERSION__.commit) setUpdateSite(() => () => { void reloadToNewVersion(); });
+      } catch { /* offline: nothing to compare with */ }
+    };
+    void check();
+    const onShow = () => { if (document.visibilityState === 'visible') void check(); };
+    document.addEventListener('visibilitychange', onShow);
+    return () => document.removeEventListener('visibilitychange', onShow);
   }, [mapIdle]);
   // A page already controlled by the service worker (a later visit) knows at once whether the package is stored.
   useEffect(() => {
@@ -622,7 +664,7 @@ export function App() {
   );
   const mapProps = data && {
     data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
-    forecastRunId, streetsVersion, fireVersion, concept: clusterStates, nowcast, lookAhead, onFirstIdle: () => setMapIdle(true),
+    forecastRunId, streetsVersion, fireVersion, concept: clusterStates, nowcast, lookAhead, onFirstIdle: () => setMapIdle(true), settleKey,
   };
   const lookSwitch = (compact: boolean, style: React.CSSProperties) => nowcast && (
     <div role="group" aria-label="Look ahead" data-look-ahead={lookAhead} style={style}
@@ -638,7 +680,7 @@ export function App() {
   );
   // CONCEPT DEMO: the full label stays on the map while the synthetic reports are shown.
   const conceptBanner = conceptOn && (
-    <div data-concept-banner className="pointer-events-none absolute bottom-12 left-2 z-10 max-w-[calc(100%-140px)] rounded border border-dashed border-violet-400 bg-ink-900/85 px-2 py-1 text-[11px] font-bold text-violet-200">
+    <div data-concept-banner className="pointer-events-none absolute bottom-20 left-2 z-10 max-w-[calc(100%-140px)] rounded border border-dashed border-violet-400 bg-ink-900/85 px-2 py-1 text-[11px] font-bold text-violet-200">
       {CONCEPT_LABEL}
     </div>
   );
@@ -652,7 +694,9 @@ export function App() {
         <div key={toast.key} role="status" data-forecast-toast
           className="ns-toast pointer-events-none absolute z-20 rounded-lg border border-amber-300 bg-ink-900/95 px-3 py-1.5 text-xs font-bold text-amber-100 shadow-lg"
           // Beside the forecast box on wide screens, under its closed button on phones.
-          style={compact ? { left: 8, top: 52, maxWidth: 'calc(100% - 64px)' } : { left: 318, top: 44, maxWidth: 'calc(100% - 380px)' }}>
+          // Beside the forecast box on wide screens; on phones at the bottom, above the Look ahead switch, clear of the
+          // zoom buttons and the Legend button.
+          style={compact ? { left: 8, right: 8, bottom: 124, textAlign: 'center' } : { left: 318, top: 44, maxWidth: 'calc(100% - 380px)' }}>
           {toast.text}
         </div>
       )}
