@@ -48,16 +48,20 @@ Caller labels at the overview zoom and zoomed in: [overview](docs/13_labels_over
 The switch in the header changes how much the map shows (add `?mode=detailed` to a link to open in Detailed).
 
 - **Simple** (default):
-  - **Fire now (estimated)**, the strongest layer: the forecast in force advanced from its issue time to the time
-    shown (its last 30-minute contour not after it), bright orange-red with a clear edge. It is a model estimate,
-    and the forecast box, the legend and the popup say so: "estimated from last satellite pass at 04:02 (VIIRS N20)
-    + model".
-  - The horizons from the time shown, lighter and thinner on top of it: **+1 h** a clear "danger zone", **+2 h**
-    and **+3 h** lighter, **+6 h** only an outline. Each is tagged on the map.
-  - Satellite detections of the **last 6 hours** bright (active fire); older ones dark grey ("burned / older").
+  - **Fire now (estimated)**: the forecast in force advanced from its issue time to the time shown (its last
+    30-minute contour not after it). Inside it is drawn as burned ground, dark and quiet (#2a1a14 at 50 %); along
+    its edge the **active front** is a 300 m band in one red-orange with thin light edges, half inside and half
+    outside the estimated edge: the first thing the eye finds. It is a model estimate, and the forecast box, the
+    legend and the popup say so: "estimated from last satellite pass at 04:02 (VIIRS N20) + model".
+  - The horizons from the time shown, as lines only: **+1 h** a clear yellow line (2 px), **+2 h** and **+3 h**
+    thinner and fainter, **+6 h** dotted. Each is tagged on the map.
+  - Satellite detections: only VIIRS pixels of the **last 3 hours**, faint (30 %) and without edges; older ones are
+    not drawn (the burned ground covers them), nor the large 1 km MODIS / SLSTR squares.
+  - Callers have a thin white edge and a soft dark shadow, so they stay readable on the fire.
   - Closed roads (solid red: seen by satellite; orange dashed: forecast closure), callers, crews and their routes.
 - **Detailed**: adds the satellite sensors in their own colours (VIIRS, MODIS, SLSTR, Sentinel-2 flame front and
-  burned area), the initial forecast made at ignition and the "fire nearby" warning.
+  burned area; the last 6 hours bright, older ones dark grey), the initial forecast made at ignition and the
+  "fire nearby" warning.
 
 The **legend** is a small button under the zoom buttons; it opens there, on a translucent panel, and lists the
 lines and colours of the mode shown. "Fire nearby (satellite)" is a separate layer, off by default; when on,
@@ -73,6 +77,15 @@ force or a satellite pass closes it; before that the only note is what the forec
 by then, the faint/bright street styling uses only forecasts issued so far, and the time bar marks only
 forecasts already issued. `tools/test_no_hindsight.py` recomputes every street closure from the data available
 at 88 cut-off times and checks that the result matches the full scenario up to that time.
+
+Calmer fire styling in Simple, before and after (desktop; phone:
+[before](docs/calm_before_0900_phone.png) / [after](docs/calm_after_0900_phone.png) at 22 June 09:00,
+[before](docs/calm_before_1151_phone.png) / [after](docs/calm_after_1151_phone.png) at 23 June 11:51):
+
+| | 22 June 09:00 | 23 June 11:51 |
+|---|---|---|
+| before | ![before, 22 June 09:00](docs/calm_before_0900_desktop.png) | ![before, 23 June 11:51](docs/calm_before_1151_desktop.png) |
+| after | ![after, 22 June 09:00](docs/calm_after_0900_desktop.png) | ![after, 23 June 11:51](docs/calm_after_1151_desktop.png) |
 
 | 22 June 04:30 | 23 June 11:51 |
 |---|---|

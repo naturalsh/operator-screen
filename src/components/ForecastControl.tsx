@@ -81,7 +81,7 @@ export function ForecastControl({ load, previous, updateTo, blockedNote, newRepo
           {run.sourceNote && <div className="mt-1 text-amber-300">{run.sourceNote}</div>}
           {nowcast && (
             <div data-nowcast className="mt-1.5 flex gap-1.5 rounded bg-ink-800 px-1.5 py-1">
-              <span className="mt-0.5 h-3 w-3 shrink-0 rounded-sm border-2" style={{ background: '#ff4d1a', borderColor: '#ff2a00' }} />
+              <span className="mt-0.5 h-3 w-3 shrink-0 rounded-sm border-2" style={{ background: '#2a1a14', borderColor: '#f0532b' }} />
               <span>
                 <b>Fire now (estimated)</b> for {t(nowcast.stepAt)}: {nowcastSource(nowcast.run, t)}.
                 {nowcast.beyond.length > 0 && (

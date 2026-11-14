@@ -21,20 +21,35 @@ export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'nearby
 export type MapMode = 'simple' | 'detailed';
 
 /** Layers that only exist in Detailed mode. */
-const DETAILED_ONLY = ['initial-pending', 'initial-reached', 'initial-label', 'streets-nearby', 'burned-area'];
+const DETAILED_ONLY = ['initial-pending', 'initial-reached', 'initial-label', 'streets-nearby', 'burned-area', 'hotspots-old'];
 /** Layers that only exist in Simple mode. */
 const SIMPLE_ONLY: string[] = [];
-/** "Fire now (estimated)": the strongest thing on the map, bright orange-red with a clear edge. */
-export const NOWCAST_COLOUR = '#ff4d1a';
-export const NOWCAST_EDGE = '#ff2a00';
-/** Horizons from the time shown: +1 h a clear "danger zone", +2 / +3 h lighter, +6 h only an outline. */
-export const ZONE_COLOUR = { h1: '#f97316', h2: '#fb923c', h3: '#fdba74', h6: '#fed7aa' } as const;
+/** "Fire now (estimated)": inside, burned ground (dark, low saturation, quiet); along its edge the active front, a
+ * band of FRONT_WIDTH_M in one red-orange with thin light edges: the thing the eye should find first. */
+export const NOWCAST_COLOUR = '#2a1a14';
+export const NOWCAST_OPACITY = 0.5;
+export const FRONT_COLOUR = '#f0532b';
+export const FRONT_EDGE = '#ffe2d4';
+export const FRONT_WIDTH_M = 300;
+/** Kept for swatches that show the estimated fire by its edge. */
+export const NOWCAST_EDGE = FRONT_COLOUR;
+/** Horizons from the time shown, lines only: +1 h yellow and clear, +2 / +3 h thinner and fainter, +6 h dotted. */
+export const ZONE_COLOUR = { h1: '#facc15', h2: '#fde68a', h3: '#fef3c7', h6: '#fef3c7' } as const;
 /** Kept for the legend of the forecast closure and older references. */
-export const FORECAST_FILL_COLOUR = ZONE_COLOUR.h1;
-/** Satellite detections of the last ACTIVE_FIRE_H hours are bright (active fire); older ones dark grey (burned). */
+export const FORECAST_FILL_COLOUR = '#f97316';
+/** Satellite detections. Simple: only VIIRS of the last SIMPLE_FIRE_H hours, small and faint (the burned ground
+ * already covers the older ones). Detailed: the last ACTIVE_FIRE_H hours bright, older ones dark grey. */
 export const ACTIVE_FIRE_H = 6;
+export const SIMPLE_FIRE_H = 3;
 export const ACTIVE_FIRE_COLOUR = '#fde047';
+export const SIMPLE_FIRE_COLOUR = '#ffb547';
 export const OLD_FIRE_COLOUR = '#4b5563';
+
+/** Line width in pixels of `metres` on the ground at this map latitude (about 36.85° N), for any zoom. */
+function metresWidth(metres: number): ExpressionSpecification {
+  const mpp0 = 156543.03 * Math.cos((36.85 * Math.PI) / 180);       // metres per pixel at zoom 0
+  return ['interpolate', ['exponential', 2], ['zoom'], 8, (metres * 2 ** 8) / mpp0, 18, (metres * 2 ** 18) / mpp0];
+}
 /** Streets closed by the forecast only: orange, dashed; observed closures are solid red. */
 export const FORECAST_CLOSURE_COLOUR = '#fb923c';
 
@@ -42,12 +57,12 @@ export const FORECAST_CLOSURE_COLOUR = '#fb923c';
 const NEARBY_RADIUS_M = 1000;
 
 const LAYER_GROUPS: Record<LayerKey, string[]> = {
-  forecast: ['forecast-zones', 'forecast-zone-lines', 'nowcast-fill', 'nowcast-casing', 'nowcast-edge', 'forecast-tag'],
+  forecast: ['forecast-zone-lines', 'forecast-zone-dotted', 'nowcast-fill', 'front-band', 'front-edges', 'forecast-tag'],
   initial: ['initial-pending', 'initial-reached', 'initial-label'],
   observed: ['hotspots-old', 'hotspots', 'burned-area', 'flame-front'],
   streets: ['streets-near', 'streets', 'streets-forecast'],
   nearby: ['streets-nearby'],
-  callers: ['callers-selected', 'callers', 'callers-label'],
+  callers: ['callers-shadow', 'callers-selected', 'callers', 'callers-label'],
   crews: ['routes-casing', 'routes', 'routes-cut', 'responders', 'responders-label'],
   concept: ['report-points', 'cluster-fill', 'cluster-line', 'cluster-line-confirmed', 'cluster-label'],
 };
@@ -175,8 +190,13 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.setFilter('initial-pending', ['all', initial, ['>', ['get', 't'], t]]);
     // Satellite detections: the last ACTIVE_FIRE_H hours are active fire (bright), older ones burned (dark grey).
     const recent: ExpressionSpecification = ['>', ['get', 't'], t - ACTIVE_FIRE_H * 3600000];
-    map.setFilter('hotspots', ['all', obs('hotspots'), upTo, recent]);
-    map.setFilter('flame-front', ['all', obs('flame_front'), upTo]);
+    const simpleMode = latest.current.mode === 'simple';
+    // Simple: only VIIRS of the last SIMPLE_FIRE_H hours (the 1 km pixels are large squares that hide the map).
+    map.setFilter('hotspots', simpleMode
+      ? ['all', obs('hotspots'), upTo, ['>', ['get', 't'], t - SIMPLE_FIRE_H * 3600000], ['==', ['get', 'instrument'], 'VIIRS']]
+      : ['all', obs('hotspots'), upTo, recent]);
+    map.setFilter('flame-front', simpleMode ? ['all', obs('flame_front'), upTo, ['>', ['get', 't'], t - SIMPLE_FIRE_H * 3600000]]
+      : ['all', obs('flame_front'), upTo]);
     map.setFilter('burned-area', ['all', obs('burned_area'), upTo]);
     map.setFilter('streets-near', ['in', ['get', 'id'], ['literal', near]]);
     // Blocked by a satellite detection only (the model has not reached the street yet): dashed red.
@@ -187,13 +207,14 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     map.setFilter('streets', ['!', forecastOnlyExpr]);
     // Active fire: one bright colour in Simple, the sensor colours in Detailed. The 1 km MODIS / SLSTR pixels stay
     // light so they do not hide the estimated fire under them.
-    map.setPaintProperty('hotspots', 'fill-color', simple ? ACTIVE_FIRE_COLOUR : INSTRUMENT_COLOUR);
-    map.setPaintProperty('hotspots', 'fill-opacity', ['match', ['get', 'instrument'], 'VIIRS', simple ? 0.32 : 0.4, simple ? 0.1 : 0.15]);
+    map.setPaintProperty('hotspots', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : INSTRUMENT_COLOUR);
+    map.setPaintProperty('hotspots', 'fill-opacity', ['match', ['get', 'instrument'], 'VIIRS', simple ? 0.3 : 0.4, simple ? 0.1 : 0.15]);
     map.setPaintProperty('hotspots', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : INSTRUMENT_COLOUR);
     // Older detections (burned): dark grey in both modes, the 1 km pixels hardly at all.
     map.setFilter('hotspots-old', ['all', obs('hotspots'), upTo, ['!', recent]]);
-    map.setPaintProperty('flame-front', 'fill-color', ['case', recent, ACTIVE_FIRE_COLOUR, OLD_FIRE_COLOUR]);
-    map.setPaintProperty('flame-front', 'fill-opacity', ['case', recent, 0.9, 0.5]);
+    map.setPaintProperty('flame-front', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : ['case', recent, ACTIVE_FIRE_COLOUR, OLD_FIRE_COLOUR]);
+    map.setPaintProperty('flame-front', 'fill-opacity', simple ? 0.35 : ['case', recent, 0.9, 0.5]);
+    map.setPaintProperty('flame-front', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : '#fef08a');
 
     // Fire nearby: a coarse pixel covers the street and neither source has closed it yet. (Not `t > now`:
     // a street that is never closed has t = scenario start.)
@@ -301,21 +322,23 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       // active fire of the last hours on top of it. All under the streets, so roads stay readable.
       map.addLayer({ id: 'hotspots-old', type: 'fill', source: 'fire',
         paint: { 'fill-color': OLD_FIRE_COLOUR, 'fill-opacity': ['match', ['get', 'instrument'], 'VIIRS', 0.32, 0.05] } });
-      map.addLayer({ id: 'forecast-zones', type: 'fill', source: 'nowcast', filter: ['match', ['get', 'role'], ['h1', 'h2', 'h3'], true, false],
-        paint: { 'fill-color': ['match', ['get', 'role'], 'h1', ZONE_COLOUR.h1, 'h2', ZONE_COLOUR.h2, ZONE_COLOUR.h3],
-          'fill-opacity': ['match', ['get', 'role'], 'h1', 0.3, 'h2', 0.15, 0.09] } });
       map.addLayer({ id: 'nowcast-fill', type: 'fill', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
-        paint: { 'fill-color': NOWCAST_COLOUR, 'fill-opacity': 0.62 } });
+        paint: { 'fill-color': NOWCAST_COLOUR, 'fill-opacity': NOWCAST_OPACITY } });
       map.addLayer({ id: 'hotspots', type: 'fill', source: 'fire',
         paint: { 'fill-color': INSTRUMENT_COLOUR, 'fill-opacity': ['match', ['get', 'instrument'], 'VIIRS', 0.3, 0.1] } });
       map.addLayer({ id: 'burned-area', type: 'line', source: 'fire',
         paint: { 'line-color': '#9ca3af', 'line-width': 1.5, 'line-opacity': 0.8 } });
       map.addLayer({ id: 'flame-front', type: 'fill', source: 'fire',
         paint: { 'fill-color': ACTIVE_FIRE_COLOUR, 'fill-opacity': 0.9, 'fill-outline-color': '#fef08a' } });
-      map.addLayer({ id: 'forecast-zone-lines', type: 'line', source: 'nowcast', filter: ['!=', ['get', 'role'], 'now'],
-        paint: { 'line-color': ['match', ['get', 'role'], 'h1', '#fb923c', 'h2', ZONE_COLOUR.h2, 'h3', ZONE_COLOUR.h3, ZONE_COLOUR.h6],
-          'line-width': ['match', ['get', 'role'], 'h1', 2, 'h6', 1.3, 1],
-          'line-opacity': ['match', ['get', 'role'], 'h1', 0.95, 'h6', 0.9, 0.7] } });
+      // Horizons: lines only, +1 h clear, +2 / +3 h thinner and fainter, +6 h dotted.
+      map.addLayer({ id: 'forecast-zone-lines', type: 'line', source: 'nowcast', filter: ['match', ['get', 'role'], ['h1', 'h2', 'h3'], true, false],
+        layout: { 'line-join': 'round' },
+        paint: { 'line-color': ['match', ['get', 'role'], 'h1', ZONE_COLOUR.h1, 'h2', ZONE_COLOUR.h2, ZONE_COLOUR.h3],
+          'line-width': ['match', ['get', 'role'], 'h1', 2, 'h2', 1.2, 1],
+          'line-opacity': ['match', ['get', 'role'], 'h1', 0.95, 'h2', 0.6, 0.45] } });
+      map.addLayer({ id: 'forecast-zone-dotted', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'h6'],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': ZONE_COLOUR.h6, 'line-width': 1.4, 'line-opacity': 0.55, 'line-dasharray': [0.1, 2.5] } });
 
       map.addLayer({ id: 'streets-near', type: 'line', source: 'streets',
         layout: { 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.9 } });
@@ -341,11 +364,14 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             10, ['match', ['get', 'highway'], 'track', 1.2, 2.2],
             14, ['match', ['get', 'highway'], 'track', 2.6, 4.5]] } });
 
-      // The edge of the estimated fire now: over the streets, so it stays the clearest line on the map.
-      map.addLayer({ id: 'nowcast-casing', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
-        layout: { 'line-join': 'round' }, paint: { 'line-color': '#fff7ed', 'line-width': 4, 'line-opacity': 0.75 } });
-      map.addLayer({ id: 'nowcast-edge', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
-        layout: { 'line-join': 'round' }, paint: { 'line-color': NOWCAST_EDGE, 'line-width': 2.2 } });
+      // The active front: a band of FRONT_WIDTH_M along the edge of the estimated fire (half inside, half outside: the
+      // edge is an estimate), one colour, with thin light edges. Under the routes and callers.
+      map.addLayer({ id: 'front-band', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': FRONT_COLOUR, 'line-opacity': 0.7, 'line-width': metresWidth(FRONT_WIDTH_M) } });
+      map.addLayer({ id: 'front-edges', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
+        layout: { 'line-join': 'round' },
+        paint: { 'line-color': FRONT_EDGE, 'line-opacity': 0.75, 'line-width': 0.8, 'line-gap-width': metresWidth(FRONT_WIDTH_M) } });
 
       // Crew routes: drawn over the streets; a route cut by a newly blocked street turns dashed amber.
       map.addLayer({ id: 'routes-casing', type: 'line', source: 'streets', layout: { 'line-cap': 'round', 'line-join': 'round' },
@@ -383,13 +409,18 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           'text-offset': [0, -1.4], 'text-anchor': 'bottom', 'text-allow-overlap': false, 'text-padding': 4 },
         paint: { 'text-color': '#a5f3fc', 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
 
+      // A soft dark shadow under each caller, so the dots stay readable on the fire.
+      map.addLayer({ id: 'callers-shadow', type: 'circle', source: 'callers',
+        paint: { 'circle-radius': ['match', ['get', 'urgency'], 'life_threat', 13, 'urgent', 11.5, 10], 'circle-color': '#000000',
+          'circle-opacity': 0.45, 'circle-blur': 0.6 } });
       map.addLayer({ id: 'callers-selected', type: 'circle', source: 'callers',
         paint: { 'circle-radius': 17, 'circle-color': 'rgba(255,255,255,0.15)', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2.5 } });
       map.addLayer({ id: 'callers', type: 'circle', source: 'callers',
         paint: { 'circle-radius': ['match', ['get', 'urgency'], 'life_threat', 9, 'urgent', 7.5, 6],
           'circle-color': ['get', 'colour'],
-          'circle-stroke-color': ['match', ['get', 'stage'], 'new', '#07090d', ['get', 'ring']],
-          'circle-stroke-width': ['match', ['get', 'stage'], 'new', 2, 'taken', 2.5, 3.5] } });
+          // A new caller has a thin white edge; once handled the ring takes the stage colour.
+          'circle-stroke-color': ['match', ['get', 'stage'], 'new', '#ffffff', ['get', 'ring']],
+          'circle-stroke-width': ['match', ['get', 'stage'], 'new', 1.5, 'taken', 2.5, 3.5] } });
       // CONCEPT DEMO: reports from people (points) and candidate clusters (uncertainty discs, dashed until confirmed).
       map.addSource('report-points', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addSource('clusters', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
@@ -424,7 +455,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
 
       // One click handler, most specific feature first: caller, response point, street, fire front.
       const CLICKABLE = ['callers', 'report-points', 'cluster-fill', 'responders', 'streets', 'streets-forecast', 'flame-front', 'hotspots',
-        'nowcast-fill', 'forecast-zones', 'forecast-zone-lines', 'initial-reached', 'initial-pending', 'burned-area', 'hotspots-old'];
+        'front-band', 'nowcast-fill', 'forecast-zone-lines', 'forecast-zone-dotted', 'initial-reached', 'initial-pending', 'burned-area', 'hotspots-old'];
       const muted = (text: string) => `<div class="ns-muted">${text}</div>`;
       const tag = (p: { synthetic?: boolean; basis?: string }) => (p.synthetic ? '<span class="synthetic-tag">SYNTHETIC</span>'
         : p.basis === 'fire_model' ? '<span class="model-tag">MODEL OUTPUT</span>'
@@ -502,7 +533,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             + (closure && (p.ts ?? 9e15) <= t && (p.satellite_reason ?? p.reason) ? muted(p.satellite_reason ?? p.reason ?? '') : '')
             + (p.imagery_date ? muted(`Imagery: ${p.imagery_date}`) : '')
             + muted(p.confirmed_by_operator ? 'Confirmed by operator' : 'Not confirmed by an operator') + tag(p);
-        } else if (['nowcast-fill', 'forecast-zones', 'forecast-zone-lines'].includes(hit.layer.id)) {
+        } else if (['front-band', 'nowcast-fill', 'forecast-zone-lines', 'forecast-zone-dotted'].includes(hit.layer.id)) {
           const nc = latest.current.nowcast;
           if (!nc) return;
           const role = hit.properties.role as string;
@@ -510,8 +541,9 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           const src = nowcastSource(nc.run, (x) => fmtTime(x, tz));
           html = role === 'now'
             ? `<b>Fire now (estimated)</b><div>Modelled fire extent for ${fmtTime(f.valid_t, tz)}, P ≥ 50 % · ${f.area_km2.toFixed(1)} km²</div>`
+              + `<div>Dark inside: burned ground. Bright band: the active front (${FRONT_WIDTH_M} m along the estimated edge).</div>`
               + `<div>${src}</div>` + muted(`Forecast issued ${fmtTime(nc.run.issuedAt, tz)}, advanced ${f.step} h. A model estimate, not an observation.`)
-            : `<b>${role === 'h1' ? 'Danger zone: fire within 1 h' : `Forecast +${f.h} h`}</b>`
+            : `<b>${role === 'h1' ? 'Fire within 1 h (+1 h line)' : `Forecast +${f.h} h`}</b>`
               + `<div>Modelled fire extent by ${fmtTime(f.valid_t, tz)}, P ≥ 50 % · ${f.area_km2.toFixed(1)} km²</div>`
               + muted(`Forecast issued ${fmtTime(nc.run.issuedAt, tz)} from ${nc.run.from}`);
         } else {
@@ -633,7 +665,7 @@ function nowcastTagPoints(nc: Nowcast | null): GeoJSON.FeatureCollection {
     const pts = rings.flat();
     if (!pts.length) continue;
     const tip = (score: (c: number[]) => number) => pts.reduce((a, b) => (score(b) > score(a) ? b : a));
-    const text = p.role === 'now' ? 'Fire now (est.)' : p.role === 'h1' ? '+1 h danger zone' : `+${p.h} h`;
+    const text = p.role === 'now' ? 'Fire front (est.)' : `+${p.h} h`;
     for (const [side, score] of sides[p.role]) {
       features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: tip(score) },
         properties: { role: p.role, horizon_hours: p.h, text, side, run_id: p.run_id } });
@@ -643,20 +675,20 @@ function nowcastTagPoints(nc: Nowcast | null): GeoJSON.FeatureCollection {
 }
 
 /** A line sample for the legend: solid, dashed or a halo, in the given colour. */
-function LineKey({ colour, dashed, halo, casing }: { colour: string; dashed?: boolean; halo?: boolean; casing?: string }) {
+function LineKey({ colour, dashed, dotted, halo, casing }: { colour: string; dashed?: boolean; dotted?: boolean; halo?: boolean; casing?: string }) {
   return (
     <svg width="26" height="10" aria-hidden="true" className="shrink-0">
       {casing && <line x1="2" y1="5" x2="24" y2="5" stroke={casing} strokeWidth="7" strokeLinecap="round" />}
       <line x1="2" y1="5" x2="24" y2="5" stroke={colour} strokeWidth={halo ? 8 : 3} strokeOpacity={halo ? 0.7 : 1}
-        strokeDasharray={dashed ? '4 3' : undefined} strokeLinecap={dashed ? 'butt' : 'round'} />
+        strokeDasharray={dashed ? '4 3' : dotted ? '0.1 4' : undefined} strokeLinecap={dashed ? 'butt' : 'round'} />
     </svg>
   );
 }
 
-function DotKey({ fill, ring }: { fill: string; ring?: string }) {
+function DotKey({ fill, ring, thin }: { fill: string; ring?: string; thin?: boolean }) {
   return (
     <svg width="26" height="14" aria-hidden="true" className="shrink-0">
-      <circle cx="13" cy="7" r="5" fill={fill} stroke={ring ?? '#07090d'} strokeWidth={ring ? 2.5 : 1.5} />
+      <circle cx="13" cy="7" r="5" fill={fill} stroke={ring ?? '#07090d'} strokeWidth={thin ? 1.2 : ring ? 2.5 : 1.5} />
     </svg>
   );
 }
@@ -691,29 +723,29 @@ function Legend({ mode, nearby, nowcast, timeZone }: { mode: MapMode; nearby: bo
           {row(<LineKey colour="#22d3ee" casing="#083344" />, 'Crew route')}
           {row(<LineKey colour="#fbbf24" dashed casing="#083344" />, 'Route cut')}
           <div className="pt-0.5" />
-          {row(<AreaKey fill={NOWCAST_COLOUR} opacity={0.75} edge={NOWCAST_EDGE} />, 'Fire now (estimated)')}
+          {row(<LineKey colour={FRONT_COLOUR} halo />, 'Active front (estimated)')}
+          {row(<AreaKey fill={NOWCAST_COLOUR} opacity={0.9} edge="#6b4a3e" />, 'Burned (estimated, inside the front)')}
           {nowcast && (
             <div className="whitespace-normal pl-8 text-[10px] leading-tight text-ink-400" data-legend-nowcast>
               {nowcastSource(nowcast.run, (x) => fmtTime(x, timeZone))}
             </div>
           )}
-          {row(<AreaKey fill={ZONE_COLOUR.h1} opacity={0.45} edge="#fb923c" />, '+1 h danger zone')}
-          {row(<AreaKey fill={ZONE_COLOUR.h2} opacity={0.25} />, '+2 h')}
-          {row(<AreaKey fill={ZONE_COLOUR.h3} opacity={0.15} />, '+3 h')}
-          {row(<LineKey colour={ZONE_COLOUR.h6} />, '+6 h (outline)')}
+          {row(<LineKey colour={ZONE_COLOUR.h1} />, '+1 h: fire may be here within 1 h')}
+          {row(<LineKey colour={ZONE_COLOUR.h2} />, '+2 h / +3 h (thinner, fainter)')}
+          {row(<LineKey colour={ZONE_COLOUR.h6} dotted />, '+6 h (dotted)')}
           {!simple && row(<LineKey colour={INITIAL_FORECAST_COLOUR} />, 'Initial forecast (at ignition)')}
-          {simple ? row(<AreaKey fill={ACTIVE_FIRE_COLOUR} opacity={0.6} />, `Active fire, satellite (last ${ACTIVE_FIRE_H} h)`)
+          {simple ? row(<AreaKey fill={SIMPLE_FIRE_COLOUR} opacity={0.35} />, `Fire seen by VIIRS (last ${SIMPLE_FIRE_H} h)`)
             : <>
               {row(<AreaKey fill="#ef4444" opacity={0.45} />, `VIIRS 375 m (last ${ACTIVE_FIRE_H} h)`)}
               {row(<AreaKey fill="#a855f7" opacity={0.3} />, 'MODIS 1 km')}
               {row(<AreaKey fill="#14b8a6" opacity={0.3} />, 'SLSTR 1 km')}
               {row(<AreaKey fill={ACTIVE_FIRE_COLOUR} opacity={0.9} />, 'Flame front (Sentinel-2)')}
             </>}
-          {row(<AreaKey fill={OLD_FIRE_COLOUR} opacity={0.6} />, `Burned / older detections (> ${ACTIVE_FIRE_H} h)`)}
+          {!simple && row(<AreaKey fill={OLD_FIRE_COLOUR} opacity={0.6} />, `Burned / older detections (> ${ACTIVE_FIRE_H} h)`)}
           <div className="pt-0.5" />
-          {row(<DotKey fill={URGENCY_COLOUR.life_threat} />, 'Caller: life threat')}
-          {row(<DotKey fill={URGENCY_COLOUR.urgent} />, 'Caller: urgent')}
-          {row(<DotKey fill={URGENCY_COLOUR.routine} />, 'Caller: routine')}
+          {row(<DotKey fill={URGENCY_COLOUR.life_threat} ring="#ffffff" thin />, 'Caller: life threat')}
+          {row(<DotKey fill={URGENCY_COLOUR.urgent} ring="#ffffff" thin />, 'Caller: urgent')}
+          {row(<DotKey fill={URGENCY_COLOUR.routine} ring="#ffffff" thin />, 'Caller: routine')}
           {row(<DotKey fill="#8a9bb3" ring={STAGE_COLOUR.dispatched} />, 'Crew dispatched (ring)')}
           {row(<DotKey fill="#0e7490" ring="#a5f3fc" />, 'Fire station / gendarmerie')}
         </div>

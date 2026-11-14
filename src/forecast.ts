@@ -260,7 +260,7 @@ export function obsLabel(p: FireFront): string {
   return `${p.instrument} ${SAT_NAME[p.satellite ?? ''] ?? p.satellite ?? ''}`.trim();
 }
 
-/** Horizons drawn from the time shown: +1 h is the "danger zone", +6 h only an outline. */
+/** Horizons drawn from the time shown, as lines: +1 h clear, +2 / +3 h fainter, +6 h dotted. */
 export const NOWCAST_HORIZONS = [1, 2, 3, 6] as const;
 
 export interface NowcastFeatureProps {

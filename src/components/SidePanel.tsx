@@ -162,11 +162,11 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
           <div data-nowcast-list>
             {nowcast.fc.features.slice().reverse().map(({ properties: f }) => (
               <div key={f.role} className="flex items-center gap-2 py-0.5">
-                <span className="inline-block h-2.5 w-5 rounded-sm"
-                  style={f.role === 'now' ? { background: NOWCAST_COLOUR, border: `1.5px solid ${NOWCAST_EDGE}` }
-                    : f.role === 'h6' ? { border: `1.5px solid ${ZONE_COLOUR.h6}` }
-                      : { background: ZONE_COLOUR[f.role as 'h1' | 'h2' | 'h3'], opacity: f.role === 'h1' ? 0.8 : f.role === 'h2' ? 0.55 : 0.35 }} />
-                <span>{f.role === 'now' ? 'Fire now (est.)' : f.role === 'h1' ? '+1 h danger zone' : `+${f.h} h`} · {f.area_km2.toFixed(1)} km²</span>
+                <span className="inline-block w-5 rounded-sm"
+                  style={f.role === 'now' ? { height: 10, background: NOWCAST_COLOUR, border: `2px solid ${NOWCAST_EDGE}` }
+                    : { height: 0, borderTop: `${f.role === 'h1' ? 2 : 1.5}px ${f.role === 'h6' ? 'dotted' : 'solid'} ${ZONE_COLOUR[f.role as 'h1' | 'h2' | 'h3' | 'h6']}`,
+                      opacity: f.role === 'h1' ? 1 : f.role === 'h6' ? 0.6 : 0.7 }} />
+                <span>{f.role === 'now' ? 'Fire now (est.)' : `+${f.h} h`} · {f.area_km2.toFixed(1)} km²</span>
                 <span className="ml-auto text-xs text-ink-400">{f.role === 'now' ? `for ${fmtTime(f.valid_t, timeZone)}` : `by ${fmtTime(f.valid_t, timeZone)}`}</span>
               </div>
             ))}
