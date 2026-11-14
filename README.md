@@ -313,6 +313,52 @@ forecast only uses candidates known by its issue time.
 ![Confirmed reports](docs/b2_concept_confirmed.png)
 ![Score after the pass](docs/b2_concept_score.png)
 
+## "Is the fire still there?" (MOCK)
+
+A reported fire is only true for a while. Each piece of evidence fades: a call has a **half-life of 40 minutes**, a
+crew sighting 3 hours. Below P 0.2 the place is **EXPIRED** and has to be confirmed again before it can go into a
+forecast. On a candidate the operator can **Ask for confirmation**:
+
+1. **Target:** the first request goes to the nearest crew within 10 km, by radio; the next one goes to a person who
+   reported the place, on site first, in their language and channel. People in danger are not called back for
+   this.
+2. **Answer:** an answer can only be counted once it has arrived.
+   - "yes" adds or refreshes a source (crew 0.9, caller on site 0.6, further away 0.3).
+   - "no" multiplies the confidence by 0.2 from someone on site, 0.7 from further away.
+   - No answer within 15 minutes changes nothing.
+3. **Record:** every request goes into the decision log.
+
+**This is a mock:** nothing is sent. The answers come from `mockAnswer()` in `src/reports.ts`: a crew answers
+from the place in ~8–11 min, a caller in ~4–7 min; where the synthetic scenario had fire the answer is "yes"
+(a caller sometimes does not answer), where it had none it is "no". The screen marks each request **MOCK**.
+
+![Ask for confirmation: crew answers yes](docs/b3_ask_crew_yes.png)
+![A false report: the crew finds no fire](docs/b3_ask_false_no.png)
+
+### Connecting the Greek team's voice assistant
+
+The screen and the voice assistant need to agree on three records (JSON Schema, with an example each in
+`schemas/examples/`; `npm run validate` checks them):
+
+| Record | Who writes it | Fields |
+|---|---|---|
+| [`FireReport`](schemas/fire_report.schema.json) | voice intake, a crew app, a drone | `id`, `kind` (caller / drone / crew), `observed_at`, `place` {`lon`, `lat`, `uncertainty_m`}, `statement_class`, `location_quality`, `observer_distance`, `source_ref` (hashed number), `language`, `channel`, `confidence` |
+| [`ConfirmationRequest`](schemas/confirmation_request.schema.json) | operator screen | `id`, `report_id`, `target` {`kind`: crew / caller, `ref`}, `channel` (sms / whatsapp / voice / radio), `language`, `question_code`, `sent_at`, `expires_at` |
+| [`ConfirmationResponse`](schemas/confirmation_response.schema.json) | voice assistant | `request_id`, `answer` (yes / no / unknown), `answered_at`, `place` (optional), `free_text` |
+
+How it would run:
+
+1. **Intake:** the voice assistant classifies what the caller says into `statement_class`, `location_quality`
+   and `observer_distance`. It never sends the phone number, only `source_ref` = a salted SHA-256 of it, so
+   repeat calls are recognised without storing the number.
+2. **Asking:** for a `ConfirmationRequest` it only maps `question_code` to a template in Turkish, Greek, English
+   or German, places the call or message on `channel`, and maps the reply to yes / no / unknown.
+3. **The relay:** a static site cannot receive messages, so a small relay is needed between the two. That is
+   the same localhost FastAPI as the forecast server ([docs/forecast_api.md](docs/forecast_api.md)): the
+   screen POSTs requests to it and polls it for responses and new reports. For Athens the mock stands in for it.
+4. **Consent:** under GDPR / KVKK the caller must have agreed to be contacted again (`consent` in the request).
+   Only hashed numbers leave the voice assistant.
+
 ## Crews
 
 Each response point has **two crews** (an assumption, stated on screen), e.g. Armutalan-1 and Armutalan-2.

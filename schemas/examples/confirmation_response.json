@@ -1,0 +1,10 @@
+{
+  "request_id": "ask-17",
+  "answer": "yes",
+  "answered_at": "2022-06-21T22:59:00Z",
+  "place": { "lon": 28.1049, "lat": 36.8490, "uncertainty_m": 30 },
+  "on_site": true,
+  "free_text": "Yes, the fire is still here, it is moving towards the road.",
+  "language": "tr",
+  "mock": true
+}

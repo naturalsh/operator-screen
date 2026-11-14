@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://naturalsh.github.io/operator-screen/schemas/confirmation_request.schema.json",
+  "title": "ConfirmationRequest",
+  "description": "'Is the fire still there?': the operator screen asks a crew near a reported fire, or a person in the area, to confirm it. The voice assistant turns question_code into a message or call in the target's language and answers with a ConfirmationResponse. People in danger are not called back for this.",
+  "type": "object",
+  "required": ["id", "report_id", "target", "channel", "language", "question_code", "sent_at", "expires_at"],
+  "properties": {
+    "id": { "type": "string" },
+    "report_id": { "type": "string", "description": "The FireReport (or cluster of reports) to confirm." },
+    "cluster_id": { "type": "string" },
+    "target": {
+      "type": "object", "required": ["kind", "ref"],
+      "properties": {
+        "kind": { "enum": ["crew", "caller"] },
+        "ref": { "type": "string", "description": "Crew id, or the caller's hashed number (sha256:...), never the number itself." },
+        "distance_m": { "type": "number", "minimum": 0, "description": "Distance from the reported place when asked." }
+      }
+    },
+    "channel": { "enum": ["sms", "whatsapp", "voice", "radio"] },
+    "language": { "type": "string", "description": "ISO 639-1: tr, el, en, de." },
+    "question_code": { "enum": ["FIRE_STILL_THERE", "FIRE_SEEN_NEAR_YOU", "SMOKE_OR_FLAMES"], "description": "The voice assistant holds one template per code and language." },
+    "sent_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time", "description": "No answer by then counts as unknown." },
+    "consent": { "type": "boolean", "description": "The person agreed to be contacted again (GDPR / KVKK)." },
+    "mock": { "type": "boolean", "description": "Answered by the demo's mock, not sent to anyone." }
+  }
+}

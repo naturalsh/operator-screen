@@ -134,7 +134,7 @@ export interface Decision {
   operator: string;
   report_id: string;
   action: 'take' | 'confirm_urgency' | 'dispatch' | 'dispatch_no_access' | 'dispatch_no_crew' | 'reroute' | 'reroute_no_access'
-    | 'reassign' | 'unassigned' | 'settings' | 'update_forecast' | 'confirm_report';
+    | 'reassign' | 'unassigned' | 'settings' | 'update_forecast' | 'confirm_report' | 'ask_confirmation';
   previous: string | null;
   new: string | null;
   note?: string;
@@ -177,6 +177,8 @@ export interface FireReport {
   synthetic?: boolean;
   repeat_of_number?: boolean;
   cluster?: string;
+  /** CONCEPT DEMO only: whether there really was fire. Never shown; drives the mock answers and the score. */
+  _truth?: 'fire' | 'false_report';
 }
 
 /** Reports of one place, clustered in time order (tools/build_concept_reports.py). */

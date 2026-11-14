@@ -13,7 +13,9 @@ import {
 } from './forecast';
 import { ForecastControl } from './components/ForecastControl';
 import { ConceptPanel } from './components/ConceptPanel';
-import { CONCEPT_LABEL, clustersAt } from './reports';
+import {
+  ASK_EXPIRES_MIN, CONCEPT_LABEL, clustersAt, mockAnswer, nextAskTarget, type ConfirmationAnswer, type ConfirmationAsk,
+} from './reports';
 import type { CallerReport, Decision, ScenarioData, ScenarioEntry, StreetFeature, Urgency } from './types';
 import { CallerList, NEAR_RADIUS_M, type CardCrew, type CaseState } from './components/CallerList';
 import { DecisionLog } from './components/DecisionLog';
@@ -86,6 +88,9 @@ export function App() {
   const [fireVersion, setFireVersion] = useState(0);
   // CONCEPT DEMO: report clusters the operator confirmed, and when (scenario time).
   const [confirmations, setConfirmations] = useState<Map<string, number>>(new Map());
+  // "Is the fire still there?" requests (MOCK: answered by mockAnswer, nothing is sent).
+  const [asks, setAsks] = useState<{ ask: ConfirmationAsk; answer: ConfirmationAnswer }[]>([]);
+  const askSeq = useRef(0);
 
   useEffect(() => {
     loadIndex().then((list) => {
@@ -105,6 +110,7 @@ export function App() {
     setLoads([]);
     setPrecomputed(null);
     setConfirmations(new Map());
+    setAsks([]);
     loadScenario(entry).then((d) => {
       const demo = wantDemo ? entry.demo : undefined;
       const t0 = Date.parse(demo?.t ?? '') || Date.parse(params.get('t') ?? '') || Date.parse(entry.initial ?? entry.start);
@@ -347,8 +353,8 @@ export function App() {
 
   // CONCEPT DEMO: report clusters at the time shown and the confirmed ones the next update would add.
   const conceptOn = !!data?.concept && layers.concept;
-  const clusterStates = useMemo(() => (conceptOn && data?.concept ? clustersAt(data.concept, now, confirmations) : []),
-    [conceptOn, data, now, confirmations]);
+  const clusterStates = useMemo(() => (conceptOn && data?.concept ? clustersAt(data.concept, now, confirmations, asks) : []),
+    [conceptOn, data, now, confirmations, asks]);
   const confirmedNow = useMemo(() => clusterStates.filter((c) => c.candidate && c.confirmedAt != null).map((c) => c.cluster.id),
     [clusterStates]);
 
@@ -422,6 +428,27 @@ export function App() {
       'confirmed: used in the next forecast update', CONCEPT_LABEL);
   };
 
+  /** Asks the nearest crew, then a person who reported the place, whether the fire is still there (MOCK). */
+  const onAsk = (clusterId: string) => {
+    const c = clusterStates.find((x) => x.cluster.id === clusterId);
+    if (!c || !data?.concept) return;
+    const target = nextAskTarget(c, crewStates.map((k) => ({ id: k.crew.id, name: k.crew.name, position: k.position, busy: k.status === 'holding' })));
+    if (!target) return;
+    const { channel, language, reportId, ...who } = target;
+    const ask: ConfirmationAsk = {
+      id: `ask-${++askSeq.current}`, cluster_id: clusterId, report_id: reportId, target: who, channel, language,
+      question_code: 'FIRE_STILL_THERE', sent_at: now, expires_at: now + ASK_EXPIRES_MIN * 60000, mock: true,
+    };
+    const all = data.concept.records.filter((r) => c.cluster.reports.includes(r.id));
+    const fireThere = all.some((r) => r._truth === 'fire');
+    const onSite = all.find((r) => r.id === reportId)?.observer_distance === 'on_site';
+    const answer = mockAnswer(ask, fireThere, who.kind === 'crew' || onSite);
+    // Asking again earlier on the timeline replaces the later requests for this place.
+    setAsks((list) => [...list.filter((a) => !(a.ask.cluster_id === clusterId && a.ask.sent_at > now)), { ask, answer }]);
+    record({ id: clusterId, synthetic: true }, 'ask_confirmation', `P ${c.p.toFixed(2)}`,
+      `asked ${who.name} (${who.kind}, ${channel}, ${(who.distance_m / 1000).toFixed(1)} km)`, 'MOCK: no message is sent; CONCEPT DEMO');
+  };
+
   const changeOnScene = (value: number) => {
     const v = Math.min(480, Math.max(5, Math.round(value) || DEFAULT_ON_SCENE_MIN));
     if (v === onSceneMin) return;
@@ -483,7 +510,7 @@ export function App() {
     <SidePanel data={data} now={now} timeZone={timeZone} layers={layers} mode={mode} forecastRunId={forecastRunId}
       conceptPanel={conceptOn && data.concept ? (
         <ConceptPanel clusters={clusterStates} inForecast={inForce?.run.reports ?? []} now={now} timeZone={timeZone}
-          reportsUntil={Date.parse(data.concept.metadata.window_end)} onConfirm={onConfirmReport}
+          reportsUntil={Date.parse(data.concept.metadata.window_end)} onConfirm={onConfirmReport} onAsk={onAsk}
           scores={data.concept.scores.filter((x) => Date.parse(x.next_pass_at) <= now)} />
       ) : null}
       onToggle={(k) => setLayers((l) => ({ ...l, [k]: !l[k] }))}

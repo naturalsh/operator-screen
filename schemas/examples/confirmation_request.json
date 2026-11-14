@@ -1,0 +1,13 @@
+{
+  "id": "ask-17",
+  "report_id": "voice-2022-06-21-2133-0042",
+  "cluster_id": "concept-cluster-03",
+  "target": { "kind": "caller", "ref": "sha256:3f9a1c0b7d2e", "distance_m": 220 },
+  "channel": "voice",
+  "language": "tr",
+  "question_code": "FIRE_STILL_THERE",
+  "sent_at": "2022-06-21T22:55:00Z",
+  "expires_at": "2022-06-21T23:10:00Z",
+  "consent": true,
+  "mock": true
+}

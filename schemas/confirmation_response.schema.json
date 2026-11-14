@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://naturalsh.github.io/operator-screen/schemas/confirmation_response.schema.json",
+  "title": "ConfirmationResponse",
+  "description": "The answer to a ConfirmationRequest. 'yes' raises the confidence of the reported fire; 'no' from someone on site lowers it strongly, 'no' from further away a little; 'unknown' or no answer leaves it unchanged.",
+  "type": "object",
+  "required": ["request_id", "answer", "answered_at"],
+  "properties": {
+    "request_id": { "type": "string" },
+    "answer": { "enum": ["yes", "no", "unknown"] },
+    "answered_at": { "type": "string", "format": "date-time" },
+    "place": {
+      "type": "object", "required": ["lon", "lat"],
+      "description": "Where the person answering is (optional; a crew sends its GPS position).",
+      "properties": {
+        "lon": { "type": "number", "minimum": -180, "maximum": 180 },
+        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+        "uncertainty_m": { "type": "number", "minimum": 0 }
+      }
+    },
+    "on_site": { "type": "boolean", "description": "The person answering is at the reported place (within 500 m)." },
+    "free_text": { "type": "string", "description": "What the person said, transcribed (translated to English by the voice assistant)." },
+    "language": { "type": "string" },
+    "mock": { "type": "boolean" }
+  }
+}

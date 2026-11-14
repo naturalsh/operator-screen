@@ -1,0 +1,13 @@
+{
+  "id": "voice-2022-06-21-2133-0042",
+  "kind": "caller",
+  "observed_at": "2022-06-21T21:33:00Z",
+  "place": { "lon": 28.1052, "lat": 36.8486, "uncertainty_m": 150, "label": "2.6 km from Değirmenyanı" },
+  "statement_class": "flames_seen",
+  "location_quality": "gps",
+  "observer_distance": "within_500m",
+  "source_ref": "sha256:3f9a1c0b7d2e",
+  "language": "tr",
+  "channel": "voice",
+  "confidence": 0.48
+}

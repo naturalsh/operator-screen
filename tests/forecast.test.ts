@@ -9,8 +9,8 @@
 import { readFileSync } from 'node:fs';
 import { PrecomputedForecasts, applyForecastClosures, forecastClosures, forecastInForce, loadAt, type ForecastLoad } from '../src/forecast';
 import { NEVER, prepareStreets } from '../src/data';
-import type { ConceptReports, ForecastLibrary, StreetFeature } from '../src/types';
-import { clustersAt } from '../src/reports';
+import type { ConceptReports, FireReport, ForecastLibrary, StreetFeature } from '../src/types';
+import { HALF_LIFE_MIN, clustersAt, currentConfidence, mockAnswer, type ConfirmationAnswer, type ConfirmationAsk } from '../src/reports';
 
 const dir = new URL('../public/scenarios/marmaris_2022/', import.meta.url);
 const lib = JSON.parse(readFileSync(new URL('forecast_library.json', dir), 'utf8')) as ForecastLibrary;
@@ -97,6 +97,36 @@ const before = (c: { candidate_at?: string }) => Date.parse(c.candidate_at!) - 6
 for (const c of concept.clusters.filter((x) => x.candidate_at)) {
   const st = clustersAt(concept, before(c), new Map()).find((x) => x.cluster.id === c.id);
   if (st?.candidate) fail(`${c.id} is a candidate before its candidate time`);
+}
+
+// 6. "Is the fire still there?": fading, yes / no / unknown answers, and the mock never answers early.
+{
+  const r = (src: string, w: number, at: string) => ({ source_ref: src, confidence: w, observed_at: at, kind: 'caller' }) as unknown as FireReport;
+  const t0 = Date.parse('2022-06-21T22:00:00Z');
+  const reps = [r('a', 0.48, '2022-06-21T22:00:00Z'), r('b', 0.4, '2022-06-21T22:00:00Z')];
+  const p0 = currentConfidence(reps, [], t0);
+  const p40 = currentConfidence(reps, [], t0 + HALF_LIFE_MIN.caller * 60000);
+  const expect40 = 1 - (1 - 0.24) * (1 - 0.2);
+  if (Math.abs(p0 - (1 - 0.52 * 0.6)) > 1e-9 || Math.abs(p40 - expect40) > 1e-9) fail(`fading: ${p0} -> ${p40}`);
+  const ask = (kind: 'crew' | 'caller', ref: string) => ({ id: `ask-${kind}`, cluster_id: 'c', report_id: 'x', target: { kind, ref, name: kind, distance_m: 0 },
+    channel: 'radio', language: 'tr', question_code: 'FIRE_STILL_THERE', sent_at: t0, expires_at: t0 + 15 * 60000, mock: true }) as ConfirmationAsk;
+  const ans = (a: ConfirmationAsk, answer: 'yes' | 'no' | 'unknown', onSite: boolean) =>
+    ({ request_id: a.id, answer, answered_at: t0 + 10 * 60000, on_site: onSite, free_text: '', mock: true }) as ConfirmationAnswer;
+  const T = t0 + 10 * 60000;
+  const base = currentConfidence(reps, [], T);
+  const crew = ask('crew', 'crew:1');
+  const yes = currentConfidence(reps, [{ ask: crew, answer: ans(crew, 'yes', true) }], T);
+  const noSite = currentConfidence(reps, [{ ask: crew, answer: ans(crew, 'no', true) }], T);
+  const caller = ask('caller', 'z');
+  const noFar = currentConfidence(reps, [{ ask: caller, answer: ans(caller, 'no', false) }], T);
+  const unknown = currentConfidence(reps, [{ ask: caller, answer: ans(caller, 'unknown', false) }], T);
+  const early = currentConfidence(reps, [{ ask: crew, answer: ans(crew, 'yes', true) }], T - 60000);
+  if (!(yes > base)) fail('a yes must raise the confidence');
+  if (Math.abs(noSite - base * 0.2) > 1e-9 || Math.abs(noFar - base * 0.7) > 1e-9) fail('a no must scale it by 0.2 on site, 0.7 from far');
+  if (Math.abs(unknown - base) > 1e-9) fail('no answer must not change it');
+  if (Math.abs(early - currentConfidence(reps, [], T - 60000)) > 1e-9) fail('an answer must not count before it arrives');
+  const m = mockAnswer(crew, true, true);
+  if (m.answered_at <= crew.sent_at || m.answer !== 'yes' || mockAnswer(crew, false, true).answer !== 'no') fail('mock answers');
 }
 
 console.log(`forecast: ${pre.runs.length} forecasts checked; ${compared} causality comparisons; closures by 23 Jun 08:40: `

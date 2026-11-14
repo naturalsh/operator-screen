@@ -67,6 +67,13 @@ for (const s of read('public/scenarios/index.json').scenarios) {
   }
 }
 
+// Schemas agreed with the Greek team: each has an example record that must validate.
+for (const name of ['fire_report', 'confirmation_request', 'confirmation_response']) {
+  const v = name === 'fire_report' ? check.report : ajv.compile(read(`schemas/${name}.schema.json`));
+  if (!v(read(`schemas/examples/${name}.json`))) report(`schemas/examples/${name}.json`, name, v.errors.map((e) => `${e.instancePath || '/'} ${e.message}`));
+  else console.log(`  schemas/examples/${name}.json: valid`);
+}
+
 if (failures) {
   console.error(`${failures} problem(s) found`);
   process.exit(1);
