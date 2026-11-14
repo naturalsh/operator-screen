@@ -59,10 +59,10 @@ export function App() {
   const [drawer, setDrawer] = useState<'reports' | 'layers' | 'log' | null>(null);
   // True once the service worker has stored the whole site (built site only): it then opens without a network.
   const [offlineReady, setOfflineReady] = useState(false);
+  // (The worker is registered on the page's load event, after this runs, so wait for `ready` rather than asking
+  // for the registration now.)
   useEffect(() => {
-    navigator.serviceWorker?.getRegistration().then((reg) => {
-      if (reg) navigator.serviceWorker.ready.then(() => setOfflineReady(true));
-    }).catch(() => {});
+    if (import.meta.env.PROD && 'serviceWorker' in navigator) navigator.serviceWorker.ready.then(() => setOfflineReady(true));
   }, []);
   const mainRef = useRef<HTMLElement>(null);
   const missionSeq = useRef(0);
