@@ -138,16 +138,23 @@ MAX_GAP_H = 6.0                                      # re-issue at least this of
 SAME_PASS_MIN = 20                                   # observations closer than this are one update
 
 
-def build_forecast_updates(fire_root: Path, cfg: dict, end: datetime):
-    """Forecasts re-initialised from the latest observed fire area, with the fire repo's own model.
+SAT_NAME = {"N": "S-NPP", "N20": "N20", "N21": "N21"}
 
-    An update is issued at ignition (from the ignition point), at every new VIIRS overpass or Sentinel-2
-    image (from the union of everything VIIRS and Sentinel-2 have seen so far), and at least every
-    MAX_GAP_H hours in between (same perimeter, new start time and weather). Each update runs the same
-    Monte Carlo spread model, on the same grid, fuel, terrain and weather as the fire repo's reconstruction.
 
-    Returns ``(updates, grid, t0)``; each update is a dict with ``issued``, ``source``, ``perimeter``
-    (metric geometry or None), ``contours`` (GeoDataFrame, EPSG:4326, one row per UPDATE_STEP_H) and ``next``.
+def obs_label(row) -> str:
+    """Short name of an observation: "VIIRS N20", "Sentinel-2 burned area"."""
+    if row["observation_type"] in ("burned_area", "flame_front"):
+        return f"Sentinel-2 {row['observation_type'].replace('_', ' ')}"
+    return f"{row['instrument']} {SAT_NAME.get(row['satellite'], row['satellite'])}"
+
+
+def forecast_runner(fire_root: Path, cfg: dict) -> dict:
+    """The fire repo's Monte Carlo spread model, set up once, as a function of the issue time.
+
+    ``run(issued, extra_starts=())`` returns one forecast: it starts from the union of every VIIRS and
+    Sentinel-2 burned-area observation acquired by ``issued`` (the ignition point before the first one), plus
+    ``extra_starts`` (metric geometries, e.g. confirmed fire reports), with the weather from ``issued`` on.
+    Same grid, fuel, terrain, weather and settings as the fire repo's reconstruction.
     """
     from rasterio.features import rasterize
 
@@ -158,6 +165,7 @@ def build_forecast_updates(fire_root: Path, cfg: dict, end: datetime):
     from fireproj.fuel import map_landcover_to_fuel
     from fireproj.reconstruction import ReconstructionSpec
     from fireproj.spread.montecarlo import run_monte_carlo
+    from pyproj import Transformer
 
     spec = ReconstructionSpec.from_config(cfg, EVENT)
     t0 = spec.ignition_utc
@@ -182,8 +190,35 @@ def build_forecast_updates(fire_root: Path, cfg: dict, end: datetime):
     ff["_t"] = pd.to_datetime(ff["valid_at"], utc=True)
     fine = ff[(ff["kind"] == "observed") & ((ff["instrument"] == "VIIRS") | (ff["observation_type"] == "burned_area"))]
     fine = fine.sort_values("_t")
+    ign_x, ign_y = Transformer.from_crs("EPSG:4326", grid.crs, always_xy=True).transform(spec.ignition_lon, spec.ignition_lat)
 
-    # Issue times: ignition, each new fine-resolution observation, and fills so that no gap exceeds MAX_GAP_H.
+    def run(issued: datetime, extra_starts=()) -> dict:
+        seen = fine[fine["_t"] <= pd.Timestamp(issued)]
+        if seen.empty:
+            perimeter, start, source = None, Point(ign_x, ign_y).buffer(spec.ignition_radius_m), "ignition point"
+        else:
+            perimeter = start = unary_union(list(seen.geometry))
+            has_s2 = (seen["observation_type"] == "burned_area").any()
+            source = "VIIRS + Sentinel-2 perimeter" if has_s2 else "VIIRS perimeter"
+        if extra_starts:
+            start = unary_union([start, *extra_starts])
+        mask = rasterize([(start, 1)], out_shape=grid.shape, transform=grid.transform, fill=0, all_touched=True,
+                         dtype=np.uint8).astype(bool)
+        mc = run_monte_carlo(mask, fuel, dem["slope_deg"], dem["aspect_deg"], grid, run_cfg, weather_df=wx,
+                             t0_utc=issued, n_runs=int(spec.mc_runs), seed=int(cfg["spread"]["seed"]))
+        contours = mc.contours_gdf.sort_values("horizon_hours").reset_index(drop=True)
+        contours["geometry"] = contours.to_crs(grid.crs).geometry.buffer(60).buffer(-60).simplify(30).to_crs("EPSG:4326")
+        last = None if seen.empty else seen.iloc[-1]
+        return {"issued": issued, "source": source, "perimeter": perimeter, "start": start, "contours": contours,
+                "last_obs": None if last is None else last["_t"].to_pydatetime(),
+                "last_obs_label": None if last is None else obs_label(last)}
+
+    return {"run": run, "fine": fine, "t0": t0, "wx_end": wx_end, "run_cfg": run_cfg, "grid": grid, "spec": spec}
+
+
+def standing_issue_times(fine: pd.DataFrame, t0: datetime, end: datetime, wx_end: datetime) -> list[tuple[datetime, bool]]:
+    """Issue times of the standing sequence: ignition, each new fine-resolution observation, and fills so that no
+    gap exceeds MAX_GAP_H. ``(time, new_observation)`` pairs."""
     obs_times = [t.to_pydatetime() for t in fine["_t"] if t0 < t.to_pydatetime() <= end]
     issues: list[tuple[datetime, bool]] = [(t0, True)]
     for t in obs_times:
@@ -196,29 +231,36 @@ def build_forecast_updates(fire_root: Path, cfg: dict, end: datetime):
     while (end - issues[-1][0]).total_seconds() > MAX_GAP_H * 3600:
         issues.append((issues[-1][0] + timedelta(hours=MAX_GAP_H), False))
     # The cached weather ends with the reconstruction window; later updates would run on repeated last hours.
-    issues = [i for i in issues if i[0] <= wx_end - timedelta(hours=max(UPDATE_STEP_H) - 1)]
+    return [i for i in issues if i[0] <= last_issue_time(wx_end)]
 
-    from pyproj import Transformer
-    ign_x, ign_y = Transformer.from_crs("EPSG:4326", grid.crs, always_xy=True).transform(spec.ignition_lon, spec.ignition_lat)
+
+def last_issue_time(wx_end: datetime) -> datetime:
+    """Latest issue time whose longest horizon still has weather data."""
+    return wx_end - timedelta(hours=max(UPDATE_STEP_H) - 1)
+
+
+def build_forecast_updates(fire_root: Path, cfg: dict, end: datetime):
+    """Forecasts re-initialised from the latest observed fire area, with the fire repo's own model.
+
+    An update is issued at ignition (from the ignition point), at every new VIIRS overpass or Sentinel-2
+    image (from the union of everything VIIRS and Sentinel-2 have seen so far), and at least every
+    MAX_GAP_H hours in between (same perimeter, new start time and weather). This standing sequence is what
+    the street closures, the synthetic calls and the overlap table are computed from; the screen's
+    "Update forecast" button uses the precomputed library (tools/build_forecast_library.py) instead.
+
+    Returns ``(updates, grid, t0, run_cfg)``; each update is a dict with ``issued``, ``source``, ``perimeter``
+    (metric geometry or None), ``contours`` (GeoDataFrame, EPSG:4326, one row per UPDATE_STEP_H) and ``next``.
+    """
+    r = forecast_runner(fire_root, cfg)
+    issues = standing_issue_times(r["fine"], r["t0"], end, r["wx_end"])
     updates = []
     for k, (issued, new_obs) in enumerate(issues):
-        seen = fine[fine["_t"] <= pd.Timestamp(issued)]
-        if seen.empty:
-            perimeter, start, source = None, Point(ign_x, ign_y).buffer(spec.ignition_radius_m), "ignition point"
-        else:
-            perimeter = start = unary_union(list(seen.geometry))
-            has_s2 = (seen["observation_type"] == "burned_area").any()
-            source = ("VIIRS + Sentinel-2 perimeter" if has_s2 else "VIIRS perimeter") + ("" if new_obs else " (no new pass)")
-        mask = rasterize([(start, 1)], out_shape=grid.shape, transform=grid.transform, fill=0, all_touched=True,
-                         dtype=np.uint8).astype(bool)
-        mc = run_monte_carlo(mask, fuel, dem["slope_deg"], dem["aspect_deg"], grid, run_cfg, weather_df=wx,
-                             t0_utc=issued, n_runs=int(spec.mc_runs), seed=int(cfg["spread"]["seed"]))
-        contours = mc.contours_gdf.sort_values("horizon_hours").reset_index(drop=True)
-        contours["geometry"] = contours.to_crs(grid.crs).geometry.buffer(60).buffer(-60).simplify(30).to_crs("EPSG:4326")
-        updates.append({"issued": issued, "source": source, "perimeter": perimeter, "contours": contours,
-                        "next": issues[k + 1][0] if k + 1 < len(issues) else end, "new_obs": new_obs,
-                        "last_obs": None if seen.empty else seen["_t"].max().to_pydatetime()})
-    return updates, grid, t0, run_cfg
+        u = r["run"](issued)
+        if u["perimeter"] is not None and not new_obs:
+            u["source"] += " (no new pass)"
+        u.update({"next": issues[k + 1][0] if k + 1 < len(issues) else end, "new_obs": new_obs})
+        updates.append(u)
+    return updates, r["grid"], r["t0"], r["run_cfg"]
 
 
 def forecast_features(updates: list[dict]) -> list[dict]:

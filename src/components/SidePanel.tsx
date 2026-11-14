@@ -27,6 +27,8 @@ interface Props {
   onSceneMin: number;
   onSceneChange: (minutes: number) => void;
   onFocusCrew: (state: CrewState) => void;
+  /** The forecast the operator loaded (forecast library); undefined: the latest update in the file. */
+  forecastRunId?: string | null;
 }
 
 type Kind = 'synthetic' | 'model' | 'real';
@@ -49,9 +51,9 @@ function Section({ title, kind, label, children }: { title: string; kind?: Kind;
   );
 }
 
-export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew }: Props) {
+export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew, forecastRunId }: Props) {
   const fire = data.fire.features.map((f) => f.properties);
-  const cur = currentForecast(fire, now);
+  const cur = currentForecast(fire, now, forecastRunId);
   const hasUpdates = cur?.set === 'update';
   const forecasts = cur?.contours ?? [];
   const initial = fire.filter((p) => p.kind === 'forecast' && p.set === 'initial').sort((a, b) => a.t - b.t);
@@ -62,7 +64,7 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
     (s) => [s, streets.filter((p) => statusAt(p, now) === s).length] as const);
   const imagery = [...new Set(streets.map((p) => p.imagery_date).filter(Boolean))].sort();
   // What the forecast in force says about streets that are open now (never what will actually happen).
-  const ahead = useMemo(() => aheadContours(data.fire.features, now), [data, now]);
+  const ahead = useMemo(() => aheadContours(data.fire.features, now, forecastRunId), [data, now, forecastRunId]);
   const aheadKey = ahead.map((c) => c.properties.id).join('|');
   const nextContour = ahead[0];
   const mayReach = useMemo(() => (nextContour ? data.streets.features.filter((s) => {
@@ -143,7 +145,7 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
         {cur ? (
           <p className="mb-1 text-xs" data-forecast-issued>
             <b>Forecast issued {fmtTime(cur.issuedAt, timeZone)}</b> from {cur.from}
-            <span className="text-ink-400"> · model, P ≥ 50 %{hasUpdates ? ` · update ${cur.index} of ${cur.count}` : ''}</span>
+            <span className="text-ink-400"> · model, P ≥ 50 %{forecastRunId !== undefined ? ' · precomputed, loaded by the operator' : hasUpdates ? ` · update ${cur.index} of ${cur.count}` : ''}</span>
           </p>
         ) : <p className="mb-1 text-xs text-ink-400">No forecast issued yet.</p>}
         {forecasts.map((p) => (

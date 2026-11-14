@@ -87,10 +87,15 @@ interface Props {
   insetRight?: number;
   /** Start zoomed to the fire (forecast contours) instead of the scenario's default view; used on phones. */
   fitFire?: boolean;
+  /** The forecast in force (loaded by the operator); undefined: the latest update in the file. */
+  forecastRunId?: string | null;
+  /** Change when street closures or fire features change in place (the sources are reloaded). */
+  streetsVersion?: number;
+  fireVersion?: number;
 }
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
-  insetBottom = 0, insetRight = 0, fitFire = false }: Props) {
+  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
@@ -118,8 +123,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       && pts.some((p) => near(p, s.properties.label_point!))).map((s) => s.properties.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, selectedId, routesKey]);
-  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds });
-  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds };
+  const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId });
+  latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId };
   const vehicleMarkers = useRef(new Map<string, maplibregl.Marker>());
 
   /** Push the current time, selection and toggles into the map. */
@@ -131,9 +136,11 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     const kind = (k: string): ExpressionSpecification => ['==', ['get', 'kind'], k];
     const obs = (o: string): ExpressionSpecification => ['==', ['get', 'observation_type'], o];
     // The forecast in force: the latest update issued by now (dashed until each horizon is reached).
-    const cur = currentForecast(d.fire.features.map((f) => f.properties), t);
-    const inForce: ExpressionSpecification = ['all', kind('forecast'), ['==', ['get', 'set'], cur?.set ?? 'none'],
-      ['==', ['get', 'issue_t'], cur?.issuedAt ?? -1]];
+    const cur = currentForecast(d.fire.features.map((f) => f.properties), t, latest.current.forecastRunId);
+    const runId = latest.current.forecastRunId;
+    const inForce: ExpressionSpecification = runId !== undefined
+      ? ['all', kind('forecast'), ['==', ['get', 'run_id'], runId ?? 'none']]
+      : ['all', kind('forecast'), ['==', ['get', 'set'], cur?.set ?? 'none'], ['==', ['get', 'issue_t'], cur?.issuedAt ?? -1]];
     map.setFilter('forecast-reached', ['all', inForce, upTo]);
     map.setFilter('forecast-label', inForce);
     map.setFilter('forecast-pending', ['all', inForce, ['>', ['get', 't'], t]]);
@@ -245,7 +252,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         else if (Array.isArray(c)) c.forEach(add);
       };
       // Only the forecast in force at the time shown (later forecasts are not known yet).
-      const cur = currentForecast(data.fire.features.map((f) => f.properties), latest.current.now);
+      const cur = currentForecast(data.fire.features.map((f) => f.properties), latest.current.now, latest.current.forecastRunId);
       const ids = new Set(cur?.contours.map((c) => c.id) ?? []);
       for (const f of data.fire.features) if (ids.has(f.properties.id) && 'coordinates' in f.geometry) add(f.geometry.coordinates);
       if (box.isEmpty() && data.fireMeta.ignition) box.extend([data.fireMeta.ignition.lon, data.fireMeta.ignition.lat]);
@@ -425,7 +432,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
               // Not closed yet: only what the forecast in force says, never what will happen.
               if (closure) return '';
               const feature = d.streets.features.find((f) => f.properties.id === p.id);
-              const reach = feature ? forecastReach(feature, aheadContours(d.fire.features, t)) : null;
+              const reach = feature ? forecastReach(feature, aheadContours(d.fire.features, t, latest.current.forecastRunId)) : null;
               return reach ? `<div>Forecast (issued ${fmtTime(reach.issuedAt, tz)}): fire may reach this street by `
                 + `${fmtTime(reach.at, tz)} (+${reach.horizon} h)</div>` : '';
             })()
@@ -478,6 +485,23 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
 
   useEffect(sync);
 
+  // Closures recomputed (a forecast was loaded) or a live forecast added: reload those sources.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready.current) return;
+    (map.getSource('streets') as maplibregl.GeoJSONSource | undefined)?.setData(data.streets);
+    sync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streetsVersion]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready.current || !fireVersion) return;
+    (map.getSource('fire') as maplibregl.GeoJSONSource | undefined)?.setData(data.fire);
+    (map.getSource('forecast-tags') as maplibregl.GeoJSONSource | undefined)?.setData(forecastTagPoints(data));
+    sync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fireVersion]);
+
   // Bring a newly selected caller into view.
   useEffect(() => {
     const c = data.callers.find((x) => x.id === selectedId);
@@ -529,7 +553,7 @@ function forecastTagPoints(data: ScenarioData): GeoJSON.FeatureCollection {
       [['e', (c) => c[0]], ['w', (c) => -c[0]]],
       [['ne', (c) => c[0] + c[1]], ['sw', (c) => -c[0] - c[1]]],
     ];
-    const props = { id: p.id, kind: p.kind, set: p.set, issue_t: p.issue_t, horizon_hours: p.horizon_hours, t: p.t };
+    const props = { id: p.id, kind: p.kind, set: p.set, issue_t: p.issue_t, horizon_hours: p.horizon_hours, t: p.t, run_id: p.run_id ?? '' };
     for (const [side, score] of sides[Math.min(p.rank ?? 0, 2)]) {
       features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: tip(score) }, properties: { ...props, side } });
     }

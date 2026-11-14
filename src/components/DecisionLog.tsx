@@ -12,6 +12,7 @@ const ACTION_LABEL: Record<Decision['action'], string> = {
   reassign: 'Reassign crew',
   unassigned: 'Crew taken away',
   settings: 'Setting changed',
+  update_forecast: 'Forecast loaded',
 };
 
 interface Props {

@@ -1,5 +1,5 @@
 import type { Feature, Geometry } from 'geojson';
-import type { CallerReport, FileMeta, FireFront, FireMeta, Responder, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
+import type { CallerReport, FileMeta, FireFront, FireMeta, ForecastLibrary, Responder, ScenarioData, ScenarioEntry, StreetAccess, StreetFeature, StreetStatus, Urgency } from './types';
 
 const BASE = `${import.meta.env?.BASE_URL ?? '/'}scenarios/`;
 
@@ -14,14 +14,17 @@ export async function loadIndex(): Promise<ScenarioEntry[]> {
 }
 
 export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> {
-  const [fire, streets, callers, responders] = await Promise.all([
+  const [fire, streets, callers, responders, library] = await Promise.all([
     getJson<ScenarioData['fire'] & { metadata?: FireMeta }>(entry.files.fire_front),
     getJson<ScenarioData['streets'] & { metadata?: FileMeta }>(entry.files.street_access),
     getJson<{ metadata?: FileMeta; records: CallerReport[] }>(entry.files.caller_reports),
     entry.files.responders
       ? getJson<{ metadata?: FileMeta; records: Responder[] }>(entry.files.responders)
       : Promise.resolve({ metadata: {} as FileMeta, records: [] as Responder[] }),
+    entry.files.forecast_library ? getJson<ForecastLibrary>(entry.files.forecast_library) : Promise.resolve(undefined),
   ]);
+  // With a forecast library the operator loads forecasts; the file's own update sequence is not shown.
+  if (library) fire.features = fire.features.filter((f) => f.properties.forecast_set !== 'update');
   // MapLibre filters compare numbers, so each fire feature gets its time as epoch ms.
   prepareFire(fire.features.map((f) => f.properties));
   prepareStreets(streets.features);
@@ -35,6 +38,7 @@ export async function loadScenario(entry: ScenarioEntry): Promise<ScenarioData> 
     callersMeta: callers.metadata ?? {},
     responders: responders.records,
     respondersMeta: responders.metadata ?? {},
+    library,
   };
 }
 
@@ -92,10 +96,17 @@ export interface CurrentForecast { issuedAt: number; from: string; set: 'initial
   contours: (FireFront & { t: number })[] }
 
 /**
- * The forecast in force at `now`: the latest update issued so far. A scenario without updates falls back
- * to its initial forecast.
+ * The forecast in force at `now`. With `runId` (a forecast the operator loaded, see forecast.ts) it is that
+ * one; otherwise the latest update issued so far, and a scenario without updates falls back to its initial
+ * forecast.
  */
-export function currentForecast(props: (FireFront & { t: number })[], now: number): CurrentForecast | null {
+export function currentForecast(props: (FireFront & { t: number })[], now: number, runId?: string | null): CurrentForecast | null {
+  if (runId !== undefined) {
+    const contours = props.filter((p) => p.kind === 'forecast' && runId != null && p.run_id === runId)
+      .sort((a, b) => (a.horizon_hours ?? 0) - (b.horizon_hours ?? 0));
+    if (!contours.length || contours[0].issue_t! > now) return null;
+    return { issuedAt: contours[0].issue_t!, from: contours[0].initialised_from ?? 'ignition point', set: 'update', index: 1, count: 1, contours };
+  }
   const forecasts = props.filter((p) => p.kind === 'forecast');
   const set = forecasts.some((p) => p.set === 'update') ? 'update' : 'initial';
   const issues = [...new Set(forecasts.filter((p) => p.set === set).map((p) => p.issue_t!))].sort((a, b) => a - b);
@@ -130,8 +141,8 @@ export interface ForecastReach { at: number; horizon: number; issuedAt: number; 
  * Contours of the forecast in force at `now` that are still ahead (valid after `now`), with geometry,
  * innermost first. This is all the screen may say about where the fire will be.
  */
-export function aheadContours(features: Feature<Geometry, FireFront & { t: number }>[], now: number) {
-  const cur = currentForecast(features.map((f) => f.properties), now);
+export function aheadContours(features: Feature<Geometry, FireFront & { t: number }>[], now: number, runId?: string | null) {
+  const cur = currentForecast(features.map((f) => f.properties), now, runId);
   if (!cur) return [];
   const ids = new Set(cur.contours.filter((c) => c.t > now).map((c) => c.id));
   return features.filter((f) => ids.has(f.properties.id)).sort((a, b) => a.properties.t - b.properties.t);
@@ -167,6 +178,7 @@ export function prepareStreets(features: StreetFeature[]): StreetFeature[] {
     p.ts = sat === NEVER && p.status === 'blocked' && p.basis === 'satellite' ? p.t! : sat;
     p.tn = p.fire_nearby_at ? Date.parse(p.fire_nearby_at) : NEVER;
     p.tnear = p.near_fire_from ? Date.parse(p.near_fire_from) : NEVER;
+    p.status0 = p.status === 'blocked' ? p.before ?? 'open' : p.status;
   }
   return features;
 }

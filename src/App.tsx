@@ -7,6 +7,11 @@ import {
   type Candidate, type Mission,
 } from './crews';
 import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
+import {
+  LiveForecasts, PrecomputedForecasts, applyForecastClosures, forecastClosures, forecastInForce, historyLoads, loadAt, newObservations,
+  type ForecastLoad, type ForecastSource,
+} from './forecast';
+import { ForecastControl } from './components/ForecastControl';
 import type { CallerReport, Decision, ScenarioData, ScenarioEntry, StreetFeature, Urgency } from './types';
 import { CallerList, NEAR_RADIUS_M, type CardCrew, type CaseState } from './components/CallerList';
 import { DecisionLog } from './components/DecisionLog';
@@ -23,6 +28,8 @@ const TICK_MS = 100;
  */
 const params = new URLSearchParams(location.search);
 const wantDemo = params.get('demo') === '1';
+/** `?forecast_api=http://localhost:8000` asks a live model server first (docs/forecast_api.md). */
+const forecastApi = params.get('forecast_api');
 
 const mins = (m: number) => `${Math.max(1, Math.ceil(m))} min`;
 
@@ -66,6 +73,13 @@ export function App() {
   }, []);
   const mainRef = useRef<HTMLElement>(null);
   const missionSeq = useRef(0);
+  // Forecasts: the precomputed library and the forecasts the operator has loaded (the one in force is the last
+  // loaded by the time shown; it never changes by itself).
+  const [precomputed, setPrecomputed] = useState<PrecomputedForecasts | null>(null);
+  const [loads, setLoads] = useState<ForecastLoad[]>([]);
+  const loadSeq = useRef(0);
+  const [forecastBusy, setForecastBusy] = useState(false);
+  const [fireVersion, setFireVersion] = useState(0);
 
   useEffect(() => {
     loadIndex().then((list) => {
@@ -82,11 +96,24 @@ export function App() {
     setCases({});
     setMissions([]);
     setDecisions([]);
+    setLoads([]);
+    setPrecomputed(null);
     loadScenario(entry).then((d) => {
       const demo = wantDemo ? entry.demo : undefined;
-      const t = Date.parse(demo?.t ?? '') || Date.parse(params.get('t') ?? '') || Date.parse(entry.initial ?? entry.start);
+      const t0 = Date.parse(demo?.t ?? '') || Date.parse(params.get('t') ?? '') || Date.parse(entry.initial ?? entry.start);
+      const t = Math.min(Math.max(t0, Date.parse(entry.start)), Date.parse(entry.end));
       if (demo?.call) setSelectedId(demo.call);
-      setNow(Math.min(Math.max(t, Date.parse(entry.start)), Date.parse(entry.end)));
+      // Before the opening time the forecast was updated at every new satellite pass (the previous shift);
+      // from then on it changes only when the operator loads one.
+      const pre = d.library ? new PrecomputedForecasts(d.library) : null;
+      if (pre) {
+        d.fire.features.push(...pre.runs.flatMap((r) => r.features));
+        const history = historyLoads(pre, t);
+        loadSeq.current = history.length;
+        setLoads(history);
+      }
+      setPrecomputed(pre);
+      setNow(t);
       setData(d);
     }).catch((e) => setError(String(e)));
   }, [scenarios, scenarioId]);
@@ -105,6 +132,18 @@ export function App() {
   }, [playing, speed, end]);
 
   const graph = useMemo(() => (data ? buildGraph(data.streets.features) : null), [data]);
+  const source: ForecastSource | null = useMemo(
+    () => (precomputed && forecastApi ? new LiveForecasts(forecastApi, precomputed) : precomputed), [precomputed]);
+  // Forecast closures follow the forecasts the operator loaded; written into the street records, which routing and
+  // the map read. `streetsVersion` changes whenever they do.
+  const streetsVersion = useMemo(() => {
+    if (!data || !precomputed) return 0;
+    const tz = data.entry.timezone ?? 'UTC';
+    applyForecastClosures(data.streets.features, forecastClosures(loads, precomputed.first), (x) => `${fmtTime(x, tz)} local`);
+    return loadSeq.current * 1000 + loads.length;
+  }, [data, precomputed, loads]);
+  const inForce = useMemo(() => (precomputed ? forecastInForce(loads, precomputed.first, now) : null), [precomputed, loads, now]);
+  const forecastRunId: string | null | undefined = precomputed ? inForce?.run.id ?? null : undefined;
   const streetById = useMemo(
     () => new Map<string, StreetFeature>((data?.streets.features ?? []).map((s) => [s.properties.id, s])), [data]);
   const timeZone = data?.entry.timezone ?? 'UTC';
@@ -113,7 +152,9 @@ export function App() {
 
   // Crews: where each one is at the time shown, derived from the missions created so far.
   const crews = useMemo(() => (data ? makeCrews(data.responders) : []), [data]);
-  const crewStates = useMemo(() => crews.map((c) => crewStateAt(c, missions, now, streetById)), [crews, missions, now, streetById]);
+  const crewStates = useMemo(() => crews.map((c) => crewStateAt(c, missions, now, streetById)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [crews, missions, now, streetById, streetsVersion]);
 
   // The operator's case state as it was at the time shown: dispatch and redirect follow the missions, so moving
   // the clock back before a dispatch shows the report as not dispatched again.
@@ -143,7 +184,8 @@ export function App() {
   const candidates = useMemo(() => {
     if (!graph || !selected || !(selectedStage === 'confirmed' || selectedStage === 'unassigned')) return null;
     return candidatesFor(graph, [selected.place.lon, selected.place.lat], crewStates, now);
-  }, [graph, selected, selectedStage, crewStates, now]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph, selected, selectedStage, crewStates, now, streetsVersion]);
 
   // What each dispatched report's card says about its crew at the time shown.
   const cardCrews = useMemo(() => {
@@ -296,6 +338,59 @@ export function App() {
     record(to, 'dispatch_no_access', 'not dispatched', 'no access by road', `tried to redirect the crew from ${shortLabel(from.id)}`);
   };
 
+  // "Update forecast": new observations since the forecast in force, and what the button would load.
+  const fireProps = useMemo(() => (data ? data.fire.features.map((f) => f.properties) : []), [data, fireVersion]);
+  const newObs = useMemo(() => (inForce ? newObservations(fireProps, inForce.run, now) : []), [fireProps, inForce, now]);
+  const forecastOptions = useMemo(() => {
+    if (!precomputed || !inForce) return { updateTo: null, rerunTo: null, blockedNote: null };
+    const tz = data?.entry.timezone ?? 'UTC';
+    const newest = precomputed.latest(now);
+    const newer = newest && newest.issuedAt > inForce.run.issuedAt ? newest : null;
+    const lastNew = newObs[newObs.length - 1];
+    let blockedNote: string | null = null;
+    if (now > precomputed.lastIssueAt && (!newer || (lastNew && (newer.lastObsAt ?? 0) < lastNew.at))) {
+      blockedNote = `No forecast can be issued after ${fmtTime(precomputed.lastIssueAt, tz)}: the weather data end 12 h later.`;
+    } else if (!newObs.length && !newer) {
+      blockedNote = `The newest run is loaded; the next one can be issued at ${fmtTime(
+        (precomputed.runs.find((r) => r.issuedAt > now)?.issuedAt ?? precomputed.lastIssueAt), tz)}.`;
+    }
+    const covers = newer && (!lastNew || (newer.lastObsAt ?? 0) >= lastNew.at);
+    return { updateTo: newObs.length && covers ? newer : null, rerunTo: !newObs.length ? newer : null, blockedNote };
+  }, [precomputed, inForce, newObs, now, data]);
+  const previousLoad = useMemo(() => {
+    if (!inForce) return null;
+    const before = loads.filter((l) => l.at <= inForce.at && l !== inForce);
+    return before[before.length - 1] ?? (precomputed?.first && inForce.run !== precomputed.first
+      ? { seq: 0, at: precomputed.first.issuedAt, run: precomputed.first, kind: 'opening' as const } : null);
+  }, [loads, inForce, precomputed]);
+
+  const describeRun = (r: { issuedAt: number; from: string }) => `issued ${fmtTime(r.issuedAt, timeZone)} from ${r.from.replace(' (no new pass)', '')}`;
+  const onUpdateForecast = async (kind: 'update' | 'rerun') => {
+    if (!source || !data || !inForce) return;
+    setForecastBusy(true);
+    const at = now;
+    try {
+      const run = await source.run({ scenario: data.entry.id, at, kind });
+      if (!run || run.id === inForce.run.id) return;
+      if (!data.fire.features.some((f) => f.properties.run_id === run.id)) {
+        data.fire.features.push(...run.features);
+        setFireVersion((v) => v + 1);
+      }
+      const samePerimeter = run.lastObsAt === inForce.run.lastObsAt && run.from.replace(' (no new pass)', '') === inForce.run.from.replace(' (no new pass)', '');
+      const label = samePerimeter ? 'same perimeter, new weather' : undefined;
+      const load: ForecastLoad = { seq: ++loadSeq.current, at, run, kind, label };
+      setLoads((all) => loadAt(all, load));
+      const twelve = (r: typeof run) => r.contours.find((c) => c.horizon === 12)?.areaKm2;
+      record({ id: 'forecast' }, 'update_forecast', describeRun(inForce.run), describeRun(run),
+        [kind === 'rerun' ? 'Re-run with current weather' : `${newObs.length} new observation${newObs.length === 1 ? '' : 's'}`,
+          label, run.source === 'live' ? 'live model' : 'precomputed', run.sourceNote,
+          twelve(run) != null && twelve(inForce.run) != null ? `+12 h ${twelve(run)!.toFixed(1)} km² (was ${twelve(inForce.run)!.toFixed(1)})` : '',
+        ].filter(Boolean).join('; '));
+    } finally {
+      setForecastBusy(false);
+    }
+  };
+
   const changeOnScene = (value: number) => {
     const v = Math.min(480, Math.max(5, Math.round(value) || DEFAULT_ON_SCENE_MIN));
     if (v === onSceneMin) return;
@@ -310,10 +405,13 @@ export function App() {
     if (!fc.some((p) => p.set === 'update')) {
       return fc.map((p) => ({ t: p.t, label: `+${p.horizon_hours} h`, colour: HORIZON_COLOURS[p.rank ?? 0] as string }));
     }
-    // Only forecasts issued by now: a tick for a later forecast would announce a satellite pass in advance.
-    return [...new Set(fc.filter((p) => p.set === 'update').map((p) => p.issue_t!))].filter((t) => t <= now).sort((a, b) => a - b)
-      .map((t, i) => ({ t, label: i === 0 ? 'forecast issued' : '', colour: '#fde047' }));
-  }, [data, now]);
+    // With precomputed forecasts: when the operator loaded one. Otherwise when each update was issued.
+    // Only up to now: a tick for a later forecast would announce a satellite pass in advance.
+    const times = precomputed ? loads.map((l) => l.at)
+      : [...new Set(fc.filter((p) => p.set === 'update').map((p) => p.issue_t!))];
+    return [...new Set(times)].filter((t) => t <= now).sort((a, b) => a - b)
+      .map((t, i) => ({ t, label: i === 0 ? (precomputed ? 'forecast loaded' : 'forecast issued') : '', colour: '#fde047' }));
+  }, [data, now, precomputed, loads]);
 
   // Routes and vehicles on the map: the leg each crew is driving at the time shown.
   const routes = useMemo(() => crewStates.flatMap((s) => {
@@ -329,7 +427,8 @@ export function App() {
     label: s.status === 'en_route' ? `ETA ${mins(s.etaMin ?? 0)}` : s.status === 'returning' ? `back in ${mins(s.etaMin ?? 0)}`
       : s.status === 'holding' ? 'route cut' : 'on scene',
   })), [crewStates]);
-  const ahead = useMemo(() => (data ? aheadContours(data.fire.features, now) : []), [data, now]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const ahead = useMemo(() => (data ? aheadContours(data.fire.features, now, forecastRunId) : []), [data, now, forecastRunId, fireVersion]);
   const stages = useMemo(() => Object.fromEntries(Object.entries(viewCases).map(([id, cs]) => [id, cs.stage])), [viewCases]);
 
   const syntheticLayers = data ? ([['caller reports', data.callersMeta], ['street access', data.streetsMeta],
@@ -350,18 +449,24 @@ export function App() {
       onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} />
   );
   const sidePanel = data && (
-    <SidePanel data={data} now={now} timeZone={timeZone} layers={layers} mode={mode}
+    <SidePanel data={data} now={now} timeZone={timeZone} layers={layers} mode={mode} forecastRunId={forecastRunId}
       onToggle={(k) => setLayers((l) => ({ ...l, [k]: !l[k] }))}
       crewStates={crewStates} labelOf={shortLabel} onSceneMin={onSceneMin} onSceneChange={changeOnScene}
       onFocusCrew={(s) => setFocus({ lon: s.position[0], lat: s.position[1], key: Date.now() })} />
   );
   const decisionLog = data && (
     <DecisionLog decisions={decisions} scenarioId={data.entry.id} timeZone={timeZone}
-      labelOf={(id) => (id === 'settings' ? 'Crews' : labelOf(id))} />
+      labelOf={(id) => (id === 'settings' ? 'Crews' : id === 'forecast' ? 'Forecast' : labelOf(id))} />
   );
   const mapProps = data && {
     data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
+    forecastRunId, streetsVersion, fireVersion,
   };
+  const forecastControl = (compact: boolean) => precomputed && (
+    <ForecastControl load={inForce} previous={previousLoad} newObs={newObs} updateTo={forecastOptions.updateTo}
+      rerunTo={forecastOptions.rerunTo} blockedNote={forecastOptions.blockedNote} sourceKind={source?.kind ?? 'precomputed'}
+      busy={forecastBusy} timeZone={timeZone} compact={compact} onUpdate={onUpdateForecast} />
+  );
   // With one tabbed panel, picking a caller (on the map or by a deep link) shows its card.
   useEffect(() => { if (medium && selectedId) setTab('reports'); }, [medium, selectedId]);
 
@@ -371,7 +476,14 @@ export function App() {
     if (!demo) return;
     setPlaying(false);
     setTab('reports');
-    setNow(Date.parse(demo.t));
+    const t = Date.parse(demo.t);
+    setNow(t);
+    // The scene starts as if the forecast had been updated at every pass until then.
+    if (precomputed) {
+      const history = historyLoads(precomputed, t, loadSeq.current + 1);
+      loadSeq.current += history.length;
+      setLoads(history);
+    }
     const c = data!.callers.find((x) => x.id === demo.call);
     if (c) { setSelectedId(c.id); setFocus({ lon: c.place.lon, lat: c.place.lat, key: Date.now() }); }
   };
@@ -429,6 +541,7 @@ export function App() {
           <>
             <main ref={mainRef} className="relative min-h-0 flex-1 overflow-hidden">
               <MapView {...mapProps} insetBottom={insetBottom} insetRight={insetRight} fitFire />
+              {forecastControl(true)}
               <div data-drawer={drawer ?? 'closed'}
                 className={landscape
                   ? `absolute inset-y-0 right-0 z-10 flex flex-col border-l border-ink-600 bg-ink-900 shadow-2xl ${drawer ? '' : 'hidden'}`
@@ -524,6 +637,7 @@ export function App() {
               </aside>
               <main className="relative min-w-0 flex-1">
                 <MapView {...mapProps} />
+                {forecastControl(false)}
               </main>
             </div>
           ) : (
@@ -531,6 +645,7 @@ export function App() {
               <aside className={`${roomy ? 'w-[360px]' : 'w-[300px]'} shrink-0 border-r border-ink-700 bg-ink-900`}>{callerList}</aside>
               <main className="relative min-w-0 flex-1">
                 <MapView {...mapProps} />
+                {forecastControl(false)}
               </main>
               <aside className={`flex ${roomy ? 'w-[310px]' : 'w-[260px]'} shrink-0 flex-col border-l border-ink-700 bg-ink-900`}>
                 <div className="flex border-b border-ink-700 text-xs font-bold uppercase tracking-wider">

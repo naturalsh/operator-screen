@@ -11,7 +11,7 @@
     "typecheck": "tsc",
     "validate": "node scripts/validate.mjs",
     "routes": "tsx scripts/route_table.ts",
-    "test": "tsx tests/routing.test.ts"
+    "test": "tsx tests/routing.test.ts && tsx tests/forecast.test.ts"
   },
   "dependencies": {
     "maplibre-gl": "^4.7.1",

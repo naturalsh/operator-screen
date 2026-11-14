@@ -55,7 +55,37 @@ def main() -> int:
                 failures += 1
                 print(f"FAIL {key} at {cut:%d %b %H:%M}Z")
     print(f"no-hindsight: {len(cutoffs)} cut-off times x {len(ci['edges'])} streets, {failures} failures")
-    return 1 if failures else 0
+    lib_failures = check_library(ci)
+    return 1 if failures or lib_failures else 0
+
+
+def check_library(ci: dict) -> int:
+    """Precomputed forecasts (forecast_library.json): each starts from the fine observations acquired by its
+    issue time, no later one, and its contours and street reach lie after the issue time."""
+    import json
+
+    path = Path(__file__).resolve().parents[1] / "public" / "scenarios" / EVENT / "forecast_library.json"
+    if not path.exists():
+        print("forecast library: not built, skipped")
+        return 0
+    lib = json.loads(path.read_text(encoding="utf-8"))
+    obs = ci["obs"]
+    fine = obs[(obs["instrument"] == "VIIRS") | (obs["observation_type"] == "burned_area")]
+    times = sorted(fine["_t"])
+    iso = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00"))
+    failures = 0
+    for f in lib["forecasts"]:
+        issued = iso(f["issued_at"])
+        known = [t for t in times if t <= issued]
+        expect = known[-1] if known else None
+        got = iso(f["last_observation_at"]) if f.get("last_observation_at") else None
+        later = [c for c in f["contours"] if iso(c["valid_at"]) <= issued]
+        if got != expect or later or any(h <= 0 for _, h in f["reach"]):
+            failures += 1
+            print(f"FAIL library {f['id']}: last observation {got} (expected {expect}), "
+                  f"{len(later)} contours not after the issue time")
+    print(f"forecast library: {len(lib['forecasts'])} forecasts, {failures} failures")
+    return failures
 
 
 if __name__ == "__main__":

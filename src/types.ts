@@ -82,6 +82,8 @@ export interface StreetAccess extends Provenance {
   ts?: number;
   tn?: number;
   tnear?: number;
+  /** Added on load: the status without any fire closure (forecast closures are recomputed on the screen). */
+  status0?: StreetStatus;
   imagery_source?: string;
   confirmed_by_operator: boolean;
 }
@@ -103,6 +105,9 @@ export interface FireFront extends Provenance {
   issue_t?: number;
   set?: 'initial' | 'update';
   rank?: number;
+  /** Forecasts from the library: the forecast run the contour belongs to. */
+  run_id?: string;
+  last_observation_at?: string;
   observation_type?: 'hotspots' | 'flame_front' | 'burned_area';
   instrument?: string;
   satellite?: string;
@@ -129,7 +134,7 @@ export interface Decision {
   operator: string;
   report_id: string;
   action: 'take' | 'confirm_urgency' | 'dispatch' | 'dispatch_no_access' | 'dispatch_no_crew' | 'reroute' | 'reroute_no_access'
-    | 'reassign' | 'unassigned' | 'settings';
+    | 'reassign' | 'unassigned' | 'settings' | 'update_forecast';
   previous: string | null;
   new: string | null;
   note?: string;
@@ -150,7 +155,27 @@ export interface ScenarioEntry {
   /** A rehearsed scene (Demo button, `?demo=1`): the time and the call selected. */
   demo?: { t: string; call?: string; note?: string };
   timezone?: string;
-  files: { fire_front: string; caller_reports: string; street_access: string; responders?: string };
+  files: { fire_front: string; caller_reports: string; street_access: string; responders?: string; forecast_library?: string };
+}
+
+/** One precomputed forecast (tools/build_forecast_library.py); a live model server answers with the same record. */
+export interface LibraryForecast {
+  id: string;
+  issued_at: string;
+  trigger: 'ignition' | 'observation' | 'scheduled' | 'live';
+  initialised_from: string;
+  last_observation_at?: string;
+  last_observation_label?: string;
+  start_area_km2: number;
+  contours: { horizon_hours: number; valid_at: string; area_km2: number; geometry: unknown }[];
+  /** [street index in ForecastLibrary.streets (or street id from a live server), hours after issued_at]. */
+  reach: [number | string, number][];
+}
+
+export interface ForecastLibrary {
+  metadata: FileMeta & { step_minutes: number; horizons_hours: number[]; first_issue_at: string; last_issue_at: string };
+  streets: string[];
+  forecasts: LibraryForecast[];
 }
 
 export interface FireMeta extends FileMeta {
@@ -167,6 +192,8 @@ export interface ScenarioData {
   callers: CallerReport[];
   callersMeta: FileMeta;
   responders: Responder[];
+  /** Precomputed forecasts for "Update forecast" (absent: the forecast in force follows the file's updates). */
+  library?: ForecastLibrary;
   respondersMeta: FileMeta;
 }
 

@@ -191,14 +191,45 @@ Before a presentation: open the site once on the presenting laptop (and on each 
 
 ## Forecast updates
 
-The fire model does not run once. A forecast is issued at ignition, at every new VIIRS overpass or Sentinel-2
-image (started from the union of everything those sensors have seen so far) and at least every 6 hours in
-between; each has contours for +4, +8 and +12 hours. The screen shows the forecast in force at the current
-time, with its issue time and what it was started from ("Forecast issued 22 Jun, 04:02 from VIIRS perimeter");
-contours are dashed until their hour is reached. The yellow ticks on the time bar are the issue times.
+### "Update forecast"
+
+The forecast on the screen does not change by itself. It is the one the operator last loaded, shown in the box at
+the top left of the map with its issue time, what it started from and the last satellite pass it used.
+
+- **New observations:** when VIIRS or Sentinel-2 (burned area) passes arrive after the forecast, the button
+  **Update forecast** shows a badge ("2 new observations since forecast") and lists them. Clicking it loads the
+  forecast started from everything seen so far.
+- **No new observations:** the box says "No new observations since 04:02 (VIIRS N20)" and offers **Re-run with
+  current weather**: the same perimeter, a later start time and the weather from then on. The result is labelled
+  "same perimeter, new weather" with the +12 h area against the previous run, so it is not mistaken for new
+  information about the fire.
+- **Source:** the box says where the forecast comes from. **PRECOMPUTED**: a static site cannot run the model,
+  so `tools/build_forecast_library.py` computes in advance every forecast that can be asked for, at ignition, at
+  every new pass and every 30 minutes (98 forecasts, 1.4 MB, `forecast_library.json`). **LIVE MODEL** is for a
+  model server on the demo laptop (`?forecast_api=http://localhost:8000`); not set up yet, see
+  [docs/forecast_api.md](docs/forecast_api.md). If that server does not answer within 3 s the precomputed
+  forecast is used and the box says so.
+- **Forecast closures:** forecast closures (orange dashed) come from the forecasts actually loaded. A forecast is
+  in force from when it is loaded until the next load; a street its contour reaches in that time closes, at the
+  reach time or at the load time if that is later. Before the screen opens, the forecast is taken to have been
+  updated at every new pass (the previous shift).
+- **Rewind and log:** each load is in the decision log, and the yellow ticks on the time bar mark the loads.
+  Moving the clock back before a load brings back the forecast that was in force then; loading another one there
+  replaces the later loads.
+- **No hindsight:** every precomputed forecast only uses observations acquired by its issue time.
+  `tools/test_no_hindsight.py` checks the library. `tests/forecast.test.ts` checks that closures at a time never
+  depend on loads made later.
+
+![Update forecast: new observations](docs/b1_update_forecast_badge.png)
+![Re-run with current weather](docs/b1_update_forecast_rerun.png)
+
+### The standing sequence
+
+Street closures in `street_access.geojson`, the synthetic calls and the table below come from a fixed sequence:
+a forecast at ignition, at every new VIIRS overpass or Sentinel-2 image (started from the union of everything those
+sensors have seen so far) and at least every 6 hours in between, each with contours for +4, +8 and +12 hours.
 The layer "Fire front: initial forecast (at ignition)" adds the single 8 / 20 / 40 h forecast made at ignition,
-in blue, for comparison. A street's model closure comes from the forecast that is in force when its contour
-reaches the street.
+in blue, for comparison.
 
 ![Latest and initial forecast](docs/22_latest_and_initial_forecast.png)
 
@@ -377,11 +408,15 @@ schemas/                              JSON Schema (draft 2020-12) of the three r
 scripts/validate.mjs                  data files vs. schemas
 tools/fetch_osm.py                    downloads the OpenStreetMap extract (roads, stations, place names) into tools/osm/
 tools/build_marmaris_scenario.py      builds the scenario from the fire repository (needs its environment)
+tools/build_forecast_library.py       precomputed forecasts for "Update forecast" (forecast_library.json)
+tools/test_no_hindsight.py            no street status or precomputed forecast uses later information
 tools/fetch_basemap.mjs               packages the offline basemap into public/basemap/
 src/basemap.ts                        online style with offline fallback
 src/data.ts                           loading, sorting, "streets near a caller"
 src/routing.ts                        street graph, fastest route avoiding blocked streets
-src/components/                       MapView (MapLibre), CallerList (actions), DecisionLog, SidePanel, TimeBar
+src/forecast.ts                       forecast sources (precomputed / live), forecasts in force, forecast closures
+tests/                                routing and forecast tests (npm test)
+src/components/                       MapView (MapLibre), CallerList (actions), DecisionLog, ForecastControl, SidePanel, TimeBar
 ```
 
 ## Known limits
