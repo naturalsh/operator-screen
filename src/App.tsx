@@ -45,13 +45,17 @@ export function App() {
   const [missions, setMissions] = useState<Mission[]>([]);
   const [onSceneMin, setOnSceneMin] = useState(DEFAULT_ON_SCENE_MIN);
   const [decisions, setDecisions] = useState<Decision[]>([]);
-  const [tab, setTab] = useState<'overview' | 'log'>('overview');
+  const [tab, setTab] = useState<'reports' | 'overview' | 'log'>('reports');
   const [focus, setFocus] = useState<{ lon: number; lat: number; key: number } | null>(null);
   // Phone layout (below 768 px): full-screen map, a bottom drawer with three tabs, a fixed time bar.
   const narrow = useMediaQuery('(max-width: 767px)');
   // A phone held sideways: little height, so one header line, a thin time bar and a panel from the right.
   const landscape = useMediaQuery('(max-height: 500px)');
   const phone = narrow || landscape;
+  // Tablets and small laptops (768-1279 px): one side panel with tabs, so the map keeps most of the width.
+  const medium = useMediaQuery('(max-width: 1279px)');
+  // From 1600 px both side panels at full width; between 1280 and 1599 px they are narrower.
+  const roomy = useMediaQuery('(min-width: 1600px)');
   const [drawer, setDrawer] = useState<'reports' | 'layers' | 'log' | null>(null);
   const mainRef = useRef<HTMLElement>(null);
   const missionSeq = useRef(0);
@@ -351,11 +355,15 @@ export function App() {
   const mapProps = data && {
     data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
   };
+  // With one tabbed panel, picking a caller (on the map or by a deep link) shows its card.
+  useEffect(() => { if (medium && selectedId) setTab('reports'); }, [medium, selectedId]);
+
   /** Jump to the rehearsed scene: its time, its call selected and centred, the clock paused. */
   const openDemo = () => {
     const demo = data?.entry.demo;
     if (!demo) return;
     setPlaying(false);
+    setTab('reports');
     setNow(Date.parse(demo.t));
     const c = data!.callers.find((x) => x.id === demo.call);
     if (c) { setSelectedId(c.id); setFocus({ lon: c.place.lon, lat: c.place.lat, key: Date.now() }); }
@@ -452,8 +460,8 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-ink-700 bg-ink-900 px-3 py-2">
-        <h1 className="whitespace-nowrap text-base font-bold">Nature Shield <span className="font-normal text-ink-400">· Operator screen</span></h1>
+      <header className={`flex items-center border-b border-ink-700 bg-ink-900 px-3 py-2 ${roomy ? 'gap-3' : 'flex-wrap gap-x-2 gap-y-1.5'}`}>
+        <h1 className="whitespace-nowrap text-base font-bold">Nature Shield{roomy && <span className="font-normal text-ink-400"> · Operator screen</span>}</h1>
         <label className="text-xs text-ink-400">
           Scenario{' '}
           {scenarioSelect}
@@ -461,13 +469,14 @@ export function App() {
         {modeSwitch(false)}
         {demoButton(false)}
         {syntheticLayers.length > 0 && (
-          <span className="synthetic-tag" style={{ fontSize: 11, padding: '3px 8px' }}>
-            SYNTHETIC {syntheticLayers.join(' and ')}
+          <span className="synthetic-tag whitespace-nowrap" style={{ fontSize: 11, padding: '3px 8px' }}>
+            SYNTHETIC {roomy ? syntheticLayers.join(' and ') : 'calls'}
           </span>
         )}
         {modelStreets && (
-          <span className="model-tag" style={{ fontSize: 11, padding: '3px 8px' }}>
-            {modelLabel(data!.streetsMeta)} street access (not a road survey)
+          <span className="model-tag whitespace-nowrap" style={{ fontSize: 11, padding: '3px 8px' }}
+            title="Street access is computed from the forecast and satellite data, not a road survey">
+            {modelLabel(data!.streetsMeta)} {roomy ? 'street access (not a road survey)' : 'streets'}
           </span>
         )}
         <label className="ml-auto whitespace-nowrap text-xs text-ink-400">
@@ -475,32 +484,54 @@ export function App() {
           <input value={operator} onChange={(e) => setOperator(e.target.value)} aria-label="Operator name"
             className="w-28 rounded bg-ink-800 px-2 py-1 text-sm text-ink-50" />
         </label>
-        <span className="truncate text-xs text-ink-400" title="Decision-support prototype. A human confirms every decision.">
-          A human confirms every decision
-        </span>
+        {roomy && (
+          <span className="whitespace-nowrap text-xs text-ink-400" title="Decision-support prototype. A human confirms every decision.">
+            A human confirms every decision
+          </span>
+        )}
       </header>
 
       {error && <p className="p-4 text-rose-400">Could not load the scenario: {error}</p>}
       {!data && !error && <p className="p-4 text-ink-400">Loading scenario…</p>}
       {data && mapProps && (
         <>
-          <div className="flex min-h-0 flex-1">
-            <aside className="w-[360px] shrink-0 border-r border-ink-700 bg-ink-900">{callerList}</aside>
-            <main className="relative min-w-0 flex-1">
-              <MapView {...mapProps} />
-            </main>
-            <aside className="flex w-[310px] shrink-0 flex-col border-l border-ink-700 bg-ink-900">
-              <div className="flex border-b border-ink-700 text-xs font-bold uppercase tracking-wider">
-                {(['overview', 'log'] as const).map((k) => (
-                  <button key={k} onClick={() => setTab(k)} data-tab={k}
-                    className={`flex-1 px-3 py-2 ${tab === k ? 'bg-ink-800 text-ink-50' : 'text-ink-400 hover:bg-ink-850'}`}>
-                    {k === 'overview' ? 'Overview' : `Decision log (${decisions.length})`}
-                  </button>
-                ))}
-              </div>
-              <div className="min-h-0 flex-1">{tab === 'overview' ? sidePanel : decisionLog}</div>
-            </aside>
-          </div>
+          {medium ? (
+            // One panel with three tabs; the map gets the rest (at least 55 % of the width from 768 px).
+            <div className="flex min-h-0 flex-1" data-layout-size="tabs">
+              <aside className="flex w-[330px] shrink-0 flex-col border-r border-ink-700 bg-ink-900" style={{ maxWidth: '43vw' }}>
+                <div className="flex border-b border-ink-700 text-xs font-bold uppercase tracking-wider" role="tablist">
+                  {(['reports', 'overview', 'log'] as const).map((k) => (
+                    <button key={k} onClick={() => setTab(k)} data-tab={k} role="tab" aria-selected={tab === k}
+                      className={`flex-1 whitespace-nowrap px-2 py-2.5 ${tab === k ? 'bg-ink-800 text-ink-50' : 'text-ink-400 hover:bg-ink-850'}`}>
+                      {k === 'reports' ? `Reports (${callers.length})` : k === 'overview' ? 'Layers & crews' : `Log (${decisions.length})`}
+                    </button>
+                  ))}
+                </div>
+                <div className="min-h-0 flex-1">{tab === 'reports' ? callerList : tab === 'overview' ? sidePanel : decisionLog}</div>
+              </aside>
+              <main className="relative min-w-0 flex-1">
+                <MapView {...mapProps} />
+              </main>
+            </div>
+          ) : (
+            <div className="flex min-h-0 flex-1">
+              <aside className={`${roomy ? 'w-[360px]' : 'w-[300px]'} shrink-0 border-r border-ink-700 bg-ink-900`}>{callerList}</aside>
+              <main className="relative min-w-0 flex-1">
+                <MapView {...mapProps} />
+              </main>
+              <aside className={`flex ${roomy ? 'w-[310px]' : 'w-[260px]'} shrink-0 flex-col border-l border-ink-700 bg-ink-900`}>
+                <div className="flex border-b border-ink-700 text-xs font-bold uppercase tracking-wider">
+                  {(['overview', 'log'] as const).map((k) => (
+                    <button key={k} onClick={() => setTab(k)} data-tab={k}
+                      className={`flex-1 px-3 py-2 ${(tab === k || (k === 'overview' && tab === 'reports')) ? 'bg-ink-800 text-ink-50' : 'text-ink-400 hover:bg-ink-850'}`}>
+                      {k === 'overview' ? 'Overview' : `${roomy ? 'Decision log' : 'Log'} (${decisions.length})`}
+                    </button>
+                  ))}
+                </div>
+                <div className="min-h-0 flex-1">{tab === 'log' ? decisionLog : sidePanel}</div>
+              </aside>
+            </div>
+          )}
           <TimeBar start={start} end={end} now={now} playing={playing} speed={speed} timeZone={timeZone} marks={marks}
             onSeek={setNow} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
         </>

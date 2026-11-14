@@ -243,9 +243,9 @@ export function CallerList(props: Props) {
   const { callers, streets, now, timeZone, synthetic, selectedId, cases, onSelect } = props;
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-ink-700 px-3 py-2">
-        <h2 className="text-xs font-bold uppercase tracking-wider text-ink-400">Caller reports · {callers.length}</h2>
-        {synthetic && <span className="synthetic-tag">SYNTHETIC DATA</span>}
+      <div className="flex items-center justify-between gap-2 border-b border-ink-700 px-3 py-2">
+        <h2 className="whitespace-nowrap text-xs font-bold uppercase tracking-wider text-ink-400">Caller reports · {callers.length}</h2>
+        {synthetic && <span className="synthetic-tag whitespace-nowrap">SYNTHETIC DATA</span>}
       </div>
       <div className="flex-1 overflow-y-auto">
         {callers.length === 0 && <p className="p-3 text-ink-400">No reports yet at this time.</p>}

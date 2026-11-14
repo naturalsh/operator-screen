@@ -250,6 +250,15 @@ More: [Crews panel](docs/crews_1_crews_panel.png), [unassigned incident](docs/cr
 [decision log](docs/crews_5_decision_log.png), [returning crew, map on it](docs/crews_6_returning_focus.png),
 [phone: crews](docs/crews_8_phone_crews.png), [phone: crew tapped](docs/crews_9_phone_crew_focus.png).
 
+## Screen sizes
+
+- **1600 px and wider:** reports on the left, layers, crews and the decision log on the right.
+- **1280–1599 px:** the same two panels, narrower (300 and 260 px), so the map keeps at least 55 % of the width.
+- **768–1279 px (tablets, small laptops):** one panel on the left with three tabs (Reports, Layers & crews, Log);
+  the map keeps 57–68 % of the width and the header wraps to two lines instead of being cut off. Selecting a
+  caller on the map opens the Reports tab.
+- **Below 768 px:** the phone layout below.
+
 ## On a phone
 
 Below 768 px the map fills the screen and starts on the fire. The reports, the layer panel and the decision
