@@ -10,7 +10,7 @@ import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
 import { routeRisk, saferRoute, streetNamer } from './routeRisk';
 import { LatestRequest } from './latest';
 import { BrowserModel, browserRun } from './spread/browser';
-import { SOURCE_LABEL as FIRE_SOURCE_LABEL, SIZE_LABEL, MIN_DRAWN_POINTS, centre, fireGeometry, fireKey, firesAt, pointIn, rewriteFires, translate, type FireSize, type OperatorFire } from './fires';
+import { SOURCE_LABEL as FIRE_SOURCE_LABEL, SIZE_LABEL, centre, fireGeometry, fireKey, firesAt, pointIn, rewriteFires, translate, type FireSize, type OperatorFire } from './fires';
 import { AddFireDialog } from './components/AddFireDialog';
 import { circle } from './reports';
 import {
@@ -75,6 +75,16 @@ export function App() {
   const fireSeq = useRef(0);
   const [drawing, setDrawing] = useState<[number, number][] | null>(null);
   const [draftSize, setDraftSize] = useState<FireSize>('100m');
+  // Corners cleared when the operator left the drawn area (said in the box until the next click).
+  const [draftCleared, setDraftCleared] = useState(0);
+  /** Picks the size: leaving the drawn area keeps only its first corner, as the fire's place. */
+  const pickSize = (s: FireSize) => {
+    if (s !== 'drawn' && draftSize === 'drawn' && (drawing?.length ?? 0) > 1) {
+      setDraftCleared(drawing!.length);
+      setDrawing([drawing![0]]);
+    } else setDraftCleared(0);
+    setDraftSize(s);
+  };
   const browserModel = useRef<BrowserModel | null>(null);
   const [modelState, setModelState] = useState<'off' | 'loading' | 'ready' | 'failed'>('off');
   const [modelBusy, setModelBusy] = useState<{ done: number; total: number } | null>(null);
@@ -842,23 +852,20 @@ export function App() {
     drawing, drawingShape: drawing?.length ? fireGeometry(drawing, draftSize) : null,
     onDrawClick: (p: [number, number]) => {
       if (!drawing) return;
-      setDrawing((d) => (d ? [...d, p] : d));
-      // A second click means an area (a line with two): drawn, until the operator picks a size again.
-      if (drawing.length + 1 >= MIN_DRAWN_POINTS) setDraftSize('drawn');
+      // Drawn area (picked by the operator): a click adds a corner. Point / 100 m / 500 m: one point, moved here.
+      setDrawing((d) => (d ? (draftSize === 'drawn' ? [...d, p] : [p]) : d));
+      setDraftCleared(0);
     },
     onMoveFire: moveFire, onDeleteFire: deleteFire,
   };
   const addFireDialog = (compact: boolean) => drawing && (
-    <AddFireDialog vertices={drawing} size={draftSize} onSize={setDraftSize} now={now} timeZone={timeZone} compact={compact}
-      onUndo={() => {
-        setDrawing((d) => (d ? d.slice(0, -1) : d));
-        if (drawing.length - 1 < MIN_DRAWN_POINTS && draftSize === 'drawn') setDraftSize('100m');
-      }}
+    <AddFireDialog vertices={drawing} size={draftSize} onSize={pickSize} cleared={draftCleared} now={now} timeZone={timeZone} compact={compact}
+      onUndo={() => { setDrawing((d) => (d ? d.slice(0, -1) : d)); setDraftCleared(0); }}
       onCancel={() => setDrawing(null)}
       onConfirm={(meta) => addFire(fireGeometry(drawing, meta.size), meta)} />
   );
   const addFireButton = (compact: boolean) => precomputed && (
-    <button data-add-fire onClick={() => { setPlaying(false); setDraftSize('100m'); setDrawing((d) => (d ? null : [])); }} aria-pressed={!!drawing}
+    <button data-add-fire onClick={() => { setPlaying(false); setDraftSize('100m'); setDraftCleared(0); setDrawing((d) => (d ? null : [])); }} aria-pressed={!!drawing}
       title="Add a fire confirmed by a crew, a drone or a caller: it goes into the forecast, computed in this browser"
       className={`shrink-0 rounded border font-bold ${drawing ? 'border-orange-300 bg-orange-400 text-ink-950' : 'border-orange-400 text-orange-200 hover:bg-orange-950'} ${compact ? 'px-1.5 py-0.5 text-[11px]' : 'px-2 py-1 text-xs'}`}>
       {drawing ? 'Adding fire…' : 'Add fire'}

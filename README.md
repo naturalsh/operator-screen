@@ -352,11 +352,11 @@ The model has no suppression, so late updates over-predict.
 **Add fire** (top bar) lets the operator put a fire reported by a field crew, a drone, a caller or another source
 into the real scenario:
 
-- Click the map for a point, or click more points to draw it: from the second click the size switches to the drawn
-  area (two clicks: a fire line 60 m wide; three or more: the polygon clicked), and the map previews exactly what
-  Confirm adds. Picking point / about 100 m / about 500 m after drawing makes it one fire at the centre of the clicks,
-  and the box says so ("the drawn area is not used"). The box also asks for the source, when it was seen (now, or up
-  to 2 hours earlier) and a short note. **Confirm** adds it to the decision log and to the map, with its own orange area, a white dashed edge
+- Point, about 100 m and about 500 m: one point on the map; another click moves it there ("Click to place the fire;
+  click again to move it"). Only when **drawn area** is picked does each click add a corner ("Click to add corners";
+  two corners make a fire line 60 m wide, three or more the polygon). Going back from the drawn area to a size keeps
+  the first corner as the fire's place and clears the others, and the box says so. The map previews exactly what
+  Confirm adds. The box also asks for the source, when it was seen (now, or up to 2 hours earlier) and a short note. **Confirm** adds it to the decision log and to the map, with its own orange area, a white dashed edge
   and a label: "Operator-confirmed fire · crew · 22:40". Drag the label to move the fire; its ✕ deletes it. Moves
   and deletions are logged too.
 - Each change recomputes the forecast **in this browser**: from the fire the forecast in force estimates (built
@@ -425,9 +425,9 @@ only to 0.80 / 0.74 at 6 / 12 h themselves, and with 400 runs the browser and Py
 |---|---|
 | ![before](docs/f_before.png) | ![after](docs/f_after.png) |
 
-| Drawn area: four clicks, "point" picked first | Picking a size makes it one fire, and says so |
-|---|---|
-| ![drawn](docs/f_drawn_dialog.png) | ![collapsed](docs/f_drawn_collapsed.png) |
+| Point mode: one point, moved by each click | Drawn area: each click a corner | Back to a size: the first corner stays |
+|---|---|---|
+| ![point](docs/f_point_mode.png) | ![drawn](docs/f_drawn_dialog.png) | ![cleared](docs/f_drawn_cleared.png) |
 
 Inside the +6 h area: [docs/f_inside.png](docs/f_inside.png); the drawn area added: [docs/f_drawn_after.png](docs/f_drawn_after.png).
 Decision log: [docs/f_log.png](docs/f_log.png); phone: [dialog](docs/f_phone_dialog.png), [after](docs/f_phone_after.png).
