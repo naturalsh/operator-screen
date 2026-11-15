@@ -1,3 +1,4 @@
+import { quoteHtml } from './ReportQuote';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { type ExpressionSpecification, type Map as MLMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -599,7 +600,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           html = `<b>${c.place.label ?? 'Caller'}</b>`
             + `<div><span style="color:${URGENCY_COLOUR[u]}">●</span> ${URGENCY_LABEL[u]} · ${STAGE_LABEL[st[c.id] ?? 'new']}`
             + `${c.people_at_risk > 0 ? ` · ${c.people_at_risk} at risk` : ''}</div>`
-            + `<div>${c.summary_en ?? c.summary}</div>`
+            + quoteHtml(c)
             + muted(`${fmtTime(Date.parse(c.reported_at), tz)} · ${c.language.toUpperCase()}${c.channel ? ` · ${c.channel}` : ''}`)
             + tag(c);
         } else if (hit.layer.id === 'responders') {

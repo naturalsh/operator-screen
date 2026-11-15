@@ -41,6 +41,9 @@ function validateRecords(file, kind, records) {
     if (GEOMETRY[kind] && !GEOMETRY[kind].includes(rec.geometry?.type)) {
       report(file, id, [`geometry must be ${GEOMETRY[kind].join(' or ')}, got ${rec.geometry?.type}`]);
     }
+    if (kind === 'caller' && props?.language !== 'en' && props?.synthetic && !props?.summary_en?.trim()) {
+      report(file, id, ['synthetic report not in English without summary_en (the translation shown under the caller\'s words)']);
+    }
     if (ids.has(id)) report(file, id, ['duplicate id']);
     ids.add(id);
   }

@@ -1,5 +1,6 @@
 import { fmtTime } from '../data';
-import type { Decision } from '../types';
+import type { CallerReport, Decision } from '../types';
+import { ReportQuote } from './ReportQuote';
 
 const ACTION_LABEL: Record<Decision['action'], string> = {
   take: 'Take',
@@ -22,9 +23,11 @@ interface Props {
   scenarioId: string;
   timeZone: string;
   labelOf: (reportId: string) => string;
+  /** The caller report behind a decision, for its words and translation (none for crews, forecasts, ...). */
+  reportOf?: (reportId: string) => CallerReport | undefined;
 }
 
-export function DecisionLog({ decisions, scenarioId, timeZone, labelOf }: Props) {
+export function DecisionLog({ decisions, scenarioId, timeZone, labelOf, reportOf }: Props) {
   const download = () => {
     const body = JSON.stringify({
       record: 'DecisionLog', schema_version: '0.1.0', scenario: scenarioId,
@@ -55,6 +58,7 @@ export function DecisionLog({ decisions, scenarioId, timeZone, labelOf }: Props)
               <span className="ml-auto font-mono text-[11px] text-ink-400">{fmtTime(Date.parse(d.scenario_time), timeZone)}</span>
             </div>
             <div className="text-xs text-ink-200">{labelOf(d.report_id)}</div>
+            {(() => { const r = reportOf?.(d.report_id); return r && <ReportQuote c={r} className="my-0.5 text-[11px]" />; })()}
             <div className="text-xs">
               <span className="text-ink-400">{d.previous ?? '—'}</span> → <span className="font-semibold">{d.new ?? '—'}</span>
             </div>

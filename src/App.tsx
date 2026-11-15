@@ -680,6 +680,7 @@ export function App() {
   );
   const decisionLog = data && (
     <DecisionLog decisions={decisions} scenarioId={data.entry.id} timeZone={timeZone}
+      reportOf={(id) => data.callers.find((c) => c.id === id)}
       labelOf={(id) => (id === 'settings' ? 'Crews' : id === 'forecast' ? 'Forecast'
         : id.startsWith('concept-cluster') ? `Fire report ${id.slice(-2)} (concept demo)` : labelOf(id))} />
   );
