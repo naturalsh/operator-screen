@@ -10,7 +10,7 @@ import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
 import { routeRisk, saferRoute, streetNamer } from './routeRisk';
 import { LatestRequest } from './latest';
 import { BrowserModel, browserRun } from './spread/browser';
-import { SOURCE_LABEL as FIRE_SOURCE_LABEL, SIZE_LABEL, MIN_DRAWN_POINTS, centre, fireGeometry, firesAt, rewriteFires, translate, type FireSize, type OperatorFire } from './fires';
+import { SOURCE_LABEL as FIRE_SOURCE_LABEL, SIZE_LABEL, MIN_DRAWN_POINTS, centre, fireGeometry, fireKey, firesAt, pointIn, rewriteFires, translate, type FireSize, type OperatorFire } from './fires';
 import { AddFireDialog } from './components/AddFireDialog';
 import { circle } from './reports';
 import {
@@ -279,6 +279,12 @@ export function App() {
     return ++closureVersion.current;
   }, [data, precomputed, allLoads]);
   const inForce = useMemo(() => (precomputed ? forecastInForce(allLoads, precomputed.first, now) : null), [precomputed, allLoads, now]);
+  // Test hook: the forecast in force (areas per valid time), for comparing forecasts across operator actions.
+  useEffect(() => {
+    (window as unknown as { __nsForecast?: unknown }).__nsForecast = inForce && { id: inForce.run.id, source: inForce.run.source,
+      issuedAt: inForce.run.issuedAt, note: inForce.note ?? null, steps: inForce.run.steps.map((x) => ({ h: x.horizon, validAt: x.validAt, area: x.areaKm2 })),
+      geometry: (h: number) => inForce.run.steps.find((x) => Math.abs(x.horizon - h) < 1e-6)?.geometry ?? null };
+  }, [inForce]);
   // The toast: the forecast in force became an automatic update while the clock moved forward past it.
   const lastSeen = useRef<{ id: string | null; now: number }>({ id: null, now: 0 });
   useEffect(() => {
@@ -579,10 +585,20 @@ export function App() {
    * operator-confirmed fires `withFires`, with the weather from `at` on. Loaded as an operator load at `at`. A newer
    * request (another edit, another Update) cancels this one. False when the browser model is not available.
    */
-  const runBrowser = async (at: number, withFires: { id: string; geometry: GeoJSON.Polygon }[], why: string): Promise<boolean> => {
+  /**
+   * Recomputes the forecast at `at` in the browser from the fire estimated now plus `withFires`. The estimate comes
+   * from the latest forecast in force that was not made from an operator fire since moved or deleted (a run made
+   * from one would keep its old spread). `opts.added`: the fire just added (to say when it changes nothing at +6 h);
+   * `opts.note`: why the run was made, when it has no operator fire ("operator-confirmed fire deleted").
+   */
+  const runBrowser = async (at: number, withFires: (OperatorFire & { geometry: GeoJSON.Polygon })[], why: string,
+    opts: { added?: GeoJSON.Polygon; note?: string } = {}): Promise<boolean> => {
     const model = browserModel.current;
     if (!model || modelState !== 'ready' || !precomputed || !data) return false;
-    const base = forecastInForce(allLoads, precomputed.first, at)?.run;
+    const keys = withFires.map((f) => fireKey(f, at));
+    const keySet = new Set(keys);
+    const base = forecastInForce(allLoads.filter((l) => ((l.run as { fireKeys?: string[] }).fireKeys ?? []).every((k) => keySet.has(k))),
+      precomputed.first, at)?.run;
     if (!base) return false;
     const k = Math.min(Math.floor(((at - base.issuedAt) / 3600000) * 2 + 1e-9) / 2, base.steps[base.steps.length - 1]?.horizon ?? 0);
     const step = [...base.steps].reverse().find((x) => x.horizon <= k) ?? base.steps[0];
@@ -595,11 +611,18 @@ export function App() {
       const t = (x: number) => fmtTime(x, timeZone);
       const n = withFires.length;
       const from = `fire now (estimated) from the ${t(base.issuedAt)} forecast${n ? ` + ${n} operator-confirmed fire${n > 1 ? 's' : ''}` : ''}`;
-      const run = browserRun(res, { t0: at, from, lastObsAt: base.lastObsAt, lastObsLabel: base.lastObsLabel, operatorFires: withFires.map((f) => f.id) }, ++loadSeq.current);
+      const run = browserRun(res, { t0: at, from, lastObsAt: base.lastObsAt, lastObsLabel: base.lastObsLabel, operatorFires: withFires.map((f) => f.id),
+        fireKeys: keys, note: opts.note }, ++loadSeq.current);
       data.fire.features.push(...run.features);
       setFireVersion((v) => v + 1);
-      const label = `${base.lastObsAt != null ? `satellite ${t(base.lastObsAt)}` : 'ignition point'} + model${n ? ` + ${n} operator-confirmed fire${n > 1 ? 's' : ''}` : ''}`;
-      setLoads((all) => loadAt(all, { seq: loadSeq.current, at, run, kind: 'update', label }));
+      const label = `${base.lastObsAt != null ? `satellite ${t(base.lastObsAt)}` : 'ignition point'} + model${n ? ` + ${n} operator-confirmed fire${n > 1 ? 's' : ''}` : ''}`
+        + (opts.note ? ` · ${opts.note}` : '');
+      // A fire added where the forecast already had fire by +6 h: the +6 h area cannot change, the timing nearby can.
+      const six = base.steps.find((s) => Math.abs(s.horizon - (k + 6)) < 1e-6)?.geometry;
+      const ring = opts.added?.coordinates[0];
+      const inside = !!(six && ring && ring.every((p) => pointIn(six, p)) && pointIn(six, centre(opts.added!)));
+      setLoads((all) => loadAt(all, { seq: loadSeq.current, at, run, kind: 'update', label,
+        ...(inside ? { note: 'already inside the +6 h forecast area; changes timing nearby' } : {}) }));
       record({ id: 'forecast' }, 'update_forecast', describeRun(base), describeRun(run), `live in browser, ${BROWSER_RUNS} runs in ${(res.ms / 1000).toFixed(1)} s; ${why}`);
       return true;
     } catch {
@@ -620,7 +643,7 @@ export function App() {
     const [lon, lat] = centre(geometry);
     record({ id: fire.id }, 'add_fire', null, `${FIRE_SOURCE_LABEL[meta.source]}, ${SIZE_LABEL[meta.size]}, seen ${fmtTime(meta.observedAt, timeZone)}`,
       [`${lat.toFixed(4)}° N, ${lon.toFixed(4)}° E`, meta.note].filter(Boolean).join('; '));
-    void runBrowser(at, [...firesAt(kept, at), { ...fire, geometry }], 'operator-confirmed fire added');
+    void runBrowser(at, [...firesAt(kept, at), { ...fire, geometry }], 'operator-confirmed fire added', { added: geometry });
   };
   const moveFire = (id: string, dLon: number, dLat: number) => {
     const at = now;
@@ -639,8 +662,13 @@ export function App() {
     setFires(next);
     record({ id }, 'delete_fire', 'operator-confirmed fire', 'deleted');
     const left = firesAt(next, at);
-    if (left.length) { void runBrowser(at, left, 'operator-confirmed fire deleted'); return; }
-    // No operator fire left: back to the forecast without them (the latest one not started from an operator fire).
+    // Recomputed in the browser without it (from a forecast that never had it); without the model, back to the
+    // latest forecast not started from an operator fire.
+    void runBrowser(at, left, 'operator-confirmed fire deleted', { note: 'operator-confirmed fire deleted' }).then((ok) => {
+      if (!ok && !left.length) revertToPlain(at);
+    });
+  };
+  const revertToPlain = (at: number) => {
     if (!precomputed) return;
     browserRequests.current.cancel();
     setModelBusy(null);

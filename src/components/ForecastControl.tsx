@@ -33,9 +33,10 @@ export function lastUpdated(load: ForecastLoad, t: (x: number) => string): strin
   if (load.kind === 'auto') return `Last updated ${t(load.at)} from ${run.lastObsLabel ?? 'the latest pass'}`;
   if (run.source === 'browser') {
     const n = (run as { operatorFires?: string[] }).operatorFires?.length ?? 0;
+    const note = (run as { browserNote?: string }).browserNote;
     const clock = (x: number) => t(x).split(', ')[1];
     return `Last updated ${clock(load.at)} · ${run.lastObsAt != null ? `satellite ${clock(run.lastObsAt)}` : 'ignition point'}`
-      + (n ? ` + ${n} operator-confirmed fire${n > 1 ? 's' : ''}` : ' + model (re-run)');
+      + (n ? ` + ${n} operator-confirmed fire${n > 1 ? 's' : ''}` : note ? ` + model · ${note}` : ' + model (re-run)');
   }
   return `Last updated ${t(load.at)} by the operator`;
 }
@@ -84,7 +85,8 @@ export function ForecastControl({ load, previous, updateTo, blockedNote, newRepo
           {load.label && (
             <div data-forecast-label className="mt-1 rounded bg-ink-800 px-1.5 py-0.5 text-amber-200">
               {load.label}
-              {previous && six(run) != null && six(previous.run) != null
+              {load.note ? <span data-forecast-note> · {load.note}</span>
+                : previous && six(run) != null && six(previous.run) != null
                 && ` · +6 h ${six(run)!.toFixed(1)} km² (was ${six(previous.run)!.toFixed(1)})`}
             </div>
           )}

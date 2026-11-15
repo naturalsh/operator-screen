@@ -69,9 +69,16 @@ export class BrowserModel {
   dispose(): void { this.worker.terminate(); }
 }
 
+/**
+ * What a browser run adds to a ForecastRun: the operator-confirmed fires it started from (ids, and "id@version"
+ * keys, so a run made before a fire moved or was deleted is never used as the start of the next one), and why it
+ * was made when that is not obvious ("operator-confirmed fire deleted").
+ */
+export interface BrowserRunExtra { operatorFires: string[]; fireKeys: string[]; browserNote?: string; computeMs: number }
+
 /** A browser result as a ForecastRun (same shape as a library entry; street ids instead of indexes in `reach`). */
 export function browserRun(r: BrowserRunResult, meta: { t0: number; from: string; lastObsAt: number | null; lastObsLabel: string | null;
-  operatorFires: string[] }, seq: number): ForecastRun & { operatorFires: string[]; computeMs: number } {
+  operatorFires: string[]; fireKeys: string[]; note?: string }, seq: number): ForecastRun & BrowserRunExtra {
   const iso = (t: number) => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const f: LibraryForecast = {
     id: `browser-${iso(meta.t0)}-${seq}`, issued_at: iso(meta.t0), trigger: 'live', initialised_from: meta.from,
@@ -81,5 +88,5 @@ export function browserRun(r: BrowserRunResult, meta: { t0: number; from: string
       area_km2: Math.round(s.areaKm2 * 1000) / 1000, ...(SHOWN.includes(s.horizon) ? { shown: true } : {}), geometry: s.geometry })),
     reach: r.reach,
   };
-  return { ...toRun(f, (id) => String(id), 'browser'), operatorFires: meta.operatorFires, computeMs: r.ms };
+  return { ...toRun(f, (id) => String(id), 'browser'), operatorFires: meta.operatorFires, fireKeys: meta.fireKeys, browserNote: meta.note, computeMs: r.ms };
 }

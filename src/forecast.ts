@@ -160,6 +160,8 @@ export interface ForecastLoad {
   kind: 'auto' | 'opening' | 'update' | 'rerun' | 'demo';
   /** E.g. "same perimeter, new weather". */
   label?: string;
+  /** Said instead of the "+6 h ... km² (was ...)" comparison when that would mislead (a fire added inside it). */
+  note?: string;
 }
 
 /** The forecast in force at `now`: the last one loaded by then, or the forecast made at ignition. */

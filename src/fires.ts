@@ -81,3 +81,20 @@ export function centre(g: Polygon): [number, number] {
   return [r.reduce((a, p) => a + p[0], 0) / r.length, r.reduce((a, p) => a + p[1], 0) / r.length];
 }
 
+/** The version of a fire in force at `t` ("id@time"): a forecast made from it is out of date once the fire moves. */
+export function fireKey(f: OperatorFire, t: number): string {
+  return `${f.id}@${[...f.versions].reverse().find((v) => v.at <= t)?.at ?? f.addedAt}`;
+}
+
+/** True when the point is inside a (multi)polygon (even-odd over all rings, so holes count as outside). */
+export function pointIn(geom: GeoJSON.Geometry | null | undefined, [x, y]: [number, number] | number[]): boolean {
+  const polys = geom?.type === 'Polygon' ? [geom.coordinates] : geom?.type === 'MultiPolygon' ? geom.coordinates : [];
+  let ins = false;
+  for (const poly of polys) for (const ring of poly) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) ins = !ins;
+    }
+  }
+  return ins;
+}
