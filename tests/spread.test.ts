@@ -10,7 +10,8 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { ensemble, prepareGrid, runMtt, weatherFrom, moistureBase, type SpreadModelFile } from '../src/spread/model';
-import { cleanMask, fromUtm, outline, rasterize, smoothOutline, toUtm, SMOOTH_MIN_HOLE_CELLS } from '../src/spread/geo';
+import { cleanMask, fromUtm, outline, rasterize, smoothOutline, toCell, toUtm, SMOOTH_MIN_HOLE_CELLS } from '../src/spread/geo';
+import { fireGeometry } from '../src/fires';
 import type { Geometry } from 'geojson';
 
 const dir = new URL('../public/scenarios/marmaris_2022/', import.meta.url);
@@ -166,6 +167,24 @@ if (worstLibIou < 0.9) fail(`smoothed start vs the library's smoothed start: IoU
 console.log(`smoothed outlines: ${smoothChecked} masks; IoU vs cleaned cells >= ${worstCleanIou.toFixed(3)}, vs raw cells >= ${worstRawIou.toFixed(3)}; `
   + `start vs library (Python-smoothed) >= ${worstLibIou.toFixed(3)}; crossing segments ${maxCross}`);
 
+// A drawn area (4 clicks): stored as that 4-corner polygon; the model's start mask covers it (every cell with its
+// centre inside, every cell a corner or an edge passes through).
+{
+  const pts: [number, number][] = [[28.10, 36.83], [28.115, 36.832], [28.118, 36.822], [28.103, 36.82]];
+  const g = fireGeometry(pts, 'drawn');
+  if (g.coordinates.length !== 1 || g.coordinates[0].length !== 5 || JSON.stringify(g.coordinates[0].slice(0, 4)) !== JSON.stringify(pts)) fail(`drawn area not stored as its 4 corners: ${JSON.stringify(g.coordinates)}`);
+  const m = rasterize(gg, [g]);
+  const inPoly = rasterize(gg, [g], undefined, false);
+  let missing = 0, cells = 0;
+  for (let i = 0; i < m.length; i++) if (inPoly[i]) { cells++; if (!m[i]) missing++; }
+  for (const [lon, lat] of pts) { const [c, r] = toCell(gg, lon, lat); if (!m[Math.floor(r) * gg.width + Math.floor(c)]) missing++; }
+  if (missing || cells < 10) fail(`start mask misses ${missing} cells of the drawn area (${cells} inside)`);
+  const two = fireGeometry([[28.10, 36.83], [28.11, 36.83]], 'drawn');
+  if (two.coordinates[0].length !== 5) fail('two clicks should give a strip (4 corners)');
+  const pt = fireGeometry(pts, 'point');
+  if (pt.coordinates[0].length < 20) fail('"point" with four clicks should fall back to one disc at their centre');
+  console.log(`drawn area: 4 corners kept; start mask covers its ${cells} cells and all corners`);
+}
 console.log(`UTM round trip ${(utmErr * 1000).toFixed(2)} mm\n${geoRows.join('\n')}`);
 if (casesAt90 < 5) fail(`only ${casesAt90} cases with ensemble IoU >= 0.9 at every horizon (at least 5 required)`);
 console.log(`spread: ${fx.cases.length} cases against the Python model, ${casesAt90} with ensemble IoU >= 0.9 at every horizon; ${failures} failures`);

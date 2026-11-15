@@ -171,6 +171,8 @@ interface Props {
   operatorFires?: { id: string; geometry: GeoJSON.Polygon; label: string }[];
   /** Points of a fire being drawn ("Add fire"); while set, map clicks add points instead of opening popups. */
   drawing?: [number, number][] | null;
+  /** What Confirm would add from the points clicked and the size chosen (previewed on the map). */
+  drawingShape?: GeoJSON.Polygon | null;
   onDrawClick?: (lngLat: [number, number]) => void;
   /** An operator fire dragged by its label (move by dLon, dLat) or deleted with its ✕. */
   onMoveFire?: (id: string, dLon: number, dLat: number) => void;
@@ -179,7 +181,7 @@ interface Props {
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
   insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0, onSettled,
-  operatorFires = [], drawing = null, onDrawClick, onMoveFire, onDeleteFire }: Props) {
+  operatorFires = [], drawing = null, drawingShape = null, onDrawClick, onMoveFire, onDeleteFire }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
@@ -826,14 +828,14 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firesKey]);
   useEffect(() => () => { fireMarkers.current.forEach((m) => m.remove()); fireMarkers.current.clear(); }, [data]);
-  const drawKey = drawing ? JSON.stringify(drawing) : '';
+  const drawKey = drawing ? JSON.stringify([drawing, drawingShape]) : '';
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready.current) return;
     const pts = drawing ?? [];
     const features: GeoJSON.Feature[] = pts.map((p) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: p }, properties: {} }));
-    if (pts.length >= 3) features.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...pts, pts[0]]] }, properties: {} });
-    else if (pts.length === 2) features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: pts }, properties: {} });
+    // Exactly what Confirm adds: the drawn polygon or line strip, or the disc at the centre of the clicks.
+    if (drawingShape) features.push({ type: 'Feature', geometry: drawingShape, properties: {} });
     queue.current?.set('draft', { type: 'FeatureCollection', features });
     map.getCanvas().style.cursor = drawing ? 'crosshair' : '';
     // eslint-disable-next-line react-hooks/exhaustive-deps

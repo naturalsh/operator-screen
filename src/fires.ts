@@ -30,12 +30,30 @@ export interface OperatorFire {
   deletedAt?: number;
 }
 
-/** The area of a new fire: a disc for a point / 100 m / 500 m, or the drawn polygon (three clicks or more). */
+/** Half width of the strip drawn from two clicks (a fire line one model cell wide). */
+const STRIP_HALF_M = 30;
+/** Clicks needed for each kind of drawn area: two give a strip (a fire line), three or more the polygon. */
+export const MIN_DRAWN_POINTS = 2;
+
+/** Centre of the clicked points (vertex average). */
+export function clickCentre(vertices: [number, number][]): [number, number] {
+  return [vertices.reduce((a, v) => a + v[0], 0) / vertices.length, vertices.reduce((a, v) => a + v[1], 0) / vertices.length];
+}
+
+/**
+ * The area of a new fire. Drawn: exactly the clicked polygon (three clicks or more), or a 60 m wide strip between
+ * two clicks. Point / 100 m / 500 m: one disc at the centre of the clicks (any drawn area is not used).
+ */
 export function fireGeometry(vertices: [number, number][], size: FireSize): Polygon {
   if (size === 'drawn' && vertices.length >= 3) return { type: 'Polygon', coordinates: [[...vertices, vertices[0]]] };
-  const [lon, lat] = vertices.length >= 3
-    ? [vertices.reduce((a, v) => a + v[0], 0) / vertices.length, vertices.reduce((a, v) => a + v[1], 0) / vertices.length]
-    : vertices[0];
+  if (size === 'drawn' && vertices.length === 2) {
+    const [[x0, y0], [x1, y1]] = vertices;
+    const kx = 111320 * Math.cos((((y0 + y1) / 2) * Math.PI) / 180), ky = 110574;
+    const dx = (x1 - x0) * kx, dy = (y1 - y0) * ky, len = Math.hypot(dx, dy) || 1;
+    const nx = (-dy / len) * STRIP_HALF_M / kx, ny = (dx / len) * STRIP_HALF_M / ky;
+    return { type: 'Polygon', coordinates: [[[x0 + nx, y0 + ny], [x1 + nx, y1 + ny], [x1 - nx, y1 - ny], [x0 - nx, y0 - ny], [x0 + nx, y0 + ny]]] };
+  }
+  const [lon, lat] = clickCentre(vertices);
   return circle(lon, lat, RADIUS_M[size === 'drawn' ? 'point' : size], 32);
 }
 
@@ -62,3 +80,4 @@ export function centre(g: Polygon): [number, number] {
   const r = g.coordinates[0].slice(0, -1);
   return [r.reduce((a, p) => a + p[0], 0) / r.length, r.reduce((a, p) => a + p[1], 0) / r.length];
 }
+
