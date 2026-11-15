@@ -352,16 +352,24 @@ The model has no suppression, so late updates over-predict.
 **Add fire** (top bar) lets the operator put a fire reported by a field crew, a drone, a caller or another source
 into the real scenario:
 
-- Click the map for a point, or click three or more points to draw its area. The box asks for the source, when it
-  was seen (now, or up to 2 hours earlier), its rough size (point, about 100 m, about 500 m, or the drawn area) and a
-  short note. **Confirm** adds it to the decision log and to the map, with its own orange area, a white dashed edge
+- Click the map for a point, or click more points to draw it: from the second click the size switches to the drawn
+  area (two clicks: a fire line 60 m wide; three or more: the polygon clicked), and the map previews exactly what
+  Confirm adds. Picking point / about 100 m / about 500 m after drawing makes it one fire at the centre of the clicks,
+  and the box says so ("the drawn area is not used"). The box also asks for the source, when it was seen (now, or up
+  to 2 hours earlier) and a short note. **Confirm** adds it to the decision log and to the map, with its own orange area, a white dashed edge
   and a label: "Operator-confirmed fire · crew · 22:40". Drag the label to move the fire; its ✕ deletes it. Moves
   and deletions are logged too.
-- Each change recomputes the forecast **in this browser**: from the fire the forecast in force estimates for that
-  moment (built from the last satellite edge) plus every operator-confirmed fire, with the scenario's weather from
-  then on. The forecast box then says **LIVE IN BROWSER** and "Last updated 22:41 · satellite 21:05 + 1
-  operator-confirmed fire"; fire now, the look-ahead line, the forecast closures, the route warnings and the crews'
-  routes follow it. Deleting the last operator fire brings back the forecast without it.
+- Each change recomputes the forecast **in this browser**: from the fire the forecast in force estimates (built
+  from the last satellite edge; the model runs from the time of that estimate's half-hour step, with the weather
+  from then) plus every operator-confirmed fire, burning from the time it was seen. The forecast box then says
+  **LIVE IN BROWSER** and "Last updated 22:41 · satellite 21:05 + 1 operator-confirmed fire"; fire now, the
+  look-ahead line, the forecast closures, the route warnings and the crews' routes follow it. A fire added inside
+  the area the forecast already had by +6 h cannot change that area: the box says "already inside the +6 h forecast
+  area; changes timing nearby" instead of "+6 h 32.7 km² (was 32.7)".
+- Deleting a fire recomputes without it ("+ model · operator-confirmed fire deleted", LIVE IN BROWSER); only
+  without the browser model does the screen go back to the precomputed forecast. A browser forecast remembers which
+  fire versions it was made from, so the next one never starts from a forecast that still holds a fire since
+  moved or deleted.
 - **Update forecast** uses the browser model too (re-run with the current weather); the precomputed forecasts stay
   as the fallback (and for the CONCEPT DEMO reports, whose forecasts were precomputed). A confirmed CONCEPT DEMO
   report can be added the same way ("Add as confirmed fire").
@@ -379,6 +387,19 @@ TypeScript and run in a Web Worker. Its inputs come from `tools/export_spread_gr
 the fuel parameters, settings and hourly weather (`spread_model.json`); both are in the offline package. An update
 takes 0.1–0.8 s on a laptop (a few seconds on a phone). A newer change cancels a computation still running
 (`LatestRequest`, checked between Monte Carlo runs).
+
+**Outlines** of a browser forecast are cleaned and smoothed like the precomputed ones (whose contours get
+`buffer(+60 m).buffer(-60 m).simplify(30 m)` in Python): a one-cell closing, holes under 12 cells filled, parts
+under 3 cells dropped (never an operator-confirmed fire), marching squares over the cell centres (45° steps
+instead of 60 m stairs; rings never cross), then two rounds of Chaikin. Areas and street reach still come from the
+cells. On the 49 masks of the validation cases: no crossing segments, IoU 1.000 with the cleaned cells, 0.986 with
+the raw cells, 0.968 with the library's Python-smoothed start. The front band of both kinds of forecast is drawn
+opaque (a see-through wide line drew its overlaps at bends twice, as bright wedges), with its light edges under it.
+
+| Browser forecast, before | After (smoothed outlines, opaque band) |
+|---|---|
+| ![200 m before](docs/f_smooth_before_200m.png) | ![200 m after](docs/f_smooth_after_200m.png) |
+| ![2 km before](docs/f_smooth_before_2km.png) | ![2 km after](docs/f_smooth_after_2km.png) |
 
 **Checked against the Python model** (`tools/compare_spread.py` writes the reference cases, `tests/spread.test.ts`
 compares; IoU = intersection over union of the cells):
@@ -404,6 +425,11 @@ only to 0.80 / 0.74 at 6 / 12 h themselves, and with 400 runs the browser and Py
 |---|---|
 | ![before](docs/f_before.png) | ![after](docs/f_after.png) |
 
+| Drawn area: four clicks, "point" picked first | Picking a size makes it one fire, and says so |
+|---|---|
+| ![drawn](docs/f_drawn_dialog.png) | ![collapsed](docs/f_drawn_collapsed.png) |
+
+Inside the +6 h area: [docs/f_inside.png](docs/f_inside.png); the drawn area added: [docs/f_drawn_after.png](docs/f_drawn_after.png).
 Decision log: [docs/f_log.png](docs/f_log.png); phone: [dialog](docs/f_phone_dialog.png), [after](docs/f_phone_after.png).
 
 ## Fire reports from people (CONCEPT DEMO)
