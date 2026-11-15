@@ -1,3 +1,4 @@
+import { ReportQuote } from './ReportQuote';
 import { useState } from 'react';
 import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, URGENCY_COLOUR, URGENCY_LABEL,
@@ -312,7 +313,7 @@ export function CallerList(props: Props) {
                 <span className="ml-auto whitespace-nowrap font-mono text-[11px] text-ink-400">{fmtAge(now - Date.parse(c.reported_at))}</span>
               </div>
               <div className="mt-1 font-semibold">{c.place.label ?? `${c.place.lat.toFixed(4)}, ${c.place.lon.toFixed(4)}`}</div>
-              <div className="text-ink-200">{c.summary_en ?? c.summary}</div>
+              <ReportQuote c={c} />
               <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-ink-400">
                 <span>{fmtTime(Date.parse(c.reported_at), timeZone)}</span>
                 <span>{c.language.toUpperCase()}{c.channel ? ` · ${c.channel}` : ''}</span>
@@ -323,7 +324,6 @@ export function CallerList(props: Props) {
               <Actions {...props} c={c} cs={cs} selected={selected} />
               {selected && (
                 <div className="mt-2 rounded border border-ink-600 bg-ink-900 p-2 text-xs">
-                  {c.summary_en && <p className="mb-1 italic text-ink-200">“{c.summary}”</p>}
                   <p className="mb-1 text-ink-400">Why: {c.urgency_reasons.join(', ')}</p>
                   <p className="font-semibold">Streets within {NEAR_RADIUS_M} m: {near.length}</p>
                   <p>

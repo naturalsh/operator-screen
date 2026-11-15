@@ -79,7 +79,7 @@
     },
     "summary_en": {
       "type": "string",
-      "description": "English summary for the operator."
+      "description": "English translation of `summary`, shown under it as \"Translation: ...\" when `language` is not en. Optional: the voice intake fills it; the synthetic data always has it."
     },
     "confirmed_by_operator": {
       "type": "boolean",
