@@ -1,5 +1,5 @@
 import { ReportQuote } from './ReportQuote';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, URGENCY_COLOUR, URGENCY_LABEL,
   aheadContours, closureAt, closureSource, fireNearby, fmtAge, fmtTime, forecastReach, statusAt, streetLabel, streetsNear,
@@ -283,13 +283,25 @@ function Actions(props: { c: CallerReport; cs: CaseState; selected: boolean } & 
 
 export function CallerList(props: Props) {
   const { callers, streets, now, timeZone, synthetic, selectedId, cases, onSelect } = props;
+  // The selected card is brought into view (picked on the map, or opened from a link): the whole card when it fits,
+  // else its top. Only when it is not already fully shown, so clicking a visible card does not move the list.
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const box = list.current;
+    const card = selectedId ? box?.querySelector<HTMLElement>(`[data-report="${CSS.escape(selectedId)}"]`) : null;
+    if (!box || !card) return;
+    const b = box.getBoundingClientRect(), r = card.getBoundingClientRect();
+    if (r.top >= b.top && r.bottom <= b.bottom) return;
+    const top = box.scrollTop + (r.top - b.top) - (r.height > b.height ? 0 : Math.max(0, b.height - r.height) / 2);
+    box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  }, [selectedId]);
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-ink-700 px-3 py-2">
         <h2 className="whitespace-nowrap text-xs font-bold uppercase tracking-wider text-ink-400">Caller reports · {callers.length}</h2>
         {synthetic && <span className="synthetic-tag whitespace-nowrap">SYNTHETIC DATA</span>}
       </div>
-      <div className="flex-1 overflow-y-auto">
+      <div ref={list} data-report-list className="flex-1 overflow-y-auto">
         {callers.length === 0 && <p className="p-3 text-ink-400">No reports yet at this time.</p>}
         {callers.map((c) => {
           const selected = c.id === selectedId;
@@ -298,10 +310,10 @@ export function CallerList(props: Props) {
           const near = selected ? streetsNear(streets, c, NEAR_RADIUS_M) : [];
           const count = (s: string) => near.filter((n) => statusAt(n.street.properties, now) === s).length;
           return (
-            <div key={c.id} role="button" tabIndex={0} data-report={c.id} data-stage={cs.stage}
+            <div key={c.id} role="button" tabIndex={0} data-report={c.id} data-stage={cs.stage} data-selected={selected || undefined} aria-pressed={selected}
               onClick={() => onSelect(selected ? null : c.id)}
               onKeyDown={(e) => { if (e.key === 'Enter') onSelect(selected ? null : c.id); }}
-              className={`cursor-pointer border-b border-ink-800 px-3 py-2 text-left hover:bg-ink-850 ${selected ? 'bg-ink-800' : ''}`}
+              className={`cursor-pointer border-b border-ink-800 px-3 py-2 text-left ${selected ? 'bg-sky-950/60 outline outline-2 -outline-offset-2 outline-sky-400' : 'hover:bg-ink-850'}`}
               style={{ borderLeft: `4px solid ${cs.stage === 'unassigned' ? STAGE_COLOUR.unassigned : URGENCY_COLOUR[urgency]}` }}>
               <div className="flex items-center gap-2">
                 <span className="whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold text-ink-950" style={{ background: URGENCY_COLOUR[urgency] }}>

@@ -922,7 +922,10 @@ export function App() {
       : id.startsWith('operator-fire') ? `Operator-confirmed fire ${id.split('-').pop()}` : labelOf(id))} />
   );
   const mapProps = data && {
-    data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
+    data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, mode,
+    // A caller picked on the map: its card is selected (the list scrolls to it); on a phone the Reports panel opens.
+    onSelect: (id: string | null) => { setSelectedId(id); if (id && phone) setDrawer('reports'); },
+    callerPopup: !phone,
     forecastRunId, streetsVersion, fireVersion, concept: clusterStates, nowcast, lookAhead, onFirstIdle: () => setMapIdle(true), settleKey,
     onSettled: () => {
       (window as unknown as { __nsOnSettled?: () => void }).__nsOnSettled?.();   // test hook: the map as settled

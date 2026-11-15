@@ -176,6 +176,8 @@ interface Props {
   settleKey?: number;
   /** Called once the map has drawn the redraw asked for by `settleKey` (or after 1.5 s at the latest). */
   onSettled?: () => void;
+  /** Open a popup for a caller clicked on the map (off on phones: its card opens in the Reports panel instead). */
+  callerPopup?: boolean;
   /** Operator-confirmed fires on the map at the time shown (geometry and label). */
   /** `sat`: what the latest satellite pass since it was added says ("now seen by satellite 13:43", or a warning). */
   operatorFires?: { id: string; geometry: GeoJSON.Polygon; label: string; sat?: { text: string; seen: boolean } | null }[];
@@ -190,7 +192,7 @@ interface Props {
 }
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
-  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0, onSettled,
+  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0, onSettled, callerPopup = true,
   operatorFires = [], drawing = null, drawingShape = null, onDrawClick, onMoveFire, onDeleteFire }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -225,8 +227,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   // The nowcast changes every 30 minutes of scenario time (or when another forecast is in force): reload it then.
   const latestSettled = useRef(onSettled);
   latestSettled.current = onSettled;
-  const handlers = useRef({ onDrawClick, onMoveFire, onDeleteFire, drawing });
-  handlers.current = { onDrawClick, onMoveFire, onDeleteFire, drawing };
+  const handlers = useRef({ onDrawClick, onMoveFire, onDeleteFire, drawing, onSelect, callerPopup });
+  handlers.current = { onDrawClick, onMoveFire, onDeleteFire, drawing, onSelect, callerPopup };
   const nowcastKey = nowcast ? `${nowcast.run.id}|${nowcast.stepAt}|${nowcast.observed?.at}|${lookAhead}|${mode}` : '';
   const vehicleMarkers = useRef(new Map<string, maplibregl.Marker>());
 
@@ -652,7 +654,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         } else if (hit.layer.id === 'callers') {
           const c = d.callers.find((x) => x.id === hit.properties.id);
           if (!c) return;
-          onSelect(c.id);
+          handlers.current.onSelect(c.id);
+          if (!handlers.current.callerPopup) return;
           at = [c.place.lon, c.place.lat];
           const u = uo(c);
           html = `<b>${c.place.label ?? 'Caller'}</b>`
