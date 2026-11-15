@@ -56,8 +56,9 @@ export const ZONE_COLOUR = { 'h0.5': '#fde68a', h1: '#fde68a', h2: '#fde68a', h3
 export const OBSERVED_COLOUR = '#ffffff';
 /** Kept for the legend of the forecast closure and older references. */
 export const FORECAST_FILL_COLOUR = '#f97316';
-/** Satellite detections. Simple: only VIIRS of the last SIMPLE_FIRE_H hours, small and faint (the burned ground
- * already covers the older ones). Detailed: the last ACTIVE_FIRE_H hours bright, older ones dark grey. */
+/** Satellite detections. Simple: only the newest VIIRS pass of the last SIMPLE_FIRE_H hours, faint (the burned
+ * ground already covers the older ones; several passes over the same ground stacked into dark squares).
+ * Detailed: the last ACTIVE_FIRE_H hours bright, older ones dark grey. */
 export const ACTIVE_FIRE_H = 6;
 export const SIMPLE_FIRE_H = 3;
 export const ACTIVE_FIRE_COLOUR = '#fde047';
@@ -227,6 +228,11 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     return [...t, ...t.map((x) => x + SIMPLE_FIRE_H * 3600000), ...t.map((x) => x + ACTIVE_FIRE_H * 3600000)].sort((a, b) => a - b);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, fireVersion]);
+  /** Times of the VIIRS passes (for Simple: only the newest pass of the last few hours is drawn). */
+  const viirsTimes = useMemo(() => [...new Set(data.fire.features
+    .filter((f) => f.properties.observation_type === 'hotspots' && f.properties.instrument === 'VIIRS').map((f) => f.properties.t as number))].sort((a, b) => a - b),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [data, fireVersion]);
   const streetEvents = useMemo(() => {
     const out: number[] = [];
     for (const f of data.streets.features) {
@@ -288,9 +294,12 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       map.setFilter('initial-pending', ['all', initial, ['>', ['get', 't'], t]]);
       // Satellite detections: the last ACTIVE_FIRE_H hours are active fire (bright), older ones burned (dark grey).
       const recent: ExpressionSpecification = ['>', ['get', 't'], t - ACTIVE_FIRE_H * 3600000];
-      // Simple: only VIIRS of the last SIMPLE_FIRE_H hours (the 1 km pixels are large squares that hide the map).
+      // Simple: only the newest VIIRS pass of the last SIMPLE_FIRE_H hours (the 1 km pixels are large squares that hide
+      // the map; pixels of several passes on the same ground stacked their 30 % into dark squares, and the burned area
+      // and fire now already cover the older ones).
+      const newestViirs = [...viirsTimes].reverse().find((x) => x <= t && x > t - SIMPLE_FIRE_H * 3600000) ?? -1;
       map.setFilter('hotspots', simple
-        ? ['all', obs('hotspots'), upTo, ['>', ['get', 't'], t - SIMPLE_FIRE_H * 3600000], ['==', ['get', 'instrument'], 'VIIRS']]
+        ? ['all', obs('hotspots'), ['==', ['get', 't'], newestViirs], ['==', ['get', 'instrument'], 'VIIRS']]
         : ['all', obs('hotspots'), upTo, recent]);
       map.setFilter('flame-front', simple ? ['all', obs('flame_front'), upTo, ['>', ['get', 't'], t - SIMPLE_FIRE_H * 3600000]]
         : ['all', obs('flame_front'), upTo]);
@@ -982,7 +991,7 @@ function Legend({ mode, nearby, nowcast, timeZone }: { mode: MapMode; nearby: bo
           {!simple && row(<LineKey colour={ZONE_COLOUR.h2} />, 'Other horizons (+6 h dotted)')}
           <div className="pt-0.5" />
           {!simple && row(<LineKey colour={INITIAL_FORECAST_COLOUR} />, 'Initial forecast (at ignition)')}
-          {simple ? row(<AreaKey fill={SIMPLE_FIRE_COLOUR} opacity={0.35} />, `Fire seen by VIIRS (last ${SIMPLE_FIRE_H} h)`)
+          {simple ? row(<AreaKey fill={SIMPLE_FIRE_COLOUR} opacity={0.35} />, `Fire seen by the latest VIIRS pass (last ${SIMPLE_FIRE_H} h)`)
             : <>
               {row(<AreaKey fill="#ef4444" opacity={0.45} />, `VIIRS 375 m (last ${ACTIVE_FIRE_H} h)`)}
               {row(<AreaKey fill="#a855f7" opacity={0.3} />, 'MODIS 1 km')}
