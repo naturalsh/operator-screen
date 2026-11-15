@@ -177,7 +177,8 @@ interface Props {
   /** Called once the map has drawn the redraw asked for by `settleKey` (or after 1.5 s at the latest). */
   onSettled?: () => void;
   /** Operator-confirmed fires on the map at the time shown (geometry and label). */
-  operatorFires?: { id: string; geometry: GeoJSON.Polygon; label: string }[];
+  /** `sat`: what the latest satellite pass since it was added says ("now seen by satellite 13:43", or a warning). */
+  operatorFires?: { id: string; geometry: GeoJSON.Polygon; label: string; sat?: { text: string; seen: boolean } | null }[];
   /** Points of a fire being drawn ("Add fire"); while set, map clicks add points instead of opening popups. */
   drawing?: [number, number][] | null;
   /** What Confirm would add from the points clicked and the size chosen (previewed on the map). */
@@ -818,7 +819,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
 
   // Operator-confirmed fires: the area (one in-flight update, latest wins) and a draggable label with a ✕ each.
   const fireMarkers = useRef(new Map<string, maplibregl.Marker>());
-  const firesKey = operatorFires.map((f) => `${f.id}:${f.label}:${JSON.stringify(f.geometry.coordinates[0][0])}`).join('|');
+  const firesKey = operatorFires.map((f) => `${f.id}:${f.label}:${f.sat?.text ?? ''}:${JSON.stringify(f.geometry.coordinates[0][0])}`).join('|');
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready.current) return;
@@ -832,7 +833,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         const el = document.createElement('div');
         el.className = 'ns-opfire';
         el.dataset.operatorFire = f.id;
-        el.innerHTML = '<span class="ns-opfire-text"></span><button type="button" class="ns-opfire-del" aria-label="Delete this fire">✕</button>';
+        el.innerHTML = '<span class="ns-opfire-text"></span><button type="button" class="ns-opfire-del" aria-label="Delete this fire">✕</button>'
+          + '<span class="ns-opfire-sat"></span>';
         el.querySelector('button')!.addEventListener('click', (ev) => { ev.stopPropagation(); handlers.current.onDeleteFire?.(f.id); });
         m = new maplibregl.Marker({ element: el, draggable: true, anchor: 'bottom' }).setLngLat(at).addTo(map);
         const marker = m;
@@ -842,7 +844,13 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         fireMarkers.current.set(f.id, m);
       }
       m.setLngLat(at);
-      m.getElement().querySelector('.ns-opfire-text')!.textContent = f.label;
+      const el = m.getElement();
+      el.querySelector('.ns-opfire-text')!.textContent = f.label;
+      // The latest satellite pass since the fire was added: seen there, or a question for the operator (never deleted).
+      const sat = el.querySelector<HTMLElement>('.ns-opfire-sat')!;
+      sat.textContent = f.sat?.text ?? '';
+      sat.hidden = !f.sat;
+      el.dataset.sat = f.sat ? (f.sat.seen ? 'seen' : 'not-seen') : '';
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firesKey]);

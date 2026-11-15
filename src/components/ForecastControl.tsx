@@ -21,6 +21,8 @@ interface Props {
   /** The in-browser model: loading / ready / failed, and the runs done of a computation in progress. */
   modelState?: 'off' | 'loading' | 'ready' | 'failed';
   modelBusy?: { done: number; total: number } | null;
+  /** A pass reached whose automatic update (with operator fires) is being computed in this browser: what it uses. */
+  autoUpdating?: string | null;
   onUpdate: () => void;
 }
 
@@ -30,6 +32,10 @@ const SOURCE_LABEL = { precomputed: 'PRECOMPUTED', live: 'LIVE MODEL', browser: 
 export function lastUpdated(load: ForecastLoad, t: (x: number) => string): string {
   const run = load.run;
   if (load.kind === 'opening') return `Made at ignition, ${t(run.issuedAt)}`;
+  if (load.kind === 'auto' && run.source === 'browser') {
+    const n = (run as { operatorFires?: string[] }).operatorFires?.length ?? 0;
+    return `Auto-updated ${t(load.at).split(', ')[1]} · ${run.lastObsLabel ?? 'satellite'} + ${n} operator-confirmed fire${n > 1 ? 's' : ''}`;
+  }
   if (load.kind === 'auto') return `Last updated ${t(load.at)} from ${run.lastObsLabel ?? 'the latest pass'}`;
   if (run.source === 'browser') {
     const n = (run as { operatorFires?: string[] }).operatorFires?.length ?? 0;
@@ -45,7 +51,7 @@ export function lastUpdated(load: ForecastLoad, t: (x: number) => string): strin
  * The forecast in force and the operator's "Update forecast" button (map overlay, top left). The forecast updates
  * itself at every new satellite pass; the button re-runs it with the weather at the time shown.
  */
-export function ForecastControl({ load, previous, updateTo, blockedNote, newReports = 0, sourceKind, busy, timeZone, compact, nowcast, modelState = 'off', modelBusy, onUpdate }: Props) {
+export function ForecastControl({ load, previous, updateTo, blockedNote, newReports = 0, sourceKind, busy, timeZone, compact, nowcast, modelState = 'off', modelBusy, autoUpdating, onUpdate }: Props) {
   const [open, setOpen] = useState(!compact);
   const run = load?.run;
   const t = (x: number) => fmtTime(x, timeZone);
@@ -120,6 +126,9 @@ export function ForecastControl({ load, previous, updateTo, blockedNote, newRepo
           <span>Update forecast</span>
           <span data-update-what className="text-[11px] font-normal">{what}</span>
         </button>
+        {autoUpdating && (
+          <div data-auto-updating className="mt-1 text-orange-200">Auto-updating in this browser: {autoUpdating}…</div>
+        )}
         {modelBusy && (
           <div data-model-busy className="mt-1 text-orange-200">Computing in this browser… {modelBusy.done}/{modelBusy.total} runs</div>
         )}

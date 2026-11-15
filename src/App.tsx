@@ -15,7 +15,7 @@ import { AddFireDialog } from './components/AddFireDialog';
 import { circle } from './reports';
 import {
   LiveForecasts, PrecomputedForecasts, applyForecastClosures, autoLabel, autoLoads, forecastClosures, forecastInForce, loadAt,
-  NOWCAST_HORIZONS, lookLabel, nowcastAt, type ForecastLoad, type ForecastSource,
+  NOWCAST_HORIZONS, lookLabel, nowcastAt, type ForecastLoad, type ForecastRun, type ForecastSource,
 } from './forecast';
 import { ForecastControl } from './components/ForecastControl';
 import { ConceptPanel } from './components/ConceptPanel';
@@ -285,8 +285,51 @@ export function App() {
   const source: ForecastSource | null = useMemo(
     () => (precomputed && forecastApi ? new LiveForecasts(forecastApi, precomputed) : precomputed), [precomputed]);
   // Every load: the automatic ones at each new pass (with the concept reports confirmed by then) and the operator's.
-  const allLoads = useMemo(() => (precomputed ? [...autoLoads(precomputed, layers.concept ? confirmations : undefined), ...loads] : []),
-    [precomputed, loads, confirmations, layers.concept]);
+  // With operator-confirmed fires on the map at a pass, its automatic update is computed in the browser (the new
+  // satellite edge plus the operator fires, each burning from when it was seen): the precomputed one would drop them.
+  // It is computed once the clock reaches the pass (never ahead of it) and kept, so rewinding and replaying give the
+  // same forecast; until it is ready the forecast before stays in force.
+  const autoPlain = useMemo(() => (precomputed ? autoLoads(precomputed, layers.concept ? confirmations : undefined) : []),
+    [precomputed, confirmations, layers.concept]);
+  const [autoRuns, setAutoRuns] = useState<Map<string, ForecastRun>>(() => new Map());
+  const autoPlan = useMemo(() => autoPlain.map((load) => {
+    const fs = firesAt(fires, load.at);
+    const edge = load.run.steps.find((s) => s.horizon === 0)?.geometry;
+    const browser = fs.length > 0 && !!edge && !load.run.reports.length && modelState !== 'failed';
+    return { load, fs, edge, key: browser ? `${load.at}|${fs.map((f) => fireKey(f, load.at)).sort().join(',')}` : null };
+  }), [autoPlain, fires, modelState]);
+  const allLoads = useMemo(() => [...autoPlan.flatMap((p) => {
+    if (!p.key) return [p.load];
+    const run = autoRuns.get(p.key);
+    return run ? [{ ...p.load, run }] : [];
+  }), ...loads], [autoPlan, autoRuns, loads]);
+  const autoBusy = useRef<string | null>(null);
+  const [autoTick, setAutoTick] = useState(0);
+  useEffect(() => {
+    const model = browserModel.current;
+    if (!model || modelState !== 'ready' || autoBusy.current || !data) return;
+    // The latest pass reached that still needs its browser update (it decides what is on screen), then older ones.
+    const todo = autoPlan.filter((p) => p.key && p.load.at <= now && !autoRuns.has(p.key)).sort((a, b) => b.load.at - a.load.at)[0];
+    if (!todo || !todo.key) return;
+    const key = todo.key;
+    autoBusy.current = key;
+    const at = todo.load.at, base = todo.load.run;
+    const modelAt = Math.min(at, ...todo.fs.map((f) => f.observedAt));
+    model.run({ t0: at, modelAt, starts: todo.fs.map((f) => f.geometry), startsAt: todo.fs.map((f) => f.observedAt), modelStarts: [todo.edge!],
+      modelStartsAt: at, runs: BROWSER_RUNS, seed: 42, maxHours: 12 })
+      .then((res) => {
+        const n = todo.fs.length;
+        const run = browserRun(res, { t0: at, from: `${base.lastObsLabel ?? 'satellite'} perimeter + ${n} operator-confirmed fire${n > 1 ? 's' : ''}`,
+          lastObsAt: base.lastObsAt, lastObsLabel: base.lastObsLabel, operatorFires: todo.fs.map((f) => f.id),
+          fireKeys: todo.fs.map((f) => fireKey(f, at)), note: 'auto' }, ++loadSeq.current);
+        data.fire.features.push(...run.features);
+        setFireVersion((v) => v + 1);
+        setAutoRuns((m) => new Map(m).set(key, run));
+      })
+      .catch(() => { /* retried on the next change */ })
+      .finally(() => { autoBusy.current = null; setAutoTick((x) => x + 1); });
+  }, [autoPlan, autoRuns, now, modelState, data, autoTick]);
+
   // Forecast closures follow the forecasts in force over time; written into the street records, which routing and
   // the map read. `streetsVersion` changes whenever they do.
   const closureVersion = useRef(0);
@@ -297,6 +340,8 @@ export function App() {
     return ++closureVersion.current;
   }, [data, precomputed, allLoads]);
   const inForce = useMemo(() => (precomputed ? forecastInForce(allLoads, precomputed.first, now) : null), [precomputed, allLoads, now]);
+  // A pass reached whose browser update is still being computed (it will replace the forecast in force).
+  const autoPending = autoPlan.find((p) => p.key && p.load.at <= now && !autoRuns.has(p.key) && (!inForce || p.load.at > inForce.at)) ?? null;
   // Test hook: the forecast in force (areas per valid time), for comparing forecasts across operator actions.
   useEffect(() => {
     (window as unknown as { __nsForecast?: unknown }).__nsForecast = inForce && { id: inForce.run.id, source: inForce.run.source,
@@ -304,17 +349,18 @@ export function App() {
       geometry: (h: number) => inForce.run.steps.find((x) => Math.abs(x.horizon - h) < 1e-6)?.geometry ?? null };
   }, [inForce]);
   // The toast: the forecast in force became an automatic update while the clock moved forward past it.
-  const lastSeen = useRef<{ id: string | null; now: number }>({ id: null, now: 0 });
+  const lastSeen = useRef<{ id: string | null; now: number; at: number }>({ id: null, now: 0, at: 0 });
   useEffect(() => {
     const prev = lastSeen.current;
     const id = inForce ? `${inForce.run.id}@${inForce.at}` : null;
-    if (prev.id && id !== prev.id && inForce?.kind === 'auto' && inForce.at > prev.now && inForce.at <= now) {
+    // A later automatic update came into force while the clock moved forward (or was computed just after it passed).
+    if (prev.id && id !== prev.id && inForce?.kind === 'auto' && inForce.at > prev.at && now >= prev.now && inForce.at <= now) {
       const tz = data?.entry.timezone ?? 'UTC';
       setToast({ key: Date.now(), at: inForce.at, text: `Forecast updated: ${autoLabel(inForce.run)} (${inForce.run.lastObsLabel}, ${fmtTime(inForce.at, tz)})` });
     } else if (now < prev.now) {
       setToast(null);                         // going back: a notice about a later pass must not stay on screen
     }
-    lastSeen.current = { id, now };
+    lastSeen.current = { id, now, at: inForce?.at ?? 0 };
   }, [inForce, now, data]);
   useEffect(() => {
     if (!toast) return;
@@ -597,6 +643,32 @@ export function App() {
   }, [data, mapIdle]);
   useEffect(() => () => { browserModel.current?.dispose(); browserModel.current = null; }, []);
   const activeFires = useMemo(() => firesAt(fires, now), [fires, now]);
+  // Each operator fire against the latest satellite pass since it was added (up to now): inside what that pass
+  // detected ("now seen by satellite 13:43"), or not ("not seen by satellite at 13:43 — still burning?"; it stays,
+  // the operator decides). Every pass of the scenario covers the whole area.
+  const passDetections = useMemo(() => {
+    const out = new Map<number, GeoJSON.Geometry[]>();
+    for (const f of data?.fire.features ?? []) {
+      if (f.properties.kind !== 'observed' || f.properties.t == null) continue;
+      (out.get(f.properties.t) ?? out.set(f.properties.t, []).get(f.properties.t)!).push(f.geometry);
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, fireVersion]);
+  const fireSat = useMemo(() => {
+    const out = new Map<string, { text: string; seen: boolean }>();
+    for (const f of activeFires) {
+      const pass = [...autoPlain].reverse().find((l) => l.at > f.addedAt && l.at <= now && l.run.lastObsAt != null);
+      if (!pass) continue;
+      const seenAt = pass.run.lastObsAt!;
+      const geoms = [...passDetections].filter(([t]) => Math.abs(t - seenAt) < 60000).flatMap(([, g]) => g);
+      const pts = [centre(f.geometry), ...f.geometry.coordinates[0]];
+      const seen = geoms.some((g) => pts.some((p) => pointIn(g, p)));
+      const hhmm = fmtTime(pass.at, timeZone).split(', ')[1];
+      out.set(f.id, { seen, text: seen ? `now seen by satellite ${hhmm}` : `not seen by satellite at ${hhmm} — still burning?` });
+    }
+    return out;
+  }, [activeFires, autoPlain, passDetections, now, timeZone]);
 
   /**
    * Recomputes the forecast in the browser at `at`: from the fire the forecast in force estimates for `at` plus the
@@ -856,7 +928,7 @@ export function App() {
       (window as unknown as { __nsOnSettled?: () => void }).__nsOnSettled?.();   // test hook: the map as settled
       setResumeWait(false);
     },
-    operatorFires: activeFires.map((f) => ({ id: f.id, geometry: f.geometry, label: fireLabel(f) })),
+    operatorFires: activeFires.map((f) => ({ id: f.id, geometry: f.geometry, label: fireLabel(f), sat: fireSat.get(f.id) ?? null })),
     drawing, drawingShape: drawing?.length ? fireGeometry(drawing, draftSize) : null,
     onDrawClick: (p: [number, number]) => {
       if (!drawing) return;
@@ -902,6 +974,7 @@ export function App() {
       <ForecastControl load={inForce} previous={previousLoad} updateTo={forecastOptions.updateTo}
         blockedNote={forecastOptions.blockedNote} sourceKind={source?.kind ?? 'precomputed'}
         newReports={forecastOptions.newReports} nowcast={nowcast} modelState={modelState} modelBusy={modelBusy}
+      autoUpdating={autoPending ? `${autoPending.load.run.lastObsLabel ?? 'satellite'} ${fmtTime(autoPending.load.at, timeZone).split(', ')[1]} + ${autoPending.fs.length} operator-confirmed fire${autoPending.fs.length > 1 ? 's' : ''}` : null}
         busy={forecastBusy || !!modelBusy} timeZone={timeZone} compact={compact} onUpdate={onUpdateForecast} />
       {toast && toast.at <= now && (
         <div key={toast.key} role="status" data-forecast-toast

@@ -15,6 +15,8 @@ export interface BrowserRunRequest {
   /** Drawn or reported areas (rasterized with every touched cell), and when each was seen. */
   starts: Geometry[];
   startsAt?: number[];
+  /** When the model areas start burning (default modelAt): an automatic update starts the new satellite edge at the pass. */
+  modelStartsAt?: number;
   /** Model areas (the estimated fire now; cell centres). */
   modelStarts: Geometry[];
   runs: number;

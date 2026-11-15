@@ -377,9 +377,16 @@ into the real scenario:
   as the fallback (and for the CONCEPT DEMO reports, whose forecasts were precomputed). A confirmed CONCEPT DEMO
   report can be added the same way ("Add as confirmed fire").
 - Rules: like everything on the screen an operator fire follows the clock. It is not shown before the moment it was
-  added, and acting at an earlier time drops later edits. Operator fires never enter the overlap (skill) table. At
-  the next satellite pass the automatic update starts from the satellite edge alone; press Update forecast to bring
-  the operator fires back in.
+  added, and acting at an earlier time drops later edits. Operator fires never enter the overlap (skill) table.
+- Automatic updates keep them: with at least one operator fire on the map at a pass, its automatic update is
+  computed in the browser from the new satellite edge plus the operator fires, each burning from when it was seen
+  ("Auto-updated 13:43 · VIIRS N20 + 3 operator-confirmed fires", LIVE IN BROWSER). It is computed when the clock
+  reaches the pass, never before, and kept, so rewinding and replaying show the same forecast; until it is ready the
+  forecast before stays in force ("Auto-updating in this browser …"). Without operator fires the precomputed update
+  is used.
+- Each operator fire is checked against the latest pass since it was added: inside what that pass detected, its
+  label says "now seen by satellite 13:43"; otherwise "⚠ not seen by satellite at 13:43 — still burning?". It is
+  never deleted for that; the operator decides.
 - Sizes are diameters: point (~60 m, one model cell), about 100 m, about 500 m.
 - Why "the fire estimated now" and not the last satellite edge alone: when the last pass is hours old, starting from
   its edge at the current time would shrink the fire. The estimate is itself derived from that edge by the model.
@@ -433,6 +440,7 @@ only to 0.80 / 0.74 at 6 / 12 h themselves, and with 400 runs the browser and Py
 |---|---|---|
 | ![point](docs/f_point_mode.png) | ![drawn](docs/f_drawn_dialog.png) | ![cleared](docs/f_drawn_cleared.png) |
 
+Automatic update with two operator fires (one seen by the pass, one not): [docs/f_auto_update.png](docs/f_auto_update.png).
 Inside the +6 h area: [docs/f_inside.png](docs/f_inside.png); the drawn area added: [docs/f_drawn_after.png](docs/f_drawn_after.png).
 Decision log: [docs/f_log.png](docs/f_log.png); phone: [dialog](docs/f_phone_dialog.png), [after](docs/f_phone_after.png).
 

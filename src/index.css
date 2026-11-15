@@ -100,3 +100,8 @@ body { background: #07090d; color: #f2f6fb; font-size: 14px; }
 .ns-opfire { display: flex; align-items: center; gap: 4px; cursor: grab; white-space: nowrap; font: 600 11px/1.2 system-ui, sans-serif;
   color: #1c1917; background: #ffb067; border: 1.5px solid #fff; border-radius: 4px; padding: 1px 2px 1px 6px; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
 .ns-opfire-del { border: 0; background: rgba(0,0,0,.18); color: #1c1917; border-radius: 3px; width: 18px; height: 18px; line-height: 18px; padding: 0; cursor: pointer; }
+.ns-opfire { flex-wrap: wrap; }
+.ns-opfire-text { flex: 1 0 auto; }
+.ns-opfire-sat { flex-basis: 100%; font-weight: 500; font-size: 10.5px; white-space: normal; }
+.ns-opfire[data-sat="not-seen"] .ns-opfire-sat { color: #7c2d12; }
+.ns-opfire[data-sat="not-seen"] .ns-opfire-sat::before { content: "⚠ "; }

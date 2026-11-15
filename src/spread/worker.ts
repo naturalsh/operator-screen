@@ -3,10 +3,11 @@
  * The in-browser fire model, off the main thread. Messages:
  * - init { base }: loads spread_model.json and spread_grid.bin(.gz) from the scenario folder.
  * - streets { streets: [id, [lon, lat][]][] }: cells within the safety buffer of each street (for reach times).
- * - run { id, t0, modelAt, starts, startsAt, modelStarts, runs, seed, maxHours }: an ensemble from the starting areas; replies with the
+ * - run { id, t0, modelAt, starts, startsAt, modelStarts, modelStartsAt, runs, seed, maxHours }: an ensemble from the starting areas; replies with the
  *   contours every 30 minutes (horizon 0 = the start; outlines smoothed like the precomputed ones, areas and street
  *   reach from the cells) and when the P >= 50 % area reaches each street.
  * - cancel { id }: drops a run (checked between Monte Carlo runs); the result of a dropped run is never sent.
+ *   Runs are only dropped this way: an automatic update and an operator's run can be computed side by side.
  */
 import { ensemble, prepareGrid, type SpreadGrid, type SpreadModelFile } from './model';
 import { rasterize, smoothOutline, toCell, type GridGeo } from './geo';
@@ -16,7 +17,6 @@ let grid: SpreadGrid | null = null;
 let geo: GridGeo | null = null;
 let streetCells: [string, Int32Array][] = [];
 const cancelled = new Set<number>();
-let latest = 0;
 
 async function loadGrid(base: string): Promise<ArrayBuffer> {
   if ('DecompressionStream' in self) {
@@ -69,7 +69,6 @@ self.onmessage = async (e: MessageEvent) => {
       cancelled.add(m.id);
     } else if (m.type === 'run') {
       if (!grid || !geo) throw new Error('model not loaded');
-      latest = m.id;
       const t = performance.now();
       // The model starts when the estimated fire it starts from is valid (`modelAt`, at most 30 min before the issue
       // time t0), with the weather from then; an operator fire starts burning when it was seen (its cells' start
@@ -85,11 +84,14 @@ self.onmessage = async (e: MessageEvent) => {
       });
       const operator = start.slice();                                             // never dropped from the outlines
       const model = rasterize(geo, m.modelStarts as Geometry[], undefined, false);  // model areas (the estimated fire)
-      for (let i = 0; i < start.length; i++) if (model[i]) { start[i] = 1; startMin[i] = 0; }
+      // The model area burns from `modelStartsAt` (default: modelAt); an automatic update starts it at the pass, after
+      // operator fires seen earlier.
+      const modelStart = Math.min(Math.max(((m.modelStartsAt ?? modelAt) - modelAt) / 60000, 0), lead);
+      for (let i = 0; i < start.length; i++) if (model[i] && (!start[i] || startMin[i] > modelStart)) { start[i] = 1; startMin[i] = modelStart; }
       const p50 = await ensemble({
         grid, ignition: start, startMin, t0: modelAt, maxHours: m.maxHours + lead / 60, runs: m.runs, seed: m.seed,
-        // Let a cancel (or a newer run) through between Monte Carlo runs.
-        cancelled: async () => { await new Promise((r) => setTimeout(r, 0)); return cancelled.has(m.id) || latest !== m.id; },
+        // Let a cancel through between Monte Carlo runs (an automatic update and an operator's may run side by side).
+        cancelled: async () => { await new Promise((r) => setTimeout(r, 0)); return cancelled.has(m.id); },
         progress: (done, total) => postMessage({ type: 'progress', id: m.id, done, total }),
       });
       if (!p50) { postMessage({ type: 'cancelled', id: m.id }); return; }
