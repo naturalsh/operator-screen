@@ -152,6 +152,8 @@ class Heap {
 export interface RunInput {
   grid: SpreadGrid;
   ignition: Uint8Array;
+  /** Minutes after the start at which each ignition cell starts burning (default: all at 0, as in run_mtt). */
+  startMin?: Float32Array;
   ws: Float32Array; wsin: Float32Array; wcos: Float32Array; mm: Float32Array;
   mBase: Float32Array;
   maxTimeMin: number; maxLb: number; r0Mult: number;
@@ -165,7 +167,7 @@ export function runMtt(p: RunInput): Float32Array {
   const r0 = g.r0.slice();
   for (let i = 0; i < n; i++) if (p.ignition[i] && r0[i] <= 0) r0[i] = f32(g.fallbackR0);
   const heap = new Heap();
-  for (let i = 0; i < n; i++) if (p.ignition[i]) { arrival[i] = 0; heap.push(0, i); }
+  for (let i = 0; i < n; i++) if (p.ignition[i]) { const t = p.startMin ? p.startMin[i] : 0; arrival[i] = t; heap.push(t, i); }
   const nHr = p.ws.length;
   while (heap.size > 0) {
     const [tu, u] = heap.pop();
@@ -245,6 +247,8 @@ export function rng(seed: number) {
 export interface EnsembleInput {
   grid: SpreadGrid;
   ignition: Uint8Array;
+  /** Per-cell start time of the ignition cells in minutes after t0 (see RunInput). */
+  startMin?: Float32Array;
   /** Issue time (epoch ms): the weather from then on. */
   t0: number;
   /** Longest horizon (hours). */
@@ -283,7 +287,7 @@ export async function ensemble(p: EnsembleInput): Promise<Float32Array | null> {
     }
     const ws = w.ws.map((x) => f32(x * wsMult));
     const wdr = Array.from(w.wd, (x) => ((((x + dirOff) % 360) + 360) % 360) * Math.PI / 180);
-    arrivals.push(runMtt({ grid: g, ignition: p.ignition, ws, wsin: Float32Array.from(wdr, Math.sin), wcos: Float32Array.from(wdr, Math.cos),
+    arrivals.push(runMtt({ grid: g, ignition: p.ignition, startMin: p.startMin, ws, wsin: Float32Array.from(wdr, Math.sin), wcos: Float32Array.from(wdr, Math.cos),
       mm: w.mm.map((x) => f32(x * mNoise)), mBase, maxTimeMin: p.maxHours * 60, maxLb: s.max_lb_ratio, r0Mult }));
     p.progress?.(i + 1, total);
     if (p.cancelled && await p.cancelled()) return null;

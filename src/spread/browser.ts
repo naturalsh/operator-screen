@@ -10,8 +10,11 @@ import type { LibraryForecast, StreetFeature } from '../types';
 export interface BrowserRunRequest {
   /** Issue time (epoch ms). */
   t0: number;
-  /** Drawn or reported areas (rasterized with every touched cell). */
+  /** When the estimated fire in `modelStarts` is valid (the model starts then; default t0). */
+  modelAt?: number;
+  /** Drawn or reported areas (rasterized with every touched cell), and when each was seen. */
   starts: Geometry[];
+  startsAt?: number[];
   /** Model areas (the estimated fire now; cell centres). */
   modelStarts: Geometry[];
   runs: number;

@@ -605,7 +605,8 @@ export function App() {
     const job = browserRequests.current.begin();
     setModelBusy({ done: 0, total: BROWSER_RUNS });
     try {
-      const res = await model.run({ t0: at, starts: withFires.map((f) => f.geometry), modelStarts: step ? [step.geometry] : [], runs: BROWSER_RUNS,
+      const res = await model.run({ t0: at, modelAt: step ? base.issuedAt + step.horizon * 3600000 : at,
+        starts: withFires.map((f) => f.geometry), startsAt: withFires.map((f) => Math.min(f.observedAt, at)), modelStarts: step ? [step.geometry] : [], runs: BROWSER_RUNS,
         seed: 42, maxHours: 12 }, job.signal, (done, total) => { if (browserRequests.current.isLatest(job.id)) setModelBusy({ done, total }); });
       if (!browserRequests.current.isLatest(job.id)) return true;            // stale: a newer request replaces it
       const t = (x: number) => fmtTime(x, timeZone);

@@ -3,7 +3,7 @@
  * The in-browser fire model, off the main thread. Messages:
  * - init { base }: loads spread_model.json and spread_grid.bin(.gz) from the scenario folder.
  * - streets { streets: [id, [lon, lat][]][] }: cells within the safety buffer of each street (for reach times).
- * - run { id, t0, starts, modelStarts, runs, seed, maxHours }: an ensemble from the starting areas; replies with the
+ * - run { id, t0, modelAt, starts, startsAt, modelStarts, runs, seed, maxHours }: an ensemble from the starting areas; replies with the
  *   contours every 30 minutes (horizon 0 = the start; outlines smoothed like the precomputed ones, areas and street
  *   reach from the cells) and when the P >= 50 % area reaches each street.
  * - cancel { id }: drops a run (checked between Monte Carlo runs); the result of a dropped run is never sent.
@@ -71,11 +71,23 @@ self.onmessage = async (e: MessageEvent) => {
       if (!grid || !geo) throw new Error('model not loaded');
       latest = m.id;
       const t = performance.now();
-      const start = rasterize(geo, m.starts as Geometry[]);                       // observed / drawn areas
+      // The model starts when the estimated fire it starts from is valid (`modelAt`, at most 30 min before the issue
+      // time t0), with the weather from then; an operator fire starts burning when it was seen (its cells' start
+      // time). Contours and reach are then read from t0: horizon h is the area reached by lead + h.
+      const modelAt: number = m.modelAt ?? m.t0;
+      const lead = Math.max(0, (m.t0 - modelAt) / 60000);
+      const start = new Uint8Array(geo.width * geo.height);
+      const startMin = new Float32Array(start.length);
+      (m.starts as Geometry[]).forEach((g, k) => {                                  // observed / drawn areas
+        const cells = rasterize(geo!, [g]);
+        const at = Math.min(Math.max(((m.startsAt?.[k] ?? m.t0) - modelAt) / 60000, 0), lead);
+        for (let i = 0; i < cells.length; i++) if (cells[i] && (!start[i] || startMin[i] > at)) { start[i] = 1; startMin[i] = at; }
+      });
       const operator = start.slice();                                             // never dropped from the outlines
-      rasterize(geo, m.modelStarts as Geometry[], start, false);                  // model areas (the estimated fire)
+      const model = rasterize(geo, m.modelStarts as Geometry[], undefined, false);  // model areas (the estimated fire)
+      for (let i = 0; i < start.length; i++) if (model[i]) { start[i] = 1; startMin[i] = 0; }
       const p50 = await ensemble({
-        grid, ignition: start, t0: m.t0, maxHours: m.maxHours, runs: m.runs, seed: m.seed,
+        grid, ignition: start, startMin, t0: modelAt, maxHours: m.maxHours + lead / 60, runs: m.runs, seed: m.seed,
         // Let a cancel (or a newer run) through between Monte Carlo runs.
         cancelled: async () => { await new Promise((r) => setTimeout(r, 0)); return cancelled.has(m.id) || latest !== m.id; },
         progress: (done, total) => postMessage({ type: 'progress', id: m.id, done, total }),
@@ -85,19 +97,19 @@ self.onmessage = async (e: MessageEvent) => {
       const steps: { horizon: number; areaKm2: number; geometry: Geometry | null }[] = [];
       let startCells = 0;
       for (let i = 0; i < start.length; i++) startCells += start[i];
-      steps.push({ horizon: 0, areaKm2: startCells * res2, geometry: smoothOutline(geo, (i) => start[i] === 1, operator) });
-      for (const h of grid.file.settings.horizons_hours) {
+      for (const h of [0, ...grid.file.settings.horizons_hours]) {
         if (h > m.maxHours) break;
+        const lim = lead + h * 60 + 1e-6;
         let n = 0;
-        for (let i = 0; i < p50.length; i++) if (p50[i] <= h * 60) n++;
-        steps.push({ horizon: h, areaKm2: n * res2, geometry: smoothOutline(geo, (i) => p50[i] <= h * 60, operator) });
+        for (let i = 0; i < p50.length; i++) if (p50[i] <= lim) n++;
+        steps.push({ horizon: h, areaKm2: n * res2, geometry: smoothOutline(geo, (i) => p50[i] <= lim, operator) });
       }
-      // Reach: the first half hour at which the P >= 50 % area comes within the safety buffer of the street.
+      // Reach: the first half hour after t0 at which the P >= 50 % area comes within the safety buffer of the street.
       const reach: [string, number][] = [];
       for (const [id, cells] of streetCells) {
         let best = Infinity;
         for (let k = 0; k < cells.length; k++) if (p50[cells[k]] < best) best = p50[cells[k]];
-        if (best <= m.maxHours * 60) reach.push([id, Math.max(0.5, Math.ceil(best / 30 - 1e-9) * 0.5)]);
+        if (best <= lead + m.maxHours * 60) reach.push([id, Math.max(0.5, Math.ceil((best - lead) / 30 - 1e-9) * 0.5)]);
       }
       postMessage({ type: 'result', id: m.id, steps, reach, ms: Math.round(performance.now() - t), startCells });
     }
