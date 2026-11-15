@@ -221,7 +221,10 @@ Before a presentation: open the site once on the presenting laptop (and on each 
 - **Scenario** (top): picks an entry of `public/scenarios/index.json`.
 - **Time bar** (bottom): play / pause, slider in 1-minute steps, speed. While the slider is dragged the thumb and
   the clock follow at once, the map follows several times a second, and route planning waits until it is
-  released. Everything on the map is derived from the time shown, never built up from earlier states: after any
+  released. During playback, touching the slider holds playback (the slider is the only clock while held); on
+  release the map settles on the new time (within a second on a phone with a 4x slower CPU in our tests) and
+  playback goes on from there. Playback draws at most about ten frames a second and, when the device is busy,
+  skips straight to the current time instead of working through the frames it missed. Everything on the map is derived from the time shown, never built up from earlier states: after any
   number of jumps back and forth the screen equals a page opened at that time. Above the slider, small marks show every
   forecast load up to the time shown (yellow: automatic at a satellite pass; blue: by the operator). There is no
   text on the bar: hovering a mark (tapping it on a phone) opens a tooltip with the time and what happened. Marks

@@ -62,6 +62,13 @@ export function App() {
   const [playing, setPlaying] = useState(false);
   // True while the time slider is being dragged: route planning waits until it is released.
   const [scrubbing, setScrubbing] = useState(false);
+  // Playback holds after the slider is released until the map has settled on the new time.
+  const [resumeWait, setResumeWait] = useState(false);
+  /** The slider is grabbed or released. Released during playback: redraw at the new time, then play on from there. */
+  const onScrub = (v: boolean) => {
+    setScrubbing(v);
+    if (!v && playing) { setResumeWait(true); setSettleKey((k) => k + 1); }
+  };
   // Counts the moments the clock comes to rest (playback paused, slider released, a jump such as "back to start"),
   // 600 ms after the last change: the map then redraws all of our layers.
   const [settleKey, setSettleKey] = useState(0);
@@ -215,15 +222,29 @@ export function App() {
   const start = data ? Date.parse(data.entry.start) : 0;
   const end = data ? Date.parse(data.entry.end) : 0;
 
+  // Playback: scenario time follows the wall clock, one update per drawn frame at most (about TICK_MS apart). When
+  // the device is busy, frames are skipped and the next one jumps straight to the current time: the map never works
+  // through a backlog. Stopped while the slider is held (one source of time only) and until the map has settled on
+  // the time the slider was released at.
   useEffect(() => {
-    if (!playing) return;
-    const id = setInterval(() => setNow((t) => {
-      const next = t + speed * 3600000 * (TICK_MS / 1000);
-      if (next >= end) setPlaying(false);
-      return Math.min(next, end);
-    }), TICK_MS);
-    return () => clearInterval(id);
-  }, [playing, speed, end]);
+    if (!playing || scrubbing || resumeWait) return;
+    let raf = 0;
+    let last = performance.now();
+    const frame = (ts: number) => {
+      if (ts - last >= TICK_MS) {
+        const dt = ts - last;
+        last = ts;
+        setNow((t) => {
+          const next = t + speed * 3600000 * (dt / 1000);
+          if (next >= end) setPlaying(false);
+          return Math.min(next, end);
+        });
+      }
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, speed, end, scrubbing, resumeWait]);
 
   const graph = useMemo(() => (data ? buildGraph(data.streets.features) : null), [data]);
   const source: ForecastSource | null = useMemo(
@@ -665,6 +686,10 @@ export function App() {
   const mapProps = data && {
     data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
     forecastRunId, streetsVersion, fireVersion, concept: clusterStates, nowcast, lookAhead, onFirstIdle: () => setMapIdle(true), settleKey,
+    onSettled: () => {
+      (window as unknown as { __nsOnSettled?: () => void }).__nsOnSettled?.();   // test hook: the map as settled
+      setResumeWait(false);
+    },
   };
   const lookSwitch = (compact: boolean, style: React.CSSProperties) => nowcast && (
     <div role="group" aria-label="Look ahead" data-look-ahead={lookAhead} style={style}
@@ -806,7 +831,7 @@ export function App() {
               </div>
             </main>
             <TimeBar compact thin={landscape} start={start} end={end} now={now} playing={playing} speed={speed} timeZone={timeZone} marks={marks}
-              onSeek={setNow} onScrub={setScrubbing} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
+              onSeek={setNow} onScrub={onScrub} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
           </>
         )}
       </div>
@@ -906,7 +931,7 @@ export function App() {
             </div>
           )}
           <TimeBar start={start} end={end} now={now} playing={playing} speed={speed} timeZone={timeZone} marks={marks}
-            onSeek={setNow} onScrub={setScrubbing} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
+            onSeek={setNow} onScrub={onScrub} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
         </>
       )}
     </div>

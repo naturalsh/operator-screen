@@ -159,10 +159,12 @@ interface Props {
   onFirstIdle?: () => void;
   /** Changes when the clock comes to rest (playback paused, slider released): every layer of ours is redrawn. */
   settleKey?: number;
+  /** Called once the map has drawn the redraw asked for by `settleKey` (or after 1.5 s at the latest). */
+  onSettled?: () => void;
 }
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
-  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0 }: Props) {
+  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0, onSettled }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
@@ -193,6 +195,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   const latest = useRef({ now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId, concept, nowcast, lookAhead });
   latest.current = { now, layers, selectedId, nearIds, data, stages, routes, urgencyOf, vehicles, mode, nearbyIds, forecastRunId, concept, nowcast, lookAhead };
   // The nowcast changes every 30 minutes of scenario time (or when another forecast is in force): reload it then.
+  const latestSettled = useRef(onSettled);
+  latestSettled.current = onSettled;
   const nowcastKey = nowcast ? `${nowcast.run.id}|${nowcast.stepAt}|${nowcast.observed?.at}|${lookAhead}|${mode}` : '';
   const vehicleMarkers = useRef(new Map<string, maplibregl.Marker>());
 
@@ -746,6 +750,11 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     for (const id of ['fire', 'nowcast', 'streets', 'callers', 'report-points', 'clusters']) caches[id]?.reload();
     placeTags();
     map.triggerRepaint();
+    let done = false;
+    const finish = () => { if (!done) { done = true; latestSettled.current?.(); } };
+    const timer = setTimeout(finish, 1500);
+    map.once('idle', finish);
+    return () => { clearTimeout(timer); map.off('idle', finish); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settleKey]);
 
