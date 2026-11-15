@@ -379,6 +379,7 @@ into the real scenario:
   added, and acting at an earlier time drops later edits. Operator fires never enter the overlap (skill) table. At
   the next satellite pass the automatic update starts from the satellite edge alone; press Update forecast to bring
   the operator fires back in.
+- Sizes are diameters: point (~60 m, one model cell), about 100 m, about 500 m.
 - Why "the fire estimated now" and not the last satellite edge alone: when the last pass is hours old, starting from
   its edge at the current time would shrink the fire. The estimate is itself derived from that edge by the model.
 

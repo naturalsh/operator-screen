@@ -66,6 +66,8 @@ export function AddFireDialog({ vertices, size, onSize, cleared = 0, now, timeZo
             </button>
           ))}
         </div>
+        <span />
+        <span data-af-size-note className="text-[10px] text-ink-400">Sizes are across the fire (diameter); a point is one 60 m model cell.</span>
         <label htmlFor="af-note" className="text-ink-400">Note</label>
         <input id="af-note" data-af-note value={note} onChange={(e) => setNote(e.target.value)} maxLength={120} placeholder="e.g. flames on the ridge above the road"
           className="rounded bg-ink-800 px-1.5 py-1 text-ink-50" />

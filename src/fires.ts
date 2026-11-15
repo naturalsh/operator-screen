@@ -11,8 +11,9 @@ export type FireSource = 'crew' | 'drone' | 'caller' | 'other';
 export type FireSize = 'point' | '100m' | '500m' | 'drawn';
 
 export const SOURCE_LABEL: Record<FireSource, string> = { crew: 'field crew', drone: 'drone', caller: 'caller', other: 'other' };
-export const SIZE_LABEL: Record<FireSize, string> = { point: 'point', '100m': 'about 100 m', '500m': 'about 500 m', drawn: 'drawn area' };
-/** Radius of the disc for each size (a point is one model cell, 60 m). */
+/** Sizes are diameters (across the fire): a disc of 60 m (one model cell), 100 m or 500 m. */
+export const SIZE_LABEL: Record<FireSize, string> = { point: 'point (~60 m)', '100m': 'about 100 m', '500m': 'about 500 m', drawn: 'drawn area' };
+/** Radius of the disc for each size: half the diameter in SIZE_LABEL (a point is one model cell, 60 m across). */
 const RADIUS_M: Record<Exclude<FireSize, 'drawn'>, number> = { point: 30, '100m': 50, '500m': 250 };
 /** How far back the observation time may be set. */
 export const MAX_OBSERVED_AGO_MIN = 120;
