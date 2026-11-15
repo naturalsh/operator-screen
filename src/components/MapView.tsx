@@ -188,7 +188,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
   const popupRef = useRef<maplibregl.Popup | null>(null);
-  const [offline, setOffline] = useState(false);
+  // The map showing the packaged basemap (null: online tiles), for the "Packaged basemap" control.
+  const [packagedMap, setPackagedMap] = useState<MLMap | null>(null);
   // Streets with a "fire nearby" warning within NEARBY_RADIUS_M of the selected caller or an active route.
   const routesKey = routes.map((r) => `${r.reportId}:${r.edgeIds.length}:${r.edgeIds[0] ?? ''}`).join('|');
   const nearbyIds = useMemo(() => {
@@ -419,7 +420,6 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     let created: MLMap | null = null;
     resolveBasemap().then((basemap) => {
     if (cancelled) return;
-    setOffline(basemap.offline);
     const map = new maplibregl.Map({
       container: container.current!,
       style: basemap.style,
@@ -430,6 +430,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     });
     mapRef.current = map;
     created = map;
+    setPackagedMap(basemap.offline ? map : null);
     if (fitFire) {
       // Bounding box of the forecast contours, so a narrow screen starts on the fire.
       const box = new maplibregl.LngLatBounds();
@@ -871,16 +872,25 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.key]);
 
+  // "Packaged basemap": a map control in the bottom-right corner, so it stacks above the scale bar and the attribution
+  // instead of being placed over them.
+  useEffect(() => {
+    const map = packagedMap;
+    if (!map) return;
+    const el = document.createElement('div');
+    el.className = 'maplibregl-ctrl pointer-events-none whitespace-nowrap rounded bg-ink-800/90 px-2 py-1 text-right text-[11px] text-ink-200';
+    el.dataset.packagedBasemap = '';
+    // Short on phones (one line, so the corner stays low); the full note on wider screens.
+    el.innerHTML = 'Packaged basemap<span class="hidden md:inline"> (stored on this device, demo area only)</span>';
+    const ctrl: maplibregl.IControl = { onAdd: () => el, onRemove: () => el.remove() };
+    map.addControl(ctrl, 'bottom-right');
+    return () => { try { map.removeControl(ctrl); } catch { /* the map was removed */ } };
+  }, [packagedMap]);
+
   return (
     <>
       <div ref={container} className="h-full w-full" />
       <Legend mode={mode} nearby={layers.nearby} nowcast={nowcast} timeZone={data.entry.timezone ?? 'UTC'} />
-      {offline && (
-        <span data-packaged-basemap className="pointer-events-none absolute max-w-[60%] rounded bg-ink-800/90 px-2 py-1 text-right text-[11px] text-ink-200"
-          style={{ bottom: insetBottom + 44, right: insetRight + 8 }}>
-          Packaged basemap (stored on this device, demo area only)
-        </span>
-      )}
     </>
   );
 }

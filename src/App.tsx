@@ -201,6 +201,14 @@ export function App() {
   const [loads, setLoads] = useState<ForecastLoad[]>([]);
   // A short notice when the forecast updates itself at a new pass while the clock runs forward.
   const [toast, setToast] = useState<{ key: number; text: string; at: number } | null>(null);
+  /** Phone toast: placed above the map's bottom-right controls when they reach higher than its usual place. */
+  const placeToast = useCallback((el: HTMLDivElement | null) => {
+    if (!el || !el.style.bottom) return;
+    const box = el.parentElement?.getBoundingClientRect();
+    const ctrl = el.parentElement?.querySelector('.maplibregl-ctrl-bottom-right')?.getBoundingClientRect();
+    if (!box || !ctrl || !ctrl.height) return;
+    el.style.bottom = `${Math.max(124, Math.ceil(box.bottom - ctrl.top + 8))}px`;
+  }, []);
   const loadSeq = useRef(0);
   const [forecastBusy, setForecastBusy] = useState(false);
   const [fireVersion, setFireVersion] = useState(0);
@@ -898,8 +906,10 @@ export function App() {
       {toast && toast.at <= now && (
         <div key={toast.key} role="status" data-forecast-toast
           className="ns-toast pointer-events-none absolute z-20 rounded-lg border border-amber-300 bg-ink-900/95 px-3 py-1.5 text-xs font-bold text-amber-100 shadow-lg"
-          // Beside the forecast box on wide screens; on phones at the bottom, above the Look ahead switch, clear of the
-          // zoom buttons and the Legend button.
+          // Beside the forecast box on wide screens; on phones at the bottom, above the Look ahead switch and the map's
+          // bottom-right controls (scale, attribution, packaged-basemap note: measured, their height varies), clear of
+          // the zoom buttons and the Legend button.
+          ref={placeToast}
           style={compact ? { left: 8, right: 8, bottom: 124, textAlign: 'center' } : { left: 318, top: 44, maxWidth: 'calc(100% - 380px)' }}>
           {toast.text}
         </div>
