@@ -4,11 +4,12 @@
  * - init { base }: loads spread_model.json and spread_grid.bin(.gz) from the scenario folder.
  * - streets { streets: [id, [lon, lat][]][] }: cells within the safety buffer of each street (for reach times).
  * - run { id, t0, starts, modelStarts, runs, seed, maxHours }: an ensemble from the starting areas; replies with the
- *   contours every 30 minutes (horizon 0 = the start) and when the P >= 50 % area reaches each street.
+ *   contours every 30 minutes (horizon 0 = the start; outlines smoothed like the precomputed ones, areas and street
+ *   reach from the cells) and when the P >= 50 % area reaches each street.
  * - cancel { id }: drops a run (checked between Monte Carlo runs); the result of a dropped run is never sent.
  */
 import { ensemble, prepareGrid, type SpreadGrid, type SpreadModelFile } from './model';
-import { outline, rasterize, toCell, type GridGeo } from './geo';
+import { rasterize, smoothOutline, toCell, type GridGeo } from './geo';
 import type { Geometry } from 'geojson';
 
 let grid: SpreadGrid | null = null;
@@ -71,6 +72,7 @@ self.onmessage = async (e: MessageEvent) => {
       latest = m.id;
       const t = performance.now();
       const start = rasterize(geo, m.starts as Geometry[]);                       // observed / drawn areas
+      const operator = start.slice();                                             // never dropped from the outlines
       rasterize(geo, m.modelStarts as Geometry[], start, false);                  // model areas (the estimated fire)
       const p50 = await ensemble({
         grid, ignition: start, t0: m.t0, maxHours: m.maxHours, runs: m.runs, seed: m.seed,
@@ -83,12 +85,12 @@ self.onmessage = async (e: MessageEvent) => {
       const steps: { horizon: number; areaKm2: number; geometry: Geometry | null }[] = [];
       let startCells = 0;
       for (let i = 0; i < start.length; i++) startCells += start[i];
-      steps.push({ horizon: 0, areaKm2: startCells * res2, geometry: outline(geo, (i) => start[i] === 1) });
+      steps.push({ horizon: 0, areaKm2: startCells * res2, geometry: smoothOutline(geo, (i) => start[i] === 1, operator) });
       for (const h of grid.file.settings.horizons_hours) {
         if (h > m.maxHours) break;
         let n = 0;
         for (let i = 0; i < p50.length; i++) if (p50[i] <= h * 60) n++;
-        steps.push({ horizon: h, areaKm2: n * res2, geometry: outline(geo, (i) => p50[i] <= h * 60) });
+        steps.push({ horizon: h, areaKm2: n * res2, geometry: smoothOutline(geo, (i) => p50[i] <= h * 60, operator) });
       }
       // Reach: the first half hour at which the P >= 50 % area comes within the safety buffer of the street.
       const reach: [string, number][] = [];

@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { ensemble, prepareGrid, runMtt, weatherFrom, moistureBase, type SpreadModelFile } from '../src/spread/model';
-import { fromUtm, outline, rasterize, toUtm } from '../src/spread/geo';
+import { cleanMask, fromUtm, outline, rasterize, smoothOutline, toUtm, SMOOTH_MIN_HOLE_CELLS } from '../src/spread/geo';
 import type { Geometry } from 'geojson';
 
 const dir = new URL('../public/scenarios/marmaris_2022/', import.meta.url);
@@ -90,6 +90,82 @@ for (const c of fx.cases.filter((x) => /observation/.test(x.label))) {
   if (tripIou < 0.999) fail(`${c.label}: outline round trip IoU ${tripIou.toFixed(4)}`);
   if (!(libIou >= 0.9)) fail(`${c.label}: rasterized start contour IoU ${libIou.toFixed(3)}`);
 }
+
+// The smoothed outline drawn for a browser forecast: no crossing or touching edges, no small holes, close to the
+// cells it was made from, and to the Python-smoothed library contours.
+type Ring = number[][];
+const ringsOf = (g: Geometry | null): Ring[] => (!g ? [] : g.type === 'Polygon' ? g.coordinates : g.type === 'MultiPolygon' ? g.coordinates.flat() : []);
+function crossings(rings: Ring[]): number {
+  // Every pair of non-adjacent segments, bucketed on a coarse grid.
+  const segs: [number, number, number, number, number, number][] = [];
+  rings.forEach((r, ri) => { for (let i = 1; i < r.length; i++) segs.push([r[i - 1][0], r[i - 1][1], r[i][0], r[i][1], ri, i]); });
+  const cell = 0.002, buckets = new Map<string, number[]>();
+  segs.forEach((sg, k) => {
+    for (let x = Math.floor(Math.min(sg[0], sg[2]) / cell); x <= Math.floor(Math.max(sg[0], sg[2]) / cell); x++)
+      for (let y = Math.floor(Math.min(sg[1], sg[3]) / cell); y <= Math.floor(Math.max(sg[1], sg[3]) / cell); y++) {
+        const b = `${x},${y}`; (buckets.get(b) ?? buckets.set(b, []).get(b)!).push(k);
+      }
+  });
+  const orient = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number) => Math.sign((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
+  let n = 0; const done = new Set<string>();
+  for (const list of buckets.values()) for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const [a, b] = [segs[list[i]], segs[list[j]]];
+    const id = `${list[i]},${list[j]}`; if (done.has(id)) continue; done.add(id);
+    if (a[4] === b[4]) { const len = rings[a[4]].length - 1; const d = Math.abs(a[5] - b[5]); if (d <= 1 || d === len - 1) continue; }
+    const o1 = orient(a[0], a[1], a[2], a[3], b[0], b[1]), o2 = orient(a[0], a[1], a[2], a[3], b[2], b[3]);
+    const o3 = orient(b[0], b[1], b[2], b[3], a[0], a[1]), o4 = orient(b[0], b[1], b[2], b[3], a[2], a[3]);
+    if (o1 !== o2 && o3 !== o4) n++;
+  }
+  return n;
+}
+const holeCells = (g: Geometry | null) => {
+  let small = 0;
+  for (const poly of g?.type === 'Polygon' ? [g.coordinates] : g?.type === 'MultiPolygon' ? g.coordinates : [])
+    for (const h of poly.slice(1)) { const m = rasterize(gg, [{ type: 'Polygon', coordinates: [h] }], undefined, false); let k = 0; for (const x of m) k += x; if (k < SMOOTH_MIN_HOLE_CELLS / 2) small++; }
+  return small;
+};
+let smoothChecked = 0, worstCleanIou = 1, worstRawIou = 1, worstLibIou = 1, maxCross = 0, smallHoles = 0;
+for (const c of fx.cases) {
+  for (const [label, mask] of [['start', unbits(c.start)], ...fx.horizons_hours.map((h) => [`P50 ${h} h`, unbits(c.p50[key(h)])] as const)] as [string, Uint8Array][]) {
+    const g = smoothOutline(gg, (i) => mask[i] === 1);
+    const clean = cleanMask(gg.width, gg.height, (i) => mask[i] === 1);
+    const back = rasterize(gg, [g!], undefined, false);
+    const ci = iou((i) => back[i] === 1, (i) => clean[i] === 1), ri = iou((i) => back[i] === 1, (i) => mask[i] === 1);
+    const x = crossings(ringsOf(g));
+    worstCleanIou = Math.min(worstCleanIou, ci); worstRawIou = Math.min(worstRawIou, ri); maxCross = Math.max(maxCross, x);
+    smallHoles += holeCells(g);
+    if (x) fail(`${c.label} ${label}: smoothed outline has ${x} crossing segments`);
+    if (ci < 0.95) fail(`${c.label} ${label}: smoothed outline vs cleaned cells IoU ${ci.toFixed(3)}`);
+    if (ri < 0.9) fail(`${c.label} ${label}: smoothed outline vs cells IoU ${ri.toFixed(3)}`);
+    smoothChecked++;
+  }
+  // The same smoothing as the library (Python buffer/simplify) on the same start: the two outlines agree.
+  const f = lib.forecasts.find((x) => Math.abs(Date.parse(x.issued_at) - Date.parse(c.issued_at)) < 60000);
+  if (f) {
+    const mask = unbits(c.start);
+    const a = rasterize(gg, [smoothOutline(gg, (i) => mask[i] === 1)!], undefined, false);
+    const b = rasterize(gg, [f.contours.find((k) => k.horizon_hours === 0)!.geometry], undefined, false);
+    worstLibIou = Math.min(worstLibIou, iou((i) => a[i] === 1, (i) => b[i] === 1));
+  }
+}
+if (smallHoles) fail(`${smallHoles} holes under ${SMOOTH_MIN_HOLE_CELLS / 2} cells left in smoothed outlines`);
+if (worstLibIou < 0.9) fail(`smoothed start vs the library's smoothed start: IoU ${worstLibIou.toFixed(3)}`);
+// Small things: one burning cell keeps an outline; a one-cell hole is filled; a tiny far part is dropped unless kept.
+{
+  const W = gg.width, H = gg.height, at = (c: number, r: number) => r * W + c;
+  const one = new Uint8Array(W * H); one[at(80, 80)] = 1;
+  if (!smoothOutline(gg, (i) => one[i] === 1)) fail('a single burning cell lost its outline');
+  const ring = new Uint8Array(W * H);
+  for (let r = 40; r < 50; r++) for (let c = 40; c < 50; c++) ring[at(c, r)] = 1;
+  ring[at(45, 45)] = 0; ring[at(100, 100)] = 1;
+  const g = smoothOutline(gg, (i) => ring[i] === 1)!;
+  if (g.type !== 'Polygon' || g.coordinates.length !== 1) fail(`one-cell hole and one-cell far part should be gone: ${g.type} ${JSON.stringify(g.coordinates.map((p) => p.length))}`);
+  const keep = new Uint8Array(W * H); keep[at(100, 100)] = 1;
+  if (smoothOutline(gg, (i) => ring[i] === 1, keep)?.type !== 'MultiPolygon') fail('a kept far part (an operator-confirmed fire) was dropped');
+}
+console.log(`smoothed outlines: ${smoothChecked} masks; IoU vs cleaned cells >= ${worstCleanIou.toFixed(3)}, vs raw cells >= ${worstRawIou.toFixed(3)}; `
+  + `start vs library (Python-smoothed) >= ${worstLibIou.toFixed(3)}; crossing segments ${maxCross}`);
+
 console.log(`UTM round trip ${(utmErr * 1000).toFixed(2)} mm\n${geoRows.join('\n')}`);
 if (casesAt90 < 5) fail(`only ${casesAt90} cases with ensemble IoU >= 0.9 at every horizon (at least 5 required)`);
 console.log(`spread: ${fx.cases.length} cases against the Python model, ${casesAt90} with ensemble IoU >= 0.9 at every horizon; ${failures} failures`);

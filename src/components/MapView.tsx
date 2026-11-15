@@ -33,6 +33,8 @@ export const NOWCAST_COLOUR = '#2a1a14';
 export const NOWCAST_OPACITY = 0.5;
 export const FRONT_COLOUR = '#f0532b';
 export const FRONT_EDGE = '#ffe2d4';
+/** The front band: FRONT_COLOUR at 70 % over the dark map, drawn opaque. */
+export const FRONT_BAND_COLOUR = '#ae3f22';
 export const FRONT_WIDTH_M = 300;
 /** The band is at most this share of the fire's equivalent radius (a small fire gets a narrow band)... */
 export const FRONT_SHARE_OF_RADIUS = 0.2;
@@ -308,7 +310,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       map.setPaintProperty('front-band', 'line-width', w ? metresWidth(w) : 0);
       map.setPaintProperty('front-edges', 'line-gap-width', w ? metresWidth(w) : 0);
       map.setPaintProperty('front-edges', 'line-color', w ? FRONT_EDGE : FRONT_COLOUR);
-      map.setPaintProperty('front-edges', 'line-width', w ? 0.8 : 1.8);
+      map.setPaintProperty('front-edges', 'line-width', w ? 1.6 : 1.8);
       map.setPaintProperty('front-edges', 'line-opacity', w ? 0.75 : 0.95);
       (window as unknown as { __nsFrontWidthM?: number }).__nsFrontWidthM = w;    // for tests
     });
@@ -493,12 +495,16 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
 
       // The active front: a band of FRONT_WIDTH_M along the edge of the estimated fire (half inside, half outside: the
       // edge is an estimate), one colour, with thin light edges. Under the routes and callers.
-      map.addLayer({ id: 'front-band', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
-        layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: { 'line-color': FRONT_COLOUR, 'line-opacity': 0.7, 'line-width': metresWidth(FRONT_WIDTH_M) } });
+      // The light edges go under the opaque band, twice as wide: the half outside the band shows, while the loops a
+      // wide line's edge makes at tight inner bends stay hidden under the band.
       map.addLayer({ id: 'front-edges', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
         layout: { 'line-join': 'round' },
-        paint: { 'line-color': FRONT_EDGE, 'line-opacity': 0.75, 'line-width': 0.8, 'line-gap-width': metresWidth(FRONT_WIDTH_M) } });
+        paint: { 'line-color': FRONT_EDGE, 'line-opacity': 0.75, 'line-width': 1.6, 'line-gap-width': metresWidth(FRONT_WIDTH_M) } });
+      map.addLayer({ id: 'front-band', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        // Opaque, in the colour the 70 % band had over the dark map: a see-through wide line draws its overlaps at
+        // bends twice (bright wedges at every sharp corner of the outline).
+        paint: { 'line-color': FRONT_BAND_COLOUR, 'line-opacity': 1, 'line-width': metresWidth(FRONT_WIDTH_M) } });
       // Small separate parts of the estimated fire: a small mark, no front band.
       map.addLayer({ id: 'nowcast-spots', type: 'circle', source: 'nowcast', filter: ['==', ['get', 'role'], 'spot'],
         paint: { 'circle-radius': 3, 'circle-color': FRONT_COLOUR, 'circle-opacity': 0.85, 'circle-stroke-color': FRONT_EDGE, 'circle-stroke-width': 0.8 } });

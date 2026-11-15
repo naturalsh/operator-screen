@@ -181,3 +181,158 @@ export function outline(g: GridGeo, on: (i: number) => boolean, tolCells = 0.5):
   if (!coords.length) return null;
   return coords.length === 1 ? { type: 'Polygon', coordinates: coords[0] } : { type: 'MultiPolygon', coordinates: coords };
 }
+
+/** What `smoothOutline` drops: holes and separate parts smaller than this many cells (60 m cells: 0.0036 km² each). */
+export const SMOOTH_MIN_HOLE_CELLS = 12;
+export const SMOOTH_MIN_PART_CELLS = 3;
+
+/** Labels the 4-connected components of `want(i)` cells; returns the component id per cell (-1: not wanted) and sizes. */
+function components(W: number, H: number, want: (i: number) => boolean): { id: Int32Array; size: number[]; touchesBorder: boolean[] } {
+  const id = new Int32Array(W * H).fill(-1);
+  const size: number[] = [], touchesBorder: boolean[] = [];
+  const stack: number[] = [];
+  for (let s = 0; s < W * H; s++) {
+    if (id[s] >= 0 || !want(s)) continue;
+    const k = size.length; size.push(0); touchesBorder.push(false);
+    id[s] = k; stack.push(s);
+    while (stack.length) {
+      const i = stack.pop()!, c = i % W, r = (i - c) / W;
+      size[k]++;
+      if (c === 0 || r === 0 || c === W - 1 || r === H - 1) touchesBorder[k] = true;
+      if (c > 0 && id[i - 1] < 0 && want(i - 1)) { id[i - 1] = k; stack.push(i - 1); }
+      if (c < W - 1 && id[i + 1] < 0 && want(i + 1)) { id[i + 1] = k; stack.push(i + 1); }
+      if (r > 0 && id[i - W] < 0 && want(i - W)) { id[i - W] = k; stack.push(i - W); }
+      if (r < H - 1 && id[i + W] < 0 && want(i + W)) { id[i + W] = k; stack.push(i + W); }
+    }
+  }
+  return { id, size, touchesBorder };
+}
+
+/**
+ * The cell mask cleaned the way the precomputed contours are (shapely buffer(+60 m).buffer(-60 m)): a one-cell
+ * closing (fills one-cell notches and gaps), holes under SMOOTH_MIN_HOLE_CELLS filled, separate parts under
+ * SMOOTH_MIN_PART_CELLS dropped unless they hold a `keep` cell (an operator-confirmed fire is never dropped).
+ */
+export function cleanMask(W: number, H: number, on: (i: number) => boolean, keep?: Uint8Array): Uint8Array {
+  const m = new Uint8Array(W * H);
+  for (let i = 0; i < m.length; i++) m[i] = on(i) ? 1 : 0;
+  // Closing with the 4-neighbour cross: dilate, then erode (the grid edge counts as burning, so a fire at the edge
+  // is not eaten away).
+  const d = new Uint8Array(m.length);
+  for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+    const i = r * W + c;
+    d[i] = m[i] | (c > 0 ? m[i - 1] : 0) | (c < W - 1 ? m[i + 1] : 0) | (r > 0 ? m[i - W] : 0) | (r < H - 1 ? m[i + W] : 0);
+  }
+  const closed = new Uint8Array(m.length);
+  for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+    const i = r * W + c;
+    closed[i] = m[i] | (d[i] & (c > 0 ? d[i - 1] : 1) & (c < W - 1 ? d[i + 1] : 1) & (r > 0 ? d[i - W] : 1) & (r < H - 1 ? d[i + W] : 1));
+  }
+  // Small holes (unburned pockets not reaching the grid edge) filled.
+  const holes = components(W, H, (i) => !closed[i]);
+  for (let i = 0; i < closed.length; i++) {
+    const k = holes.id[i];
+    if (k >= 0 && !holes.touchesBorder[k] && holes.size[k] < SMOOTH_MIN_HOLE_CELLS) closed[i] = 1;
+  }
+  // Small separate parts dropped (never the only part, never one with a `keep` cell).
+  const parts = components(W, H, (i) => closed[i] === 1);
+  if (parts.size.length > 1) {
+    const kept = parts.size.map((s) => s >= SMOOTH_MIN_PART_CELLS);
+    if (keep) for (let i = 0; i < keep.length; i++) if (keep[i] && parts.id[i] >= 0) kept[parts.id[i]] = true;
+    if (!kept.some(Boolean)) kept[parts.size.indexOf(Math.max(...parts.size))] = true;
+    for (let i = 0; i < closed.length; i++) if (parts.id[i] >= 0 && !kept[parts.id[i]]) closed[i] = 0;
+  }
+  return closed;
+}
+
+/**
+ * Marching squares over cell centres (threshold 0.5; a saddle joins the two burning cells), so the outline runs
+ * through the midpoints between burning and unburning cells: 45° steps instead of 60 m stairs. Rings never cross
+ * or touch (rings of different parts stay at least half a cell apart). Coordinates in cell-corner units.
+ */
+function marchingRings(W: number, H: number, mask: Uint8Array): [number, number][][] {
+  const v = (c: number, r: number) => (c < 0 || r < 0 || c >= W || r >= H ? 0 : mask[r * W + c]);
+  // Doubled cell-centre coordinates: the square (x, y) has corners at the centres of cells (x, y) .. (x+1, y+1),
+  // i.e. (2x, 2y) .. (2x+2, 2y+2); its edge midpoints are T, R, B, L.
+  type P = [number, number];
+  const T = (x: number, y: number): P => [2 * x + 1, 2 * y], R = (x: number, y: number): P => [2 * x + 2, 2 * y + 1];
+  const B = (x: number, y: number): P => [2 * x + 1, 2 * y + 2], L = (x: number, y: number): P => [2 * x, 2 * y + 1];
+  type E = typeof T;
+  const TABLE: Record<number, [E, E][]> = {
+    1: [[L, B]], 2: [[B, R]], 3: [[L, R]], 4: [[T, R]], 5: [[L, T], [R, B]], 6: [[T, B]], 7: [[L, T]], 8: [[L, T]],
+    9: [[T, B]], 10: [[T, R], [L, B]], 11: [[T, R]], 12: [[L, R]], 13: [[B, R]], 14: [[L, B]],
+  };
+  const key = (p: P) => (p[0] + 4) * 1048576 + (p[1] + 4);
+  const next = new Map<number, [P, P]>();
+  for (let y = -1; y < H; y++) for (let x = -1; x < W; x++) {
+    const a = v(x, y), b = v(x + 1, y), c = v(x + 1, y + 1), d = v(x, y + 1);
+    const segs = TABLE[a * 8 + b * 4 + c * 2 + d];
+    if (!segs) continue;
+    const corners: [number, number, number][] = [[2 * x, 2 * y, a], [2 * x + 2, 2 * y, b], [2 * x + 2, 2 * y + 2, c], [2 * x, 2 * y + 2, d]];
+    for (const [e1, e2] of segs) {
+      let p = e1(x, y), q = e2(x, y);
+      // Orient every segment the same way round the burning cells (they are all on one side of it).
+      const cross = (cx: number, cy: number) => (q[0] - p[0]) * (cy - p[1]) - (q[1] - p[1]) * (cx - p[0]);
+      const on = corners.find(([cx, cy, val]) => val === 1 && cross(cx, cy) !== 0)!;
+      if (cross(on[0], on[1]) < 0) [p, q] = [q, p];
+      next.set(key(p), [p, q]);
+    }
+  }
+  const rings: [number, number][][] = [];
+  const seen = new Set<number>();
+  for (const [k0] of next) {
+    if (seen.has(k0)) continue;
+    const ring: [number, number][] = [];
+    let k = k0;
+    while (!seen.has(k)) {
+      const seg = next.get(k);
+      if (!seg) break;
+      seen.add(k);
+      ring.push([seg[0][0] / 2, seg[0][1] / 2]);
+      k = key(seg[1]);
+    }
+    ring.push(ring[0]);
+    if (ring.length >= 4) rings.push(ring);
+  }
+  return rings;
+}
+
+/** Chaikin corner cutting on a closed ring (`n` rounds). */
+export function chaikin(ring: [number, number][], n: number): [number, number][] {
+  let pts = ring.slice(0, -1);
+  for (let k = 0; k < n; k++) {
+    const out: [number, number][] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length];
+      out.push([0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by], [0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by]);
+    }
+    pts = out;
+  }
+  return [...pts, pts[0]];
+}
+
+/**
+ * The outline drawn on the map for a model area: the mask cleaned (`cleanMask`), traced with marching squares,
+ * then two rounds of Chaikin and a light simplification, so a browser forecast looks as calm as a precomputed one
+ * (whose contours get buffer(+60 m).buffer(-60 m).simplify(30 m) in Python). Areas and street reach are still
+ * computed from the cells, not from this outline.
+ */
+export function smoothOutline(g: GridGeo, on: (i: number) => boolean, keep?: Uint8Array): Polygon | MultiPolygon | null {
+  const W = g.width, H = g.height;
+  const mask = cleanMask(W, H, on, keep);
+  // Cell-centre coordinates are corner coordinates + 0.5: marchingRings works on doubled centre-based indexes.
+  const rings = marchingRings(W, H, mask).map((r) => simplify(chaikin(r.map(([x, y]) => [x + 0.5, y + 0.5] as [number, number]), 2), 0.08));
+  if (!rings.length) return null;
+  // Outer rings and holes by orientation (the largest ring is an outer one).
+  const big = rings.reduce((a, r) => (Math.abs(ringArea(r)) > Math.abs(ringArea(a)) ? r : a));
+  const outerSign = Math.sign(ringArea(big));
+  const outers = rings.filter((r) => Math.sign(ringArea(r)) === outerSign), holes = rings.filter((r) => Math.sign(ringArea(r)) !== outerSign);
+  const polys = outers.map((o) => [o]);
+  for (const h of holes) {
+    const host = polys.filter((p) => inside(h[0], p[0])).sort((a, b) => Math.abs(ringArea(a[0])) - Math.abs(ringArea(b[0])))[0];
+    if (host) host.push(h);
+  }
+  const toLL = (r: [number, number][]) => r.map(([c, rr]) => { const [lon, lat] = fromCell(g, c, rr); return [Math.round(lon * 1e5) / 1e5, Math.round(lat * 1e5) / 1e5]; });
+  const coords = polys.map((p) => p.map(toLL));
+  return coords.length === 1 ? { type: 'Polygon', coordinates: coords[0] } : { type: 'MultiPolygon', coordinates: coords };
+}
