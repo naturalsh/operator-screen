@@ -347,6 +347,65 @@ the fire repository caches, requested for 21-25 June (`tools/weather/marmaris_20
 repository's copy ends on 23 June), so forecasts can be issued until the end of the scenario (24 June 04:00 local).
 The model has no suppression, so late updates over-predict.
 
+## Operator-confirmed fires and the in-browser model
+
+**Add fire** (top bar) lets the operator put a fire reported by a field crew, a drone, a caller or another source
+into the real scenario:
+
+- Click the map for a point, or click three or more points to draw its area. The box asks for the source, when it
+  was seen (now, or up to 2 hours earlier), its rough size (point, about 100 m, about 500 m, or the drawn area) and a
+  short note. **Confirm** adds it to the decision log and to the map, with its own orange area, a white dashed edge
+  and a label: "Operator-confirmed fire · crew · 22:40". Drag the label to move the fire; its ✕ deletes it. Moves
+  and deletions are logged too.
+- Each change recomputes the forecast **in this browser**: from the fire the forecast in force estimates for that
+  moment (built from the last satellite edge) plus every operator-confirmed fire, with the scenario's weather from
+  then on. The forecast box then says **LIVE IN BROWSER** and "Last updated 22:41 · satellite 21:05 + 1
+  operator-confirmed fire"; fire now, the look-ahead line, the forecast closures, the route warnings and the crews'
+  routes follow it. Deleting the last operator fire brings back the forecast without it.
+- **Update forecast** uses the browser model too (re-run with the current weather); the precomputed forecasts stay
+  as the fallback (and for the CONCEPT DEMO reports, whose forecasts were precomputed). A confirmed CONCEPT DEMO
+  report can be added the same way ("Add as confirmed fire").
+- Rules: like everything on the screen an operator fire follows the clock. It is not shown before the moment it was
+  added, and acting at an earlier time drops later edits. Operator fires never enter the overlap (skill) table. At
+  the next satellite pass the automatic update starts from the satellite edge alone; press Update forecast to bring
+  the operator fires back in.
+- Why "the fire estimated now" and not the last satellite edge alone: when the last pass is hours old, starting from
+  its edge at the current time would shrink the fire. The estimate is itself derived from that edge by the model.
+
+**The model in the browser** (`src/spread/`): the fire repository's simplified Rothermel spread rate, the Anderson
+length-to-breadth ellipse, the 16-neighbour Minimum Travel Time and the Monte Carlo ensemble (40 runs), ported to
+TypeScript and run in a Web Worker. Its inputs come from `tools/export_spread_grid.py`: the model grid (60 m,
+157 × 270 cells, UTM 35N) with the WorldCover class, slope and aspect per cell (`spread_grid.bin.gz`, 146 kB), and
+the fuel parameters, settings and hourly weather (`spread_model.json`); both are in the offline package. An update
+takes 0.1–0.8 s on a laptop (a few seconds on a phone). A newer change cancels a computation still running
+(`LatestRequest`, checked between Monte Carlo runs).
+
+**Checked against the Python model** (`tools/compare_spread.py` writes the reference cases, `tests/spread.test.ts`
+compares; IoU = intersection over union of the cells):
+
+| Case | One run without perturbation: IoU (worst horizon) | 40-run ensemble, P ≥ 50 %: IoU at 30 min / 1 / 2 / 3 / 6 / 12 h |
+|---|---:|---|
+| ignition (ignition point) | 1.000 | 1.000 / 1.000 / 0.973 / 0.960 / 0.855 / 0.766 |
+| observation 21 Jun 23:22 (library) | 1.000 | 0.984 / 0.979 / 0.962 / 0.943 / 0.941 / 0.909 |
+| observation 22 Jun 01:02 (library) | 1.000 | 0.990 / 0.986 / 0.976 / 0.964 / 0.950 / 0.920 |
+| re-run 22 Jun 06:00, chained (library) | 0.999 | 0.996 / 0.993 / 0.986 / 0.979 / 0.962 / 0.944 |
+| observation 22 Jun 10:43 (library) | 1.000 | 0.988 / 0.986 / 0.978 / 0.971 / 0.970 / 0.952 |
+| observation 23 Jun 08:46 (library) | 1.000 | 0.996 / 0.990 / 0.986 / 0.981 / 0.971 / 0.947 |
+| 23 Jun 09:00, perimeter + 500 m operator fire | 1.000 | 0.996 / 0.989 / 0.986 / 0.981 / 0.967 / 0.942 |
+
+A single run matches the Python code cell by cell. The ensembles draw their random numbers differently (NumPy's
+generator is not reproduced), so they agree statistically: six of seven cases at IoU ≥ 0.9 at every horizon. The
+seventh is the tiny fire at ignition, where 40 runs are noisy: two browser ensembles with different seeds agree
+only to 0.80 / 0.74 at 6 / 12 h themselves, and with 400 runs the browser and Python agree to 0.991 / 0.972.
+
+![Add fire](docs/f_add_dialog.png)
+
+| Before | After (the fire on the route: "Route may be cut by fire") |
+|---|---|
+| ![before](docs/f_before.png) | ![after](docs/f_after.png) |
+
+Decision log: [docs/f_log.png](docs/f_log.png); phone: [dialog](docs/f_phone_dialog.png), [after](docs/f_phone_after.png).
+
 ## Fire reports from people (CONCEPT DEMO)
 
 **CONCEPT DEMO · synthetic reports derived from later satellite passes.** Off by default; turn on "Concept demo:

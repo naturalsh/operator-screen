@@ -15,6 +15,9 @@ const ACTION_LABEL: Record<Decision['action'], string> = {
   update_forecast: 'Forecast loaded',
   confirm_report: 'Fire report confirmed',
   ask_confirmation: 'Asked: is the fire still there?',
+  add_fire: 'Operator-confirmed fire added',
+  move_fire: 'Operator-confirmed fire moved',
+  delete_fire: 'Operator-confirmed fire deleted',
 };
 
 interface Props {

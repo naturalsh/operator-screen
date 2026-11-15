@@ -134,7 +134,8 @@ export interface Decision {
   operator: string;
   report_id: string;
   action: 'take' | 'confirm_urgency' | 'dispatch' | 'dispatch_no_access' | 'dispatch_no_crew' | 'reroute' | 'reroute_no_access'
-    | 'reassign' | 'unassigned' | 'settings' | 'update_forecast' | 'confirm_report' | 'ask_confirmation';
+    | 'reassign' | 'unassigned' | 'settings' | 'update_forecast' | 'confirm_report' | 'ask_confirmation'
+    | 'add_fire' | 'move_fire' | 'delete_fire';
   previous: string | null;
   new: string | null;
   note?: string;

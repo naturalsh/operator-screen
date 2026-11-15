@@ -95,3 +95,8 @@ body { background: #07090d; color: #f2f6fb; font-size: 14px; }
 .ns-fire-tag[data-role="obs"] { color: #0b0f17; background: rgba(255, 255, 255, 0.92); }
 .ns-fire-tag[data-role="now"] { background: rgba(240, 83, 43, 0.92); }
 .ns-fire-tag[data-role="look"] { color: #1c1917; background: rgba(250, 204, 21, 0.95); }
+
+/* Operator-confirmed fire label: drag it to move the fire, ✕ deletes it (MapView). */
+.ns-opfire { display: flex; align-items: center; gap: 4px; cursor: grab; white-space: nowrap; font: 600 11px/1.2 system-ui, sans-serif;
+  color: #1c1917; background: #ffb067; border: 1.5px solid #fff; border-radius: 4px; padding: 1px 2px 1px 6px; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+.ns-opfire-del { border: 0; background: rgba(0,0,0,.18); color: #1c1917; border-radius: 3px; width: 18px; height: 18px; line-height: 18px; padding: 0; cursor: pointer; }

@@ -27,7 +27,8 @@ export interface ForecastRun {
   contours: { horizon: number; validAt: number; areaKm2: number }[];
   /** Street id -> time (epoch ms) at which the P >= 50 % contour reaches it, to the half hour, within 12 h. */
   reach: Map<string, number>;
-  source: 'precomputed' | 'live';
+  /** precomputed: the library; live: a model server; browser: the in-browser model (src/spread). */
+  source: 'precomputed' | 'live' | 'browser';
   /** E.g. why the live model was not used. */
   sourceNote?: string;
   /** FireFront features of the shown horizons (+30 min / +1 / +2 / +3 / +6 h). */

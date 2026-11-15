@@ -32,7 +32,7 @@ export default defineConfig({
       injectRegister: false,
       manifest: false,
       workbox: {
-        globPatterns: ['**/*.{js,css,html,json,geojson,pbf,png,svg,ico,txt,woff,woff2}'],
+        globPatterns: ['**/*.{js,css,html,json,geojson,pbf,png,svg,ico,txt,woff,woff2,bin,gz}'],
         globIgnores: ['version.json'],
         // street_access.geojson is about 9 MB.
         maximumFileSizeToCacheInBytes: 16 * 1024 * 1024,

@@ -18,16 +18,25 @@ interface Props {
   compact?: boolean;
   /** "Fire now (estimated)" at the time shown. */
   nowcast?: Nowcast | null;
+  /** The in-browser model: loading / ready / failed, and the runs done of a computation in progress. */
+  modelState?: 'off' | 'loading' | 'ready' | 'failed';
+  modelBusy?: { done: number; total: number } | null;
   onUpdate: () => void;
 }
 
-const SOURCE_LABEL = { precomputed: 'PRECOMPUTED', live: 'LIVE MODEL' } as const;
+const SOURCE_LABEL = { precomputed: 'PRECOMPUTED', live: 'LIVE MODEL', browser: 'LIVE IN BROWSER' } as const;
 
 /** "Last updated 04:02 from VIIRS N20" and the like: when and why the forecast in force was loaded. */
 export function lastUpdated(load: ForecastLoad, t: (x: number) => string): string {
   const run = load.run;
   if (load.kind === 'opening') return `Made at ignition, ${t(run.issuedAt)}`;
   if (load.kind === 'auto') return `Last updated ${t(load.at)} from ${run.lastObsLabel ?? 'the latest pass'}`;
+  if (run.source === 'browser') {
+    const n = (run as { operatorFires?: string[] }).operatorFires?.length ?? 0;
+    const clock = (x: number) => t(x).split(', ')[1];
+    return `Last updated ${clock(load.at)} · ${run.lastObsAt != null ? `satellite ${clock(run.lastObsAt)}` : 'ignition point'}`
+      + (n ? ` + ${n} operator-confirmed fire${n > 1 ? 's' : ''}` : ' + model (re-run)');
+  }
   return `Last updated ${t(load.at)} by the operator`;
 }
 
@@ -35,7 +44,7 @@ export function lastUpdated(load: ForecastLoad, t: (x: number) => string): strin
  * The forecast in force and the operator's "Update forecast" button (map overlay, top left). The forecast updates
  * itself at every new satellite pass; the button re-runs it with the weather at the time shown.
  */
-export function ForecastControl({ load, previous, updateTo, blockedNote, newReports = 0, sourceKind, busy, timeZone, compact, nowcast, onUpdate }: Props) {
+export function ForecastControl({ load, previous, updateTo, blockedNote, newReports = 0, sourceKind, busy, timeZone, compact, nowcast, modelState = 'off', modelBusy, onUpdate }: Props) {
   const [open, setOpen] = useState(!compact);
   const run = load?.run;
   const t = (x: number) => fmtTime(x, timeZone);
@@ -51,7 +60,8 @@ export function ForecastControl({ load, previous, updateTo, blockedNote, newRepo
   }
   const what = newReports > 0
     ? `with ${newReports} confirmed report${newReports > 1 ? 's' : ''} (CONCEPT DEMO)`
-    : `re-run with current weather at ${updateTo ? t(updateTo.issuedAt) : '—'}`;
+    : modelState === 'ready' ? 'computed now in this browser, with the current weather'
+      : `re-run with current weather at ${updateTo ? t(updateTo.issuedAt) : '—'} (precomputed)`;
   return (
     <div data-forecast-control="open" data-forecast-run={run?.id ?? ''} data-forecast-issued={run?.issuedAt ?? ''}
       className={`absolute left-2 top-2 z-10 rounded-lg border border-ink-600 bg-ink-900/90 p-2.5 text-xs text-ink-100 shadow-lg backdrop-blur ${compact ? 'w-[min(300px,calc(100%-70px))]' : 'w-[300px]'}`}>
@@ -61,7 +71,7 @@ export function ForecastControl({ load, previous, updateTo, blockedNote, newRepo
           title={sourceKind === 'precomputed'
             ? 'Computed in advance with the fire model for every new satellite pass and every 30 minutes; a static site cannot run the model.'
             : 'Computed now by the model server.'}>
-          {run?.source === 'live' ? SOURCE_LABEL.live : SOURCE_LABEL.precomputed}
+          {SOURCE_LABEL[run?.source ?? 'precomputed']}
         </span>
         {compact && <button onClick={() => setOpen(false)} aria-label="Close forecast panel" className="ml-auto px-1 text-ink-400">✕</button>}
       </div>
@@ -108,6 +118,10 @@ export function ForecastControl({ load, previous, updateTo, blockedNote, newRepo
           <span>Update forecast</span>
           <span data-update-what className="text-[11px] font-normal">{what}</span>
         </button>
+        {modelBusy && (
+          <div data-model-busy className="mt-1 text-orange-200">Computing in this browser… {modelBusy.done}/{modelBusy.total} runs</div>
+        )}
+        {modelState === 'failed' && <div className="mt-1 text-amber-300">The browser model could not load: precomputed forecasts only.</div>}
         <div className="mt-1 text-ink-400" data-auto-note>
           Updates automatically at each new VIIRS or Sentinel-2 pass{load?.kind === 'auto' ? ` (last: ${autoLabel(load.run).replace('new ', '')}, ${t(load.at)})` : ''}.
         </div>

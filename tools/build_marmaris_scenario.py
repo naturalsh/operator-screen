@@ -198,7 +198,8 @@ def forecast_runner(fire_root: Path, cfg: dict) -> dict:
         if float(fc.get("R0_m_per_min", 0.0)) > 0.0:
             fc["R0_m_per_min"] = round(float(fc["R0_m_per_min"]) * float(spec.r0_multiplier), 4)
     dem = fetch_dem(cfg, grid)
-    fuel = map_landcover_to_fuel(fetch_landcover(cfg, grid), run_cfg)
+    landcover = fetch_landcover(cfg, grid)
+    fuel = map_landcover_to_fuel(landcover, run_cfg)
     wx = parse_open_meteo_json(WEATHER.read_text(encoding="utf-8"), mode="historical_forecast")
     wx_end = pd.Timestamp(wx["time"].max()).to_pydatetime()
 
@@ -253,7 +254,8 @@ def forecast_runner(fire_root: Path, cfg: dict) -> dict:
                 "last_obs": None if last is None else last["_t"].to_pydatetime(),
                 "last_obs_label": None if last is None else obs_label(last)}
 
-    return {"run": run, "fine": fine, "t0": t0, "wx_end": wx_end, "run_cfg": run_cfg, "grid": grid, "spec": spec}
+    return {"run": run, "fine": fine, "t0": t0, "wx_end": wx_end, "run_cfg": run_cfg, "grid": grid, "spec": spec,
+            "landcover": landcover, "fuel": fuel, "dem": dem, "wx": wx}
 
 
 def chained_runs(r: dict, issues: list[tuple[datetime, str]], extra=None, starts: dict | None = None):

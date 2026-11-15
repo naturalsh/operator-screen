@@ -10,6 +10,7 @@ import { resolveBasemap } from '../basemap';
 import { CONCEPT_LABEL, STATEMENT_LABEL, circle, type ClusterState } from '../reports';
 import { CREW_STATUS_COLOUR, type CrewStatus } from '../crews';
 import { SourceQueue } from '../sourceQueue';
+import { centre } from '../fires';
 import { lookLabel, nowcastSource, type Nowcast } from '../forecast';
 import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
 
@@ -82,6 +83,9 @@ const LAYER_GROUPS: Record<LayerKey, string[]> = {
   crews: ['routes-casing', 'routes', 'routes-cut', 'responders', 'responders-label'],
   concept: ['report-points', 'cluster-fill', 'cluster-line', 'cluster-line-confirmed', 'cluster-label'],
 };
+
+/** Operator-confirmed fires (added on this screen). */
+export const OPERATOR_FIRE_COLOUR = '#ff8a1f';
 
 /** CONCEPT DEMO colour (reports from people). */
 export const REPORT_COLOUR = '#a78bfa';
@@ -161,10 +165,19 @@ interface Props {
   settleKey?: number;
   /** Called once the map has drawn the redraw asked for by `settleKey` (or after 1.5 s at the latest). */
   onSettled?: () => void;
+  /** Operator-confirmed fires on the map at the time shown (geometry and label). */
+  operatorFires?: { id: string; geometry: GeoJSON.Polygon; label: string }[];
+  /** Points of a fire being drawn ("Add fire"); while set, map clicks add points instead of opening popups. */
+  drawing?: [number, number][] | null;
+  onDrawClick?: (lngLat: [number, number]) => void;
+  /** An operator fire dragged by its label (move by dLon, dLat) or deleted with its ✕. */
+  onMoveFire?: (id: string, dLon: number, dLat: number) => void;
+  onDeleteFire?: (id: string) => void;
 }
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
-  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0, onSettled }: Props) {
+  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0, onSettled,
+  operatorFires = [], drawing = null, onDrawClick, onMoveFire, onDeleteFire }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ready = useRef(false);
@@ -197,6 +210,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   // The nowcast changes every 30 minutes of scenario time (or when another forecast is in force): reload it then.
   const latestSettled = useRef(onSettled);
   latestSettled.current = onSettled;
+  const handlers = useRef({ onDrawClick, onMoveFire, onDeleteFire, drawing });
+  handlers.current = { onDrawClick, onMoveFire, onDeleteFire, drawing };
   const nowcastKey = nowcast ? `${nowcast.run.id}|${nowcast.stepAt}|${nowcast.observed?.at}|${lookAhead}|${mode}` : '';
   const vehicleMarkers = useRef(new Map<string, maplibregl.Marker>());
 
@@ -554,6 +569,20 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           'text-padding': 4, 'symbol-sort-key': ['get', 'rank'] },
         paint: { 'text-color': '#f2f6fb', 'text-halo-color': '#07090d', 'text-halo-width': 1.5 } });
 
+      // Operator-confirmed fires: orange area with a white dashed edge (apart from the model's front and the
+      // satellites), and a fire being drawn (points and the polygon so far).
+      map.addSource('operator-fires', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('draft', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({ id: 'opfire-fill', type: 'fill', source: 'operator-fires', paint: { 'fill-color': OPERATOR_FIRE_COLOUR, 'fill-opacity': 0.45 } }, 'callers-shadow');
+      map.addLayer({ id: 'opfire-line', type: 'line', source: 'operator-fires', layout: { 'line-join': 'round' },
+        paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-dasharray': [2, 1.2] } }, 'callers-shadow');
+      map.addLayer({ id: 'draft-fill', type: 'fill', source: 'draft', filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': OPERATOR_FIRE_COLOUR, 'fill-opacity': 0.3 } });
+      map.addLayer({ id: 'draft-line', type: 'line', source: 'draft', filter: ['!=', ['geometry-type'], 'Point'],
+        paint: { 'line-color': '#ffffff', 'line-width': 1.5, 'line-dasharray': [1, 1] } });
+      map.addLayer({ id: 'draft-points', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'],
+        paint: { 'circle-radius': 5, 'circle-color': OPERATOR_FIRE_COLOUR, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 } });
+
       const ign = data.fireMeta.ignition;
       if (ign) {
         const el = document.createElement('div');
@@ -573,6 +602,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           : p.basis === 'satellite' ? '<span class="model-tag">SATELLITE</span>'
             : p.basis === 'fire_model_and_satellite' ? `<span class="model-tag">${modelLabel(latest.current.data.streetsMeta)}</span>` : '');
       map.on('click', (e) => {
+        // Drawing a fire: the click is a point of it, nothing else.
+        if (handlers.current.drawing) { handlers.current.onDrawClick?.([e.lngLat.lng, e.lngLat.lat]); return; }
         const hit = map.queryRenderedFeatures(e.point, { layers: CLICKABLE.filter((id) => map.getLayer(id)) })
           .sort((a, b) => CLICKABLE.indexOf(a.layer.id) - CLICKABLE.indexOf(b.layer.id))[0];
         if (!hit) return;
@@ -757,6 +788,50 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     return () => { clearTimeout(timer); map.off('idle', finish); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settleKey]);
+
+  // Operator-confirmed fires: the area (one in-flight update, latest wins) and a draggable label with a ✕ each.
+  const fireMarkers = useRef(new Map<string, maplibregl.Marker>());
+  const firesKey = operatorFires.map((f) => `${f.id}:${f.label}:${JSON.stringify(f.geometry.coordinates[0][0])}`).join('|');
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready.current) return;
+    queue.current?.set('operator-fires', { type: 'FeatureCollection',
+      features: operatorFires.map((f) => ({ type: 'Feature', geometry: f.geometry, properties: { id: f.id } })) });
+    for (const [id, m] of fireMarkers.current) if (!operatorFires.some((f) => f.id === id)) { m.remove(); fireMarkers.current.delete(id); }
+    for (const f of operatorFires) {
+      const at = centre(f.geometry);
+      let m = fireMarkers.current.get(f.id);
+      if (!m) {
+        const el = document.createElement('div');
+        el.className = 'ns-opfire';
+        el.dataset.operatorFire = f.id;
+        el.innerHTML = '<span class="ns-opfire-text"></span><button type="button" class="ns-opfire-del" aria-label="Delete this fire">✕</button>';
+        el.querySelector('button')!.addEventListener('click', (ev) => { ev.stopPropagation(); handlers.current.onDeleteFire?.(f.id); });
+        m = new maplibregl.Marker({ element: el, draggable: true, anchor: 'bottom' }).setLngLat(at).addTo(map);
+        const marker = m;
+        let from: [number, number] = at;
+        m.on('dragstart', () => { const p = marker.getLngLat(); from = [p.lng, p.lat]; });
+        m.on('dragend', () => { const p = marker.getLngLat(); handlers.current.onMoveFire?.(f.id, p.lng - from[0], p.lat - from[1]); });
+        fireMarkers.current.set(f.id, m);
+      }
+      m.setLngLat(at);
+      m.getElement().querySelector('.ns-opfire-text')!.textContent = f.label;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firesKey]);
+  useEffect(() => () => { fireMarkers.current.forEach((m) => m.remove()); fireMarkers.current.clear(); }, [data]);
+  const drawKey = drawing ? JSON.stringify(drawing) : '';
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready.current) return;
+    const pts = drawing ?? [];
+    const features: GeoJSON.Feature[] = pts.map((p) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: p }, properties: {} }));
+    if (pts.length >= 3) features.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...pts, pts[0]]] }, properties: {} });
+    else if (pts.length === 2) features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: pts }, properties: {} });
+    queue.current?.set('draft', { type: 'FeatureCollection', features });
+    map.getCanvas().style.cursor = drawing ? 'crosshair' : '';
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawKey]);
 
   // Bring a newly selected caller into view.
   useEffect(() => {

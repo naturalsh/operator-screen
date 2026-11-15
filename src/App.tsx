@@ -9,6 +9,10 @@ import {
 import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
 import { routeRisk, saferRoute, streetNamer } from './routeRisk';
 import { LatestRequest } from './latest';
+import { BrowserModel, browserRun } from './spread/browser';
+import { SOURCE_LABEL as FIRE_SOURCE_LABEL, SIZE_LABEL, centre, fireGeometry, firesAt, rewriteFires, translate, type OperatorFire } from './fires';
+import { AddFireDialog } from './components/AddFireDialog';
+import { circle } from './reports';
 import {
   LiveForecasts, PrecomputedForecasts, applyForecastClosures, autoLabel, autoLoads, forecastClosures, forecastInForce, loadAt,
   NOWCAST_HORIZONS, lookLabel, nowcastAt, type ForecastLoad, type ForecastSource,
@@ -28,6 +32,8 @@ import { useMediaQuery } from './useMediaQuery';
 import { registerSW } from 'virtual:pwa-register';
 
 const TICK_MS = 100;
+/** Monte Carlo runs of the browser model (as the precomputed forecasts). */
+const BROWSER_RUNS = 40;
 
 /** Gets the newest service worker, lets it take over and reloads (or just reloads after a while). */
 async function reloadToNewVersion(): Promise<void> {
@@ -64,6 +70,14 @@ export function App() {
   const [scrubbing, setScrubbing] = useState(false);
   // Playback holds after the slider is released until the map has settled on the new time.
   const [resumeWait, setResumeWait] = useState(false);
+  // Operator-confirmed fires, the "Add fire" drawing (points clicked so far; null = not drawing) and the browser model.
+  const [fires, setFires] = useState<OperatorFire[]>([]);
+  const fireSeq = useRef(0);
+  const [drawing, setDrawing] = useState<[number, number][] | null>(null);
+  const browserModel = useRef<BrowserModel | null>(null);
+  const [modelState, setModelState] = useState<'off' | 'loading' | 'ready' | 'failed'>('off');
+  const [modelBusy, setModelBusy] = useState<{ done: number; total: number } | null>(null);
+  const browserRequests = useRef(new LatestRequest());
   /** The slider is grabbed or released. Released during playback: redraw at the new time, then play on from there. */
   const onScrub = (v: boolean) => {
     setScrubbing(v);
@@ -204,6 +218,8 @@ export function App() {
     setPrecomputed(null);
     setConfirmations(new Map());
     setAsks([]);
+    setFires([]);
+    setDrawing(null);
     loadScenario(entry).then((d) => {
       const demo = wantDemo ? entry.demo : undefined;
       const t0 = Date.parse(demo?.t ?? '') || Date.parse(params.get('t') ?? '') || Date.parse(entry.initial ?? entry.start);
@@ -545,9 +561,103 @@ export function App() {
       ? { seq: 0, at: precomputed.first.issuedAt, run: precomputed.first, kind: 'opening' as const } : null);
   }, [allLoads, inForce, precomputed]);
 
+  // The browser model loads once the map has drawn (it is about 350 kB, stored for offline use like the rest).
+  useEffect(() => {
+    if (!data || !mapIdle || browserModel.current) return;
+    const folder = data.entry.files.fire_front.split('/').slice(0, -1).join('/');
+    const m = new BrowserModel(`${import.meta.env.BASE_URL}scenarios/${folder}/`, data.streets.features);
+    browserModel.current = m;
+    setModelState('loading');
+    m.ready.then(() => setModelState('ready')).catch(() => setModelState('failed'));
+  }, [data, mapIdle]);
+  useEffect(() => () => { browserModel.current?.dispose(); browserModel.current = null; }, []);
+  const activeFires = useMemo(() => firesAt(fires, now), [fires, now]);
+
+  /**
+   * Recomputes the forecast in the browser at `at`: from the fire the forecast in force estimates for `at` plus the
+   * operator-confirmed fires `withFires`, with the weather from `at` on. Loaded as an operator load at `at`. A newer
+   * request (another edit, another Update) cancels this one. False when the browser model is not available.
+   */
+  const runBrowser = async (at: number, withFires: { id: string; geometry: GeoJSON.Polygon }[], why: string): Promise<boolean> => {
+    const model = browserModel.current;
+    if (!model || modelState !== 'ready' || !precomputed || !data) return false;
+    const base = forecastInForce(allLoads, precomputed.first, at)?.run;
+    if (!base) return false;
+    const k = Math.min(Math.floor(((at - base.issuedAt) / 3600000) * 2 + 1e-9) / 2, base.steps[base.steps.length - 1]?.horizon ?? 0);
+    const step = [...base.steps].reverse().find((x) => x.horizon <= k) ?? base.steps[0];
+    const job = browserRequests.current.begin();
+    setModelBusy({ done: 0, total: BROWSER_RUNS });
+    try {
+      const res = await model.run({ t0: at, starts: withFires.map((f) => f.geometry), modelStarts: step ? [step.geometry] : [], runs: BROWSER_RUNS,
+        seed: 42, maxHours: 12 }, job.signal, (done, total) => { if (browserRequests.current.isLatest(job.id)) setModelBusy({ done, total }); });
+      if (!browserRequests.current.isLatest(job.id)) return true;            // stale: a newer request replaces it
+      const t = (x: number) => fmtTime(x, timeZone);
+      const n = withFires.length;
+      const from = `fire now (estimated) from the ${t(base.issuedAt)} forecast${n ? ` + ${n} operator-confirmed fire${n > 1 ? 's' : ''}` : ''}`;
+      const run = browserRun(res, { t0: at, from, lastObsAt: base.lastObsAt, lastObsLabel: base.lastObsLabel, operatorFires: withFires.map((f) => f.id) }, ++loadSeq.current);
+      data.fire.features.push(...run.features);
+      setFireVersion((v) => v + 1);
+      const label = `${base.lastObsAt != null ? `satellite ${t(base.lastObsAt)}` : 'ignition point'} + model${n ? ` + ${n} operator-confirmed fire${n > 1 ? 's' : ''}` : ''}`;
+      setLoads((all) => loadAt(all, { seq: loadSeq.current, at, run, kind: 'update', label }));
+      record({ id: 'forecast' }, 'update_forecast', describeRun(base), describeRun(run), `live in browser, ${BROWSER_RUNS} runs in ${(res.ms / 1000).toFixed(1)} s; ${why}`);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (browserRequests.current.isLatest(job.id)) setModelBusy(null);
+    }
+  };
+
+  const fireLabel = (f: OperatorFire) => `Operator-confirmed fire · ${FIRE_SOURCE_LABEL[f.source].replace('field ', '')} · ${fmtTime(f.observedAt, timeZone).split(', ')[1]}`;
+  /** Adds an operator-confirmed fire at the time shown and recomputes the forecast with it. */
+  const addFire = (geometry: GeoJSON.Polygon, meta: { source: OperatorFire['source']; size: OperatorFire['size']; observedAt: number; note: string }) => {
+    const at = now;
+    const fire: OperatorFire = { id: `operator-fire-${++fireSeq.current}`, ...meta, addedAt: at, versions: [{ at, geometry }] };
+    const kept = rewriteFires(fires, at);
+    setFires([...kept, fire]);
+    setDrawing(null);
+    const [lon, lat] = centre(geometry);
+    record({ id: fire.id }, 'add_fire', null, `${FIRE_SOURCE_LABEL[meta.source]}, ${SIZE_LABEL[meta.size]}, seen ${fmtTime(meta.observedAt, timeZone)}`,
+      [`${lat.toFixed(4)}° N, ${lon.toFixed(4)}° E`, meta.note].filter(Boolean).join('; '));
+    void runBrowser(at, [...firesAt(kept, at), { ...fire, geometry }], 'operator-confirmed fire added');
+  };
+  const moveFire = (id: string, dLon: number, dLat: number) => {
+    const at = now;
+    const kept = rewriteFires(fires, at);
+    const f = firesAt(kept, at).find((x) => x.id === id);
+    if (!f) return;
+    const geometry = translate(f.geometry, dLon, dLat);
+    const next = kept.map((x) => (x.id === id ? { ...x, versions: [...x.versions, { at, geometry }] } : x));
+    setFires(next);
+    record({ id }, 'move_fire', null, `moved ${Math.round(Math.hypot(dLon * 89000, dLat * 111000))} m`);
+    void runBrowser(at, firesAt(next, at), 'operator-confirmed fire moved');
+  };
+  const deleteFire = (id: string) => {
+    const at = now;
+    const next = rewriteFires(fires, at).map((x) => (x.id === id ? { ...x, deletedAt: at } : x));
+    setFires(next);
+    record({ id }, 'delete_fire', 'operator-confirmed fire', 'deleted');
+    const left = firesAt(next, at);
+    if (left.length) { void runBrowser(at, left, 'operator-confirmed fire deleted'); return; }
+    // No operator fire left: back to the forecast without them (the latest one not started from an operator fire).
+    if (!precomputed) return;
+    browserRequests.current.cancel();
+    setModelBusy(null);
+    const plain = forecastInForce(allLoads.filter((l) => !((l.run as { operatorFires?: string[] }).operatorFires?.length)), precomputed.first, at);
+    if (!plain) return;
+    setLoads((all) => loadAt(all, { seq: ++loadSeq.current, at, run: plain.run, kind: 'update', label: 'operator-confirmed fire deleted: the forecast without it' }));
+    record({ id: 'forecast' }, 'update_forecast', inForce ? describeRun(inForce.run) : null, describeRun(plain.run), 'back to the forecast without operator-confirmed fires');
+  };
+
   const describeRun = (r: { issuedAt: number; from: string }) => `issued ${fmtTime(r.issuedAt, timeZone)} from ${r.from.replace(' (no new pass)', '')}`;
   const onUpdateForecast = async () => {
     if (!source || !data || !inForce || !precomputed) return;
+    // The browser model first (it can use the operator-confirmed fires); the precomputed library when it is not
+    // available. CONCEPT DEMO reports keep using their precomputed forecasts.
+    if (!forecastOptions.newReports && modelState === 'ready') {
+      setForecastBusy(true);
+      try { if (await runBrowser(now, activeFires, 'Update forecast (re-run with current weather)')) return; } finally { setForecastBusy(false); }
+    }
     setForecastBusy(true);
     const at = now;
     const kind = forecastOptions.newReports ? 'update' : 'rerun';
@@ -672,6 +782,12 @@ export function App() {
       conceptPanel={conceptOn && data.concept ? (
         <ConceptPanel clusters={clusterStates} inForecast={inForce?.run.reports ?? []} now={now} timeZone={timeZone}
           reportsUntil={Date.parse(data.concept.metadata.window_end)} onConfirm={onConfirmReport} onAsk={onAsk}
+          onAddAsFire={(id) => {
+            const c = clusterStates.find((x) => x.cluster.id === id);
+            if (!c) return;
+            addFire(circle(c.cluster.lon, c.cluster.lat, c.cluster.radius_m ?? 300, 32), { source: 'caller', size: 'drawn',
+              observedAt: Math.max(...c.reports.map((r) => Date.parse(r.observed_at))), note: `confirmed fire report ${id} (concept demo)` });
+          }}
           scores={data.concept.scores.filter((x) => Date.parse(x.next_pass_at) <= now)} />
       ) : null}
       onToggle={(k) => setLayers((l) => ({ ...l, [k]: !l[k] }))}
@@ -681,7 +797,8 @@ export function App() {
   const decisionLog = data && (
     <DecisionLog decisions={decisions} scenarioId={data.entry.id} timeZone={timeZone}
       labelOf={(id) => (id === 'settings' ? 'Crews' : id === 'forecast' ? 'Forecast'
-        : id.startsWith('concept-cluster') ? `Fire report ${id.slice(-2)} (concept demo)` : labelOf(id))} />
+        : id.startsWith('concept-cluster') ? `Fire report ${id.slice(-2)} (concept demo)`
+      : id.startsWith('operator-fire') ? `Operator-confirmed fire ${id.split('-').pop()}` : labelOf(id))} />
   );
   const mapProps = data && {
     data, now, layers, selectedId: selected?.id ?? null, nearIds, stages, routes, vehicles, focus, urgencyOf, onSelect: setSelectedId, mode,
@@ -690,7 +807,21 @@ export function App() {
       (window as unknown as { __nsOnSettled?: () => void }).__nsOnSettled?.();   // test hook: the map as settled
       setResumeWait(false);
     },
+    operatorFires: activeFires.map((f) => ({ id: f.id, geometry: f.geometry, label: fireLabel(f) })),
+    drawing, onDrawClick: (p: [number, number]) => setDrawing((d) => (d ? [...d, p] : d)), onMoveFire: moveFire, onDeleteFire: deleteFire,
   };
+  const addFireDialog = (compact: boolean) => drawing && (
+    <AddFireDialog vertices={drawing} now={now} timeZone={timeZone} compact={compact}
+      onUndo={() => setDrawing((d) => (d ? d.slice(0, -1) : d))} onCancel={() => setDrawing(null)}
+      onConfirm={(meta) => addFire(fireGeometry(drawing, meta.size), meta)} />
+  );
+  const addFireButton = (compact: boolean) => precomputed && (
+    <button data-add-fire onClick={() => { setPlaying(false); setDrawing((d) => (d ? null : [])); }} aria-pressed={!!drawing}
+      title="Add a fire confirmed by a crew, a drone or a caller: it goes into the forecast, computed in this browser"
+      className={`shrink-0 rounded border font-bold ${drawing ? 'border-orange-300 bg-orange-400 text-ink-950' : 'border-orange-400 text-orange-200 hover:bg-orange-950'} ${compact ? 'px-1.5 py-0.5 text-[11px]' : 'px-2 py-1 text-xs'}`}>
+      {drawing ? 'Adding fire…' : 'Add fire'}
+    </button>
+  );
   const lookSwitch = (compact: boolean, style: React.CSSProperties) => nowcast && (
     <div role="group" aria-label="Look ahead" data-look-ahead={lookAhead} style={style}
       className="absolute z-10 flex items-center overflow-hidden rounded-lg border border-ink-600 bg-ink-900/90 text-[11px] font-bold shadow">
@@ -713,12 +844,11 @@ export function App() {
     <>
       <ForecastControl load={inForce} previous={previousLoad} updateTo={forecastOptions.updateTo}
         blockedNote={forecastOptions.blockedNote} sourceKind={source?.kind ?? 'precomputed'}
-        newReports={forecastOptions.newReports} nowcast={nowcast}
-        busy={forecastBusy} timeZone={timeZone} compact={compact} onUpdate={onUpdateForecast} />
+        newReports={forecastOptions.newReports} nowcast={nowcast} modelState={modelState} modelBusy={modelBusy}
+        busy={forecastBusy || !!modelBusy} timeZone={timeZone} compact={compact} onUpdate={onUpdateForecast} />
       {toast && toast.at <= now && (
         <div key={toast.key} role="status" data-forecast-toast
           className="ns-toast pointer-events-none absolute z-20 rounded-lg border border-amber-300 bg-ink-900/95 px-3 py-1.5 text-xs font-bold text-amber-100 shadow-lg"
-          // Beside the forecast box on wide screens, under its closed button on phones.
           // Beside the forecast box on wide screens; on phones at the bottom, above the Look ahead switch, clear of the
           // zoom buttons and the Legend button.
           style={compact ? { left: 8, right: 8, bottom: 124, textAlign: 'center' } : { left: 318, top: 44, maxWidth: 'calc(100% - 380px)' }}>
@@ -788,6 +918,7 @@ export function App() {
           <h1 className="whitespace-nowrap text-sm font-bold">Nature Shield</h1>
           {modeSwitch(true)}
           {demoButton(true)}
+          {addFireButton(true)}
           {syntheticLayers.length > 0 && <span className="synthetic-tag">SYNTHETIC calls</span>}
           {conceptOn && <span className="concept-tag" title={CONCEPT_LABEL} data-concept-header>CONCEPT DEMO</span>}
           {modelStreets && <span className="model-tag truncate">{modelLabel(data!.streetsMeta)} streets</span>}
@@ -800,6 +931,7 @@ export function App() {
             <main ref={mainRef} className="relative min-h-0 flex-1 overflow-hidden">
               <MapView {...mapProps} insetBottom={insetBottom} insetRight={insetRight} fitFire />
               {forecastControl(true)}
+              {addFireDialog(true)}
               {!drawer && lookSwitch(true, landscape ? { left: 8, bottom: 8 } : { left: '50%', transform: 'translateX(-50%)', bottom: TAB_BAR_PX + 8 })}
               {conceptBanner}
               <div data-drawer={drawer ?? 'closed'}
@@ -849,6 +981,7 @@ export function App() {
         </label>
         {modeSwitch(false)}
         {demoButton(false)}
+        {addFireButton(false)}
         {syntheticLayers.length > 0 && (
           <span className="synthetic-tag whitespace-nowrap" style={{ fontSize: 11, padding: '3px 8px' }}>
             SYNTHETIC {roomy ? syntheticLayers.join(' and ') : 'calls'}
@@ -904,6 +1037,7 @@ export function App() {
               <main className="relative min-w-0 flex-1">
                 <MapView {...mapProps} />
                 {forecastControl(false)}
+                {addFireDialog(false)}
                 {lookSwitch(true, { left: 8, bottom: 8 })}
                 {conceptBanner}
               </main>
@@ -914,6 +1048,7 @@ export function App() {
               <main className="relative min-w-0 flex-1">
                 <MapView {...mapProps} />
                 {forecastControl(false)}
+                {addFireDialog(false)}
                 {lookSwitch(false, { left: 318, top: 8 })}
                 {conceptBanner}
               </main>

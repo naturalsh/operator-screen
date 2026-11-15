@@ -14,10 +14,12 @@ interface Props {
   onConfirm: (clusterId: string) => void;
   /** "Is the fire still there?" (MOCK). */
   onAsk?: (clusterId: string) => void;
+  /** Adds a confirmed cluster as an operator-confirmed fire (recomputes the forecast in the browser). */
+  onAddAsFire?: (clusterId: string) => void;
 }
 
 /** CONCEPT DEMO: fire reports from people, their clusters, the operator's confirmation and the after-the-fact score. */
-export function ConceptPanel({ clusters, inForecast, scores, reportsUntil, now, timeZone, onConfirm, onAsk }: Props) {
+export function ConceptPanel({ clusters, inForecast, scores, reportsUntil, now, timeZone, onConfirm, onAsk, onAddAsFire }: Props) {
   const t = (x: number) => fmtTime(x, timeZone);
   const candidates = clusters.filter((c) => c.candidate);
   const singles = clusters.filter((c) => !c.candidate);
@@ -90,6 +92,10 @@ export function ConceptPanel({ clusters, inForecast, scores, reportsUntil, now, 
               Confirmed {t(c.confirmedAt)} · {inForecast.includes(c.cluster.id) ? 'in the forecast in force'
                 : now > reportsUntil ? 'reports are only used in forecasts of the first night'
                 : 'goes into the next forecast update (the next pass, or "Update forecast")'}
+              {onAddAsFire && (
+                <button data-add-as-fire onClick={() => onAddAsFire(c.cluster.id)}
+                  className="ml-2 rounded border border-orange-400 px-2 py-0.5 font-bold text-orange-200 hover:bg-orange-950">Add as confirmed fire</button>
+              )}
             </div>
           )}
         </div>
