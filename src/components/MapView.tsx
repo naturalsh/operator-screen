@@ -63,6 +63,13 @@ export const ACTIVE_FIRE_H = 6;
 export const SIMPLE_FIRE_H = 3;
 export const ACTIVE_FIRE_COLOUR = '#fde047';
 export const SIMPLE_FIRE_COLOUR = '#ffb547';
+/**
+ * Simple: the newest pass's pixels in one flat colour, SIMPLE_FIRE_COLOUR at 14 % over the dark burned ground, drawn
+ * opaque with an outline of the same colour. VIIRS pixels of one pass overlap or leave hairline gaps (their centres
+ * are not exactly 375 m apart), so a see-through fill stacked into darker squares with seams; opaque, overlaps
+ * cannot show, and the outline closes the gaps.
+ */
+export const SIMPLE_PIXEL_COLOUR = '#3a2918';
 export const OLD_FIRE_COLOUR = '#4b5563';
 
 /** Line width in pixels of `metres` on the ground at this map latitude (about 36.85° N), for any zoom. */
@@ -306,9 +313,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         : ['all', obs('flame_front'), upTo]);
       map.setFilter('burned-area', ['all', obs('burned_area'), upTo]);
       // Active fire: one bright colour in Simple, the sensor colours in Detailed.
-      map.setPaintProperty('hotspots', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : INSTRUMENT_COLOUR);
-      map.setPaintProperty('hotspots', 'fill-opacity', ['match', ['get', 'instrument'], 'VIIRS', simple ? 0.3 : 0.4, simple ? 0.1 : 0.15]);
-      map.setPaintProperty('hotspots', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : INSTRUMENT_COLOUR);
+      map.setPaintProperty('hotspots', 'fill-color', simple ? SIMPLE_PIXEL_COLOUR : INSTRUMENT_COLOUR);
+      map.setPaintProperty('hotspots', 'fill-opacity', simple ? 1 : ['match', ['get', 'instrument'], 'VIIRS', 0.4, 0.15]);
+
+      map.setPaintProperty('hotspots', 'fill-outline-color', simple ? SIMPLE_PIXEL_COLOUR : INSTRUMENT_COLOUR);
       // Older detections (burned): dark grey, Detailed only.
       map.setFilter('hotspots-old', ['all', obs('hotspots'), upTo, ['!', recent]]);
       map.setPaintProperty('flame-front', 'fill-color', simple ? SIMPLE_FIRE_COLOUR : ['case', recent, ACTIVE_FIRE_COLOUR, OLD_FIRE_COLOUR]);
@@ -1001,7 +1009,7 @@ function Legend({ mode, nearby, nowcast, timeZone }: { mode: MapMode; nearby: bo
           {!simple && row(<LineKey colour={ZONE_COLOUR.h2} />, 'Other horizons (+6 h dotted)')}
           <div className="pt-0.5" />
           {!simple && row(<LineKey colour={INITIAL_FORECAST_COLOUR} />, 'Initial forecast (at ignition)')}
-          {simple ? row(<AreaKey fill={SIMPLE_FIRE_COLOUR} opacity={0.35} />, `Fire seen by the latest VIIRS pass (last ${SIMPLE_FIRE_H} h)`)
+          {simple ? row(<AreaKey fill={SIMPLE_PIXEL_COLOUR} opacity={1} />, `Fire seen by the latest VIIRS pass (last ${SIMPLE_FIRE_H} h)`)
             : <>
               {row(<AreaKey fill="#ef4444" opacity={0.45} />, `VIIRS 375 m (last ${ACTIVE_FIRE_H} h)`)}
               {row(<AreaKey fill="#a855f7" opacity={0.3} />, 'MODIS 1 km')}

@@ -59,10 +59,11 @@ The switch in the header changes how much the map shows (add `?mode=detailed` to
   - **Forecast**: one line at a time, dashed yellow, tagged "Expected by 04:55 (+1 h)". The **Look ahead** switch
     on the map picks it: Now (none) · +30 min · +1 h · +2 h · +3 h (default +1 h; Detailed adds +6 h and draws the
     other horizons faintly). Parts under 0.3 km² are left out of this line too.
-  - Satellite detections: only the pixels of the **newest VIIRS pass of the last 3 hours**, faint (30 %) and
-    without edges; older passes are not drawn (the burned ground covers them, and the pixels of several passes over
-    the same ground stacked into dark squares), nor the large 1 km MODIS / SLSTR squares.
-    ![Simple, 22 Jun 04:05 with three passes in the last 3 h: before (stacked) and after (newest pass only)](docs/f_simple_pixels_before.png) ![after](docs/f_simple_pixels_after.png)
+  - Satellite detections: only the pixels of the **newest VIIRS pass of the last 3 hours**, in one flat colour close
+    to the burned ground (the fire colour at about 14 % over it), drawn opaque so that overlapping pixels never stack
+    into darker squares or seams; older passes are not drawn (the burned ground covers them), nor the large 1 km
+    MODIS / SLSTR squares.
+    ![Simple, 22 Jun 14:16: before (stacked squares) and after (one flat colour)](docs/f_simple_pixels_before.png) ![after](docs/f_simple_pixels_after.png)
   - Callers have a thin white edge and a soft dark shadow, so they stay readable on the fire.
   - Closed roads (solid red: seen by satellite; orange dashed: forecast closure), callers, crews and their routes.
 - **Detailed**: adds the satellite sensors in their own colours (VIIRS, MODIS, SLSTR, Sentinel-2 flame front and
