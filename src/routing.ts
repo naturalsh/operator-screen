@@ -161,6 +161,8 @@ export interface Leg {
   trackKm: number;
   /** Scenario time (epoch ms) the leg starts. */
   startAt: number;
+  /** Minutes spent on the straight connector from a station to its road at the start of the leg (absent: none). */
+  connectorMin?: number;
 }
 
 export interface LegPlan {
@@ -240,7 +242,7 @@ export function planLegs(g: Graph, target: [number, number], origins: Origin[], 
     const path: [number, number][] = [];
     const cum: number[] = [];
     const spans: Leg['spans'] = [];
-    let minutes = 0, km = 0, trackKm = 0, originSnapM = 0;
+    let minutes = 0, km = 0, trackKm = 0, originSnapM = 0, connectorMin = 0;
     let start = origin.node;
     if (start == null) {
       if (!origin.place) continue;
@@ -265,6 +267,7 @@ export function planLegs(g: Graph, target: [number, number], origins: Origin[], 
       const partialMin = (end.along / 1000 / speed) * 60;
       path.push(origin.place); cum.push(0);
       minutes = connector;
+      connectorMin = connector;
       path.push(sSnap.proj.point); cum.push(minutes);
       let done = 0;
       for (let i = 1; i < partial.length; i++) {
@@ -319,7 +322,7 @@ export function planLegs(g: Graph, target: [number, number], origins: Origin[], 
       cum.push(minutes);
       lastStretchM = 0;
     }
-    out.push({ origin, leg: { path, cum, spans, nodes, nodeMin, minutes, km, trackKm, startAt: now }, lastStretchBlocked, lastStretchM,
+    out.push({ origin, leg: { path, cum, spans, nodes, nodeMin, minutes, km, trackKm, startAt: now, ...(connectorMin > 0 ? { connectorMin } : {}) }, lastStretchBlocked, lastStretchM,
       originSnapM, targetSnapM: tSnap.proj.dist });
   }
   return out.sort((a, b) => a.leg.minutes - b.leg.minutes);
@@ -366,6 +369,9 @@ export function positionOnLeg(leg: Leg, minutes: number): [number, number] {
 export function bearingOnLeg(leg: Leg, minutes: number): number | null {
   const { path, cum } = leg;
   if (path.length < 2) return null;
+  // On the connector from the station to its road the vehicle already faces the way the road leads: the direction
+  // of the first street segment, not of the connector (which made the icon stand on end at the station).
+  if (leg.connectorMin && minutes <= leg.connectorMin && path.length > 2) minutes = leg.connectorMin + 1e-6;
   let i = 1;
   while (i < cum.length - 1 && cum[i] < minutes) i++;
   // The segment at i, or the nearest one with some length (stops and snapped ends repeat a point).
