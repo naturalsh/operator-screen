@@ -118,3 +118,7 @@ body { background: #07090d; color: #f2f6fb; font-size: 14px; }
 .ns-opfire-sat { flex-basis: 100%; font-weight: 500; font-size: 10.5px; white-space: normal; }
 .ns-opfire[data-sat="not-seen"] .ns-opfire-sat { color: #7c2d12; }
 .ns-opfire[data-sat="not-seen"] .ns-opfire-sat::before { content: "⚠ "; }
+
+/* A call just left without its crew: its card pulses for a few seconds. */
+@keyframes ns-flash { 0%, 100% { outline-color: #fbbf24; } 50% { outline-color: rgba(251, 191, 36, 0.25); } }
+.ns-flash { animation: ns-flash 1s ease-in-out 4; }

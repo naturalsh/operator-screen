@@ -81,6 +81,8 @@ interface Props {
   /** Follow: the map stays on that crew's vehicle (null: none). */
   followId?: string | null;
   onFollow?: (crewId: string | null) => void;
+  /** A call just left without its crew (redirected elsewhere): its card is marked and brought into view. */
+  flashId?: string | null;
   onReassign: (from: CallerReport, toReportId: string) => void;
 }
 
@@ -181,7 +183,8 @@ function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign, 
 } & Pick<Props, 'timeZone' | 'awaiting' | 'onReroute' | 'onReassign' | 'onSaferRoute' | 'followId' | 'onFollow'>) {
   const targets = awaiting.filter((a) => a.id !== c.id);
   const [to, setTo] = useState('');
-  const target = targets.find((a) => a.id === to) ?? targets[0];
+  // Nothing is picked until the dispatcher picks it: redirecting a crew is never one stray click away.
+  const target = targets.find((a) => a.id === to);
   const stop = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn(); };
   const moving = crew.status === 'en_route' || crew.status === 'holding';
   return (
@@ -246,9 +249,12 @@ function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign, 
           <span className="text-ink-400">Redirect to</span>
           <select aria-label="Redirect crew to" value={target?.id ?? ''} onChange={(e) => setTo(e.target.value)}
             className="min-w-0 flex-1 rounded bg-ink-700 px-1 py-1 text-xs text-ink-50">
+            <option value="">Choose a call…</option>
             {targets.map((a) => <option key={a.id} value={a.id}>{a.label.split(' (')[0]}</option>)}
           </select>
-          <button className={`${btn} bg-amber-300`} data-reassign onClick={stop(() => target && onReassign(c, target.id))}>Reassign</button>
+          <button className={`${btn} bg-amber-300 disabled:opacity-40`} data-reassign disabled={!target}
+            title={target ? 'Send this crew there; this call becomes unassigned' : 'Choose the call to send this crew to'}
+            onClick={stop(() => { if (target) { onReassign(c, target.id); setTo(''); } })}>Reassign</button>
         </div>
       )}
       {cs.noAccessAt != null && (
@@ -306,6 +312,10 @@ export function CallerList(props: Props) {
     const top = box.scrollTop + (r.top - b.top) - (r.height > b.height ? 0 : Math.max(0, b.height - r.height) / 2);
     box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
   }, [selectedId]);
+  useEffect(() => {
+    const card = props.flashId ? list.current?.querySelector<HTMLElement>(`[data-report="${CSS.escape(props.flashId)}"]`) : null;
+    card?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [props.flashId]);
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-ink-700 px-3 py-2">
@@ -321,10 +331,10 @@ export function CallerList(props: Props) {
           const near = selected ? streetsNear(streets, c, NEAR_RADIUS_M) : [];
           const count = (s: string) => near.filter((n) => statusAt(n.street.properties, now) === s).length;
           return (
-            <div key={c.id} role="button" tabIndex={0} data-report={c.id} data-stage={cs.stage} data-selected={selected || undefined} aria-pressed={selected}
+            <div key={c.id} role="button" tabIndex={0} data-report={c.id} data-stage={cs.stage} data-selected={selected || undefined} data-flash={c.id === props.flashId || undefined} aria-pressed={selected}
               onClick={() => onSelect(selected ? null : c.id)}
               onKeyDown={(e) => { if (e.key === 'Enter') onSelect(selected ? null : c.id); }}
-              className={`cursor-pointer border-b border-ink-800 px-3 py-2 text-left ${selected ? 'bg-sky-950/60 outline outline-2 -outline-offset-2 outline-sky-400' : 'hover:bg-ink-850'}`}
+              className={`cursor-pointer border-b border-ink-800 px-3 py-2 text-left ${selected ? 'bg-sky-950/60 outline outline-2 -outline-offset-2 outline-sky-400' : c.id === props.flashId ? 'ns-flash bg-amber-950/60 outline outline-2 -outline-offset-2 outline-amber-400' : 'hover:bg-ink-850'}`}
               style={{ borderLeft: `4px solid ${cs.stage === 'unassigned' ? STAGE_COLOUR.unassigned : URGENCY_COLOUR[urgency]}` }}>
               <div className="flex items-center gap-2">
                 <span className="whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold text-ink-950" style={{ background: URGENCY_COLOUR[urgency] }}>

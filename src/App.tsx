@@ -223,6 +223,13 @@ export function App() {
   const [loads, setLoads] = useState<ForecastLoad[]>([]);
   // A short notice when the forecast updates itself at a new pass while the clock runs forward.
   const [toast, setToast] = useState<{ key: number; text: string; at: number } | null>(null);
+  // The call a crew was just taken from: its card is marked for a few seconds (it is now unassigned).
+  const [flashId, setFlashId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!flashId) return;
+    const id = setTimeout(() => setFlashId(null), 8000);
+    return () => clearTimeout(id);
+  }, [flashId]);
   /** Phone toast: placed above the map's bottom-right controls when they reach higher than its usual place. */
   const placeToast = useCallback((el: HTMLDivElement | null) => {
     if (!el || !el.style.bottom) return;
@@ -564,6 +571,9 @@ export function App() {
       const note = `${k.crew.name} was redirected to ${shortLabel(c.id)} at ${fmtTime(now, timeZone)}`;
       patchCase(taken.id, { stage: 'unassigned', missionId: undefined, unassignedNote: note });
       record(taken, 'unassigned', `${k.crew.name} ${CREW_STATUS_LABEL[k.state.status].toLowerCase()}`, 'unassigned', `crew redirected to ${shortLabel(c.id)}`);
+      // Said at once, and the call left behind is marked: a redirect must not pass unnoticed.
+      setToast({ key: Date.now(), at: now, text: `${k.crew.name} redirected to ${shortLabel(c.id)}; previous call is now UNASSIGNED` });
+      setFlashId(taken.id);
       record(c, 'reassign', viewCases[c.id]?.stage === 'unassigned' ? 'unassigned' : 'not dispatched', what,
         [`crew taken from ${shortLabel(taken.id)}`, blockedNote].filter(Boolean).join('; '));
     } else {
@@ -643,6 +653,9 @@ export function App() {
     if (k) { send(to, k); return; }
     patchCase(to.id, { noAccessAt: now });
     record(to, 'dispatch_no_access', 'not dispatched', 'no access by road', `tried to redirect the crew from ${shortLabel(from.id)}`);
+    // Said at once: nothing was redirected, the crew keeps driving to its call.
+    const crew = crews.find((x) => x.id === m.crewId);
+    setToast({ key: Date.now(), at: now, text: `Not redirected: no road from ${crew?.name ?? 'the crew'} to ${shortLabel(to.id)} at this time. The crew keeps its call.` });
   };
 
   // CONCEPT DEMO: report clusters at the time shown and the confirmed ones the next update would add.
@@ -937,7 +950,7 @@ export function App() {
   const callerList = data && (
     <CallerList callers={callers} streets={data.streets.features} now={now} timeZone={timeZone}
       synthetic={data.callersMeta.synthetic === true} selectedId={selected?.id ?? null}
-      cases={viewCases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf} ahead={ahead} followId={follow} onFollow={followCrew}
+      cases={viewCases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf} ahead={ahead} followId={follow} onFollow={followCrew} flashId={flashId}
       reachOf={safety ? (id) => safety.reach.get(id) : undefined}
       canRoute={data.responders.length > 0} onSelect={setSelectedId} onTake={onTake} onConfirm={onConfirm}
       onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} onSaferRoute={onSaferRoute} />
