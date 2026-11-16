@@ -38,6 +38,8 @@ export class BrowserModel {
   private seq = 0;
   private pending = new Map<number, { resolve: (r: BrowserRunResult) => void; reject: (e: Error) => void; progress?: (d: number, t: number) => void }>();
   readonly ready: Promise<number>;
+  /** The ground the model covers (its grid outline), known once it is ready. */
+  area: GeoJSON.Polygon | null = null;
 
   constructor(base: string, streets: StreetFeature[]) {
     this.worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
@@ -45,6 +47,7 @@ export class BrowserModel {
     this.ready = new Promise((res, rej) => { onReady = res; onFail = rej; });
     this.worker.onmessage = (e) => {
       const m = e.data;
+      if (m.type === 'ready') this.area = m.area ? { type: 'Polygon', coordinates: [m.area] } : null;
       if (m.type === 'ready') this.worker.postMessage({ type: 'streets', streets: streets.map((s) => [s.properties.id,
         s.geometry.type === 'LineString' ? s.geometry.coordinates : s.geometry.coordinates.flat()]) });
       else if (m.type === 'streets-ready') onReady(m.count);

@@ -13,7 +13,7 @@ import { CREW_STATUS_COLOUR, type CrewStatus } from '../crews';
 import { bearingOnLeg, positionOnLeg, type Leg } from '../routing';
 import { SourceQueue } from '../sourceQueue';
 import { centre } from '../fires';
-import { lookLabel, nowcastSource, type Nowcast } from '../forecast';
+import { FRONT_WIDTH_M, frontWidthM, lookLabel, nowcastSource, type Nowcast } from '../forecast';
 import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
 
 /** A crew vehicle that is away from its station. */
@@ -49,17 +49,7 @@ export const FRONT_COLOUR = '#f0532b';
 export const FRONT_EDGE = '#ffe2d4';
 /** The front band: FRONT_COLOUR at 70 % over the dark map, drawn opaque. */
 export const FRONT_BAND_COLOUR = '#ae3f22';
-export const FRONT_WIDTH_M = 300;
-/** The band is at most this share of the fire's equivalent radius (a small fire gets a narrow band)... */
-export const FRONT_SHARE_OF_RADIUS = 0.2;
-/** ...and below this width only an edge line is drawn. */
-export const FRONT_MIN_M = 25;
-
-/** Width of the front band for a fire of `areaKm2`: 20 % of the equivalent radius, at most 300 m; 0 = edge only. */
-export function frontWidthM(areaKm2: number): number {
-  const w = Math.min(FRONT_WIDTH_M, FRONT_SHARE_OF_RADIUS * Math.sqrt((areaKm2 * 1e6) / Math.PI));
-  return w >= FRONT_MIN_M ? w : 0;
-}
+export { FRONT_WIDTH_M, FRONT_SHARE_OF_RADIUS, FRONT_MIN_M, frontWidthM } from '../forecast';
 /** Kept for swatches that show the estimated fire by its edge. */
 export const NOWCAST_EDGE = FRONT_COLOUR;
 /** The look-ahead line (the one horizon chosen): dashed yellow. Detailed also draws the others, faint. */
@@ -85,10 +75,11 @@ export const SIMPLE_FIRE_COLOUR = '#ffb547';
 export const SIMPLE_PIXEL_COLOUR = '#3a2918';
 export const OLD_FIRE_COLOUR = '#4b5563';
 
-/** Line width in pixels of `metres` on the ground at this map latitude (about 36.85° N), for any zoom. */
-function metresWidth(metres: number): ExpressionSpecification {
-  const mpp0 = 156543.03 * Math.cos((36.85 * Math.PI) / 180);       // metres per pixel at zoom 0
-  return ['interpolate', ['exponential', 2], ['zoom'], 8, (metres * 2 ** 8) / mpp0, 18, (metres * 2 ** 18) / mpp0];
+/** The front band of a part of the fire: its own width in metres (`band_m`, 20 % of that part's radius, at most 300 m). */
+const BAND_M: ExpressionSpecification = ['coalesce', ['get', 'band_m'], 0];
+function bandWidth(): ExpressionSpecification {
+  const mpp0 = 156543.03 * Math.cos((36.85 * Math.PI) / 180);
+  return ['interpolate', ['exponential', 2], ['zoom'], 8, ['*', BAND_M, 2 ** 8 / mpp0], 18, ['*', BAND_M, 2 ** 18 / mpp0]];
 }
 /** Streets closed by the forecast only: orange, dashed; observed closures are solid red. */
 export const FORECAST_CLOSURE_COLOUR = '#fb923c';
@@ -97,7 +88,7 @@ export const FORECAST_CLOSURE_COLOUR = '#fb923c';
 const NEARBY_RADIUS_M = 1000;
 
 const LAYER_GROUPS: Record<LayerKey, string[]> = {
-  forecast: ['forecast-zone-lines', 'forecast-zone-dotted', 'nowcast-fill', 'front-band', 'front-edges', 'nowcast-spots',
+  forecast: ['forecast-zone-lines', 'forecast-zone-dotted', 'nowcast-fill', 'front-band', 'front-edges', 'nowcast-op-edge', 'nowcast-spots',
     'lookahead-line', 'observed-line'],
   initial: ['initial-pending', 'initial-reached', 'initial-label'],
   observed: ['hotspots-old', 'hotspots', 'burned-area', 'flame-front'],
@@ -198,7 +189,15 @@ interface Props {
   onFollowEnd?: () => void;
   /** Operator-confirmed fires on the map at the time shown (geometry and label). */
   /** `sat`: what the latest satellite pass since it was added says ("now seen by satellite 13:43", or a warning). */
-  operatorFires?: { id: string; geometry: GeoJSON.Polygon; label: string; sat?: { text: string; seen: boolean } | null }[];
+  operatorFires?: { id: string; geometry: GeoJSON.Polygon; label: string; sat?: { text: string; seen: boolean } | null;
+    /** Clock time it was seen, for the small chip on phones. */
+    time?: string;
+    /** Said when the fire is outside (or partly outside) the fire model's area. */
+    outside?: string | null }[];
+  /** Phones: an operator fire is a small chip (flame, time, a warning mark); a tap opens its label, notes and ✕. */
+  compactFires?: boolean;
+  /** The ground the fire model covers, outlined while a fire is being placed. */
+  modelArea?: GeoJSON.Polygon | null;
   /** Points of a fire being drawn ("Add fire"); while set, map clicks add points instead of opening popups. */
   drawing?: [number, number][] | null;
   /** What Confirm would add from the points clicked and the size chosen (previewed on the map). */
@@ -210,7 +209,7 @@ interface Props {
 }
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
-  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0, onSettled, callerPopup = true, clock, followId = null, onFollowEnd,
+  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0, onSettled, callerPopup = true, clock, followId = null, onFollowEnd, compactFires = false, modelArea = null,
   operatorFires = [], drawing = null, drawingShape = null, onDrawClick, onMoveFire, onDeleteFire }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -348,18 +347,9 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       map.setPaintProperty('flame-front', 'fill-opacity', simple ? 0.35 : ['case', recent, 0.9, 0.5]);
       map.setPaintProperty('flame-front', 'fill-outline-color', simple ? 'rgba(0,0,0,0)' : '#fef08a');
     });
-    // The front band scales with the fire: a small fire gets a narrow band, a very small one only an edge line
-    // (a 300 m band around a fire a few hundred metres across folded over itself).
-    const nowArea = latest.current.nowcast?.fc.features.find((f) => f.properties.role === 'now')?.properties.area_km2 ?? 0;
-    const w = frontWidthM(nowArea);
-    once('front', String(Math.round(w)), () => {
-      map.setPaintProperty('front-band', 'line-width', w ? metresWidth(w) : 0);
-      map.setPaintProperty('front-edges', 'line-gap-width', w ? metresWidth(w) : 0);
-      map.setPaintProperty('front-edges', 'line-color', w ? FRONT_EDGE : FRONT_COLOUR);
-      map.setPaintProperty('front-edges', 'line-width', w ? 1.6 : 1.8);
-      map.setPaintProperty('front-edges', 'line-opacity', w ? 0.75 : 0.95);
-      (window as unknown as { __nsFrontWidthM?: number }).__nsFrontWidthM = w;    // for tests
-    });
+    // The front band scales with each part of the fire (its own `band_m`, see nowcastAt): for tests, the main part's.
+    (window as unknown as { __nsFrontWidthM?: number }).__nsFrontWidthM =
+      latest.current.nowcast?.fc.features.find((f) => f.properties.role === 'now')?.properties.band_m ?? 0;
     // Look ahead: one horizon, dashed; Detailed also draws the other horizons faint.
     const look = `h${latest.current.lookAhead}`;
     once('look', look, () => {
@@ -503,7 +493,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       // active fire of the last hours on top of it. All under the streets, so roads stay readable.
       map.addLayer({ id: 'hotspots-old', type: 'fill', source: 'fire',
         paint: { 'fill-color': OLD_FIRE_COLOUR, 'fill-opacity': ['match', ['get', 'instrument'], 'VIIRS', 0.32, 0.05] } });
-      map.addLayer({ id: 'nowcast-fill', type: 'fill', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
+      map.addLayer({ id: 'nowcast-fill', type: 'fill', source: 'nowcast', filter: ['match', ['get', 'role'], ['now', 'nowop'], true, false],
         paint: { 'fill-color': NOWCAST_COLOUR, 'fill-opacity': NOWCAST_OPACITY } });
       map.addLayer({ id: 'hotspots', type: 'fill', source: 'fire',
         paint: { 'fill-color': INSTRUMENT_COLOUR, 'fill-opacity': ['match', ['get', 'instrument'], 'VIIRS', 0.3, 0.1] } });
@@ -549,13 +539,18 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       // wide line's edge makes at tight inner bends stay hidden under the band.
       map.addLayer({ id: 'front-edges', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
         layout: { 'line-join': 'round' },
-        paint: { 'line-color': FRONT_EDGE, 'line-opacity': 0.75, 'line-width': 1.6, 'line-gap-width': metresWidth(FRONT_WIDTH_M) } });
+        // Per part: light edges beside a band; a part too small for a band gets its edge as one line in the front colour.
+        paint: { 'line-color': ['case', ['>', BAND_M, 0], FRONT_EDGE, FRONT_COLOUR], 'line-opacity': ['case', ['>', BAND_M, 0], 0.75, 0.95],
+          'line-width': ['case', ['>', BAND_M, 0], 1.6, 1.8], 'line-gap-width': bandWidth() } });
       map.addLayer({ id: 'front-band', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'now'],
         layout: { 'line-join': 'round', 'line-cap': 'round' },
         // Opaque, in the colour the 70 % band had over the dark map: a see-through wide line draws its overlaps at
         // bends twice (bright wedges at every sharp corner of the outline).
-        paint: { 'line-color': FRONT_BAND_COLOUR, 'line-opacity': 1, 'line-width': metresWidth(FRONT_WIDTH_M) } });
+        paint: { 'line-color': FRONT_BAND_COLOUR, 'line-opacity': 1, 'line-width': bandWidth() } });
       // Small separate parts of the estimated fire: a small mark, no front band.
+      // Small parts grown from operator-confirmed fires: their estimated edge as a line (no band: it would swamp them).
+      map.addLayer({ id: 'nowcast-op-edge', type: 'line', source: 'nowcast', filter: ['==', ['get', 'role'], 'nowop'],
+        layout: { 'line-join': 'round' }, paint: { 'line-color': FRONT_COLOUR, 'line-width': 2, 'line-opacity': 0.95 } });
       map.addLayer({ id: 'nowcast-spots', type: 'circle', source: 'nowcast', filter: ['==', ['get', 'role'], 'spot'],
         paint: { 'circle-radius': 3, 'circle-color': FRONT_COLOUR, 'circle-opacity': 0.85, 'circle-stroke-color': FRONT_EDGE, 'circle-stroke-width': 0.8 } });
       // The look-ahead line: the expected fire edge at the chosen horizon, dashed yellow.
@@ -629,6 +624,13 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       // satellites), and a fire being drawn (points and the polygon so far).
       map.addSource('operator-fires', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addSource('draft', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      // The ground the fire model covers, outlined while a fire is being placed (a fire outside it cannot be spread).
+      map.addSource('model-area', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({ id: 'model-area-line', type: 'line', source: 'model-area',
+        paint: { 'line-color': '#e2e8f0', 'line-width': 1.4, 'line-opacity': 0.75, 'line-dasharray': [4, 3] } });
+      map.addLayer({ id: 'model-area-label', type: 'symbol', source: 'model-area',
+        layout: { 'symbol-placement': 'line', 'text-field': 'fire model area', 'text-size': 11, 'text-font': ['Noto Sans Regular'], 'symbol-spacing': 320, 'text-offset': [0, 0.9] },
+        paint: { 'text-color': '#e2e8f0', 'text-halo-color': '#07090d', 'text-halo-width': 1.4 } });
       map.addLayer({ id: 'opfire-fill', type: 'fill', source: 'operator-fires', paint: { 'fill-color': OPERATOR_FIRE_COLOUR, 'fill-opacity': 0.45 } }, 'callers-shadow');
       map.addLayer({ id: 'opfire-line', type: 'line', source: 'operator-fires', layout: { 'line-join': 'round' },
         paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-dasharray': [2, 1.2] } }, 'callers-shadow');
@@ -650,7 +652,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
 
       // One click handler, most specific feature first: caller, response point, street, fire front.
       const CLICKABLE = ['callers', 'report-points', 'cluster-fill', 'responders', 'streets', 'streets-forecast', 'flame-front', 'hotspots',
-        'observed-line', 'lookahead-line', 'front-band', 'nowcast-spots', 'nowcast-fill', 'forecast-zone-lines', 'forecast-zone-dotted',
+        'observed-line', 'lookahead-line', 'front-band', 'nowcast-op-edge', 'nowcast-spots', 'nowcast-fill', 'forecast-zone-lines', 'forecast-zone-dotted',
         'initial-reached', 'initial-pending', 'burned-area', 'hotspots-old'];
       const muted = (text: string) => `<div class="ns-muted">${text}</div>`;
       const tag = (p: { synthetic?: boolean; basis?: string }) => (p.synthetic ? '<span class="synthetic-tag">SYNTHETIC</span>'
@@ -734,7 +736,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             + (closure && (p.ts ?? 9e15) <= t && (p.satellite_reason ?? p.reason) ? muted(p.satellite_reason ?? p.reason ?? '') : '')
             + (p.imagery_date ? muted(`Imagery: ${p.imagery_date}`) : '')
             + muted(p.confirmed_by_operator ? 'Confirmed by operator' : 'Not confirmed by an operator') + tag(p);
-        } else if (['observed-line', 'lookahead-line', 'front-band', 'nowcast-spots', 'nowcast-fill', 'forecast-zone-lines', 'forecast-zone-dotted'].includes(hit.layer.id)) {
+        } else if (['observed-line', 'lookahead-line', 'front-band', 'nowcast-op-edge', 'nowcast-spots', 'nowcast-fill', 'forecast-zone-lines', 'forecast-zone-dotted'].includes(hit.layer.id)) {
           const nc = latest.current.nowcast;
           if (!nc) return;
           const role = hit.properties.role as string;
@@ -743,7 +745,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           html = role === 'obs'
             ? `<b>Seen by satellite ${fmtTime(f.valid_t, tz)}</b><div>Fire edge observed by VIIRS and Sentinel-2 up to the last pass (${nc.observed?.label ?? ''}) · ${f.area_km2.toFixed(1)} km²</div>`
               + muted('Observed, not modelled. Updated at every new pass.')
-            : role === 'now' || role === 'spot'
+            : role === 'now' || role === 'spot' || role === 'nowop'
             ? `<b>Fire now (model estimate)</b><div>Estimate, not observed: modelled fire extent for ${fmtTime(f.valid_t, tz)}, P ≥ 50 %`
               + `${role === 'now' ? ` · ${f.area_km2.toFixed(1)} km²` : ''}</div>`
               + `<div>Dark inside: burned ground. Bright band: the active front along the estimated edge (${frontWidthM(f.area_km2) ? `${Math.round(frontWidthM(f.area_km2))} m: 20 % of the fire's radius, at most ${FRONT_WIDTH_M} m` : 'a small fire: edge line only'}).`
@@ -850,7 +852,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
 
   // Operator-confirmed fires: the area (one in-flight update, latest wins) and a draggable label with a ✕ each.
   const fireMarkers = useRef(new Map<string, maplibregl.Marker>());
-  const firesKey = operatorFires.map((f) => `${f.id}:${f.label}:${f.sat?.text ?? ''}:${JSON.stringify(f.geometry.coordinates[0][0])}`).join('|');
+  const firesKey = operatorFires.map((f) => `${f.id}:${f.label}:${f.sat?.text ?? ''}:${f.outside ?? ''}:${JSON.stringify(f.geometry.coordinates[0][0])}`).join('|') + (compactFires ? '|compact' : '');
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready.current) return;
@@ -864,8 +866,14 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         const el = document.createElement('div');
         el.className = 'ns-opfire';
         el.dataset.operatorFire = f.id;
-        el.innerHTML = '<span class="ns-opfire-text"></span><button type="button" class="ns-opfire-del" aria-label="Delete this fire">✕</button>'
-          + '<span class="ns-opfire-sat"></span>';
+        el.innerHTML = '<span class="ns-opfire-chip"><span aria-hidden="true">🔥</span><span class="ns-opfire-time"></span><span class="ns-opfire-warn" title="See the note">⚠</span></span>'
+          + '<span class="ns-opfire-text"></span><button type="button" class="ns-opfire-del" aria-label="Delete this fire">✕</button>'
+          + '<span class="ns-opfire-sat"></span><span class="ns-opfire-out"></span>';
+        // Phones: the chip opens on a tap (and closes on the next).
+        el.addEventListener('click', (ev) => {
+          if (el.dataset.compact == null || (ev.target as HTMLElement).closest('.ns-opfire-del')) return;
+          if (el.dataset.open != null) delete el.dataset.open; else el.dataset.open = '';
+        });
         el.querySelector('button')!.addEventListener('click', (ev) => { ev.stopPropagation(); handlers.current.onDeleteFire?.(f.id); });
         m = new maplibregl.Marker({ element: el, draggable: true, anchor: 'bottom' }).setLngLat(at).addTo(map);
         const marker = m;
@@ -882,11 +890,19 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       sat.textContent = f.sat?.text ?? '';
       sat.hidden = !f.sat;
       el.dataset.sat = f.sat ? (f.sat.seen ? 'seen' : 'not-seen') : '';
+      const out = el.querySelector<HTMLElement>('.ns-opfire-out')!;
+      out.textContent = f.outside ?? '';
+      out.hidden = !f.outside;
+      el.querySelector('.ns-opfire-time')!.textContent = f.time ?? '';
+      // The chip's warning mark: not seen by the latest pass, or outside the model's area.
+      el.dataset.warn = (f.sat && !f.sat.seen) || f.outside ? 'true' : '';
+      if (compactFires) el.dataset.compact = ''; else { delete el.dataset.compact; delete el.dataset.open; }
+      el.setAttribute('aria-label', [f.label, f.sat?.text, f.outside].filter(Boolean).join('; '));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firesKey]);
   useEffect(() => () => { fireMarkers.current.forEach((m) => m.remove()); fireMarkers.current.clear(); }, [data]);
-  const drawKey = drawing ? JSON.stringify([drawing, drawingShape]) : '';
+  const drawKey = drawing ? JSON.stringify([drawing, drawingShape, !!modelArea]) : '';
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready.current) return;
@@ -895,7 +911,10 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     // Exactly what Confirm adds: the drawn polygon or line strip, or the disc at the centre of the clicks.
     if (drawingShape) features.push({ type: 'Feature', geometry: drawingShape, properties: {} });
     queue.current?.set('draft', { type: 'FeatureCollection', features });
+    queue.current?.set('model-area', { type: 'FeatureCollection', features: drawing && modelArea ? [{ type: 'Feature', geometry: modelArea, properties: {} }] : [] });
     map.getCanvas().style.cursor = drawing ? 'crosshair' : '';
+    // While placing a fire every tap is a point: two quick taps must not zoom the map (and swallow the second one).
+    if (drawing) map.doubleClickZoom.disable(); else map.doubleClickZoom.enable();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawKey]);
 
@@ -1022,6 +1041,8 @@ function nowcastTagPoints(nc: Nowcast | null, lookAhead: number, mode: MapMode, 
     if (p.role === 'spot') continue;
     const look = p.role === `h${lookAhead}`;
     if (p.role.startsWith('h') && !look && mode === 'simple') continue;
+    // One label for "fire now" (on its largest part); none for the small parts around operator-confirmed fires.
+    if (p.role === 'nowop' || (p.role === 'now' && p.main === false)) continue;
     const kind = p.role === 'obs' ? 'obs' : p.role === 'now' ? 'now' : look ? 'look' : 'other';
     const rings = f.geometry.type === 'Polygon' ? [f.geometry.coordinates[0]]
       : f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates.map((poly) => poly[0]) : [];

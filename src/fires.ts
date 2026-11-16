@@ -41,15 +41,41 @@ export function clickCentre(vertices: [number, number][]): [number, number] {
   return [vertices.reduce((a, v) => a + v[0], 0) / vertices.length, vertices.reduce((a, v) => a + v[1], 0) / vertices.length];
 }
 
+const KX = (lat: number) => 111320 * Math.cos((lat * Math.PI) / 180), KY = 110574;
+
+/** True when two edges of the closed ring through `v` cross (a bow-tie: the corners were tapped out of order). */
+export function selfCrossing(v: [number, number][]): boolean {
+  const n = v.length;
+  if (n < 4) return false;
+  const o = (a: number[], b: number[], c: number[]) => Math.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    if (j === i + 1 || (i === 0 && j === n - 1)) continue;                 // neighbours share a corner
+    const [a, b, c, d] = [v[i], v[(i + 1) % n], v[j], v[(j + 1) % n]];
+    if (o(a, b, c) !== o(a, b, d) && o(c, d, a) !== o(c, d, b)) return true;
+  }
+  return false;
+}
+
 /**
- * The area of a new fire. Drawn: exactly the clicked polygon (three clicks or more), or a 60 m wide strip between
- * two clicks. Point / 100 m / 500 m: one disc at the centre of the clicks (any drawn area is not used).
+ * The corners of a drawn area in an order that makes a plain polygon: as tapped when its edges do not cross;
+ * otherwise sorted by direction around their middle (the same corners, no bow-tie). `reordered` says which.
+ */
+export function untangle(v: [number, number][]): { vertices: [number, number][]; reordered: boolean } {
+  if (!selfCrossing(v)) return { vertices: v, reordered: false };
+  const [cx, cy] = clickCentre(v), kx = KX(cy);
+  const sorted = [...v].sort((p, q) => Math.atan2((p[1] - cy) * KY, (p[0] - cx) * kx) - Math.atan2((q[1] - cy) * KY, (q[0] - cx) * kx));
+  return { vertices: sorted, reordered: true };
+}
+
+/**
+ * The area of a new fire. Drawn: the polygon through the tapped corners (three or more; put in order when its edges
+ * would cross), or a 60 m wide strip between two corners. Point / 100 m / 500 m: one disc at the centre of the clicks.
  */
 export function fireGeometry(vertices: [number, number][], size: FireSize): Polygon {
-  if (size === 'drawn' && vertices.length >= 3) return { type: 'Polygon', coordinates: [[...vertices, vertices[0]]] };
+  if (size === 'drawn' && vertices.length >= 3) { const v = untangle(vertices).vertices; return { type: 'Polygon', coordinates: [[...v, v[0]]] }; }
   if (size === 'drawn' && vertices.length === 2) {
     const [[x0, y0], [x1, y1]] = vertices;
-    const kx = 111320 * Math.cos((((y0 + y1) / 2) * Math.PI) / 180), ky = 110574;
+    const kx = KX((y0 + y1) / 2), ky = KY;
     const dx = (x1 - x0) * kx, dy = (y1 - y0) * ky, len = Math.hypot(dx, dy) || 1;
     const nx = (-dy / len) * STRIP_HALF_M / kx, ny = (dx / len) * STRIP_HALF_M / ky;
     return { type: 'Polygon', coordinates: [[[x0 + nx, y0 + ny], [x1 + nx, y1 + ny], [x1 - nx, y1 - ny], [x0 - nx, y0 - ny], [x0 + nx, y0 + ny]]] };
@@ -98,4 +124,67 @@ export function pointIn(geom: GeoJSON.Geometry | null | undefined, [x, y]: [numb
     }
   }
   return ins;
+}
+
+/** Where a fire lies against the fire model's area: all of it inside, part of it, or none (then it cannot be spread). */
+export function fireInModel(g: Polygon, modelArea: Polygon | null): 'inside' | 'partly' | 'outside' | 'unknown' {
+  if (!modelArea) return 'unknown';
+  const pts = [centre(g), ...g.coordinates[0]];
+  const n = pts.filter((p) => pointIn(modelArea, p)).length;
+  return n === pts.length ? 'inside' : n === 0 ? 'outside' : 'partly';
+}
+
+/** Roads are closed this close to an operator-confirmed fire (the forecast's safety buffer). */
+export const FIRE_CLOSURE_BUFFER_M = 150;
+
+/**
+ * Streets closed by operator-confirmed fires themselves, whatever the model says: every street inside a fire or within
+ * FIRE_CLOSURE_BUFFER_M of it, from the time the fire was added (or moved there). Fires the operator deleted close
+ * nothing. Returns street id -> { at, fire }.
+ */
+export function fireClosures(fires: OperatorFire[], streets: { properties: { id: string }; geometry: GeoJSON.LineString | GeoJSON.MultiLineString }[]):
+  Map<string, { at: number; fireId: string }> {
+  const out = new Map<string, { at: number; fireId: string }>();
+  for (const f of fires) {
+    if (f.deletedAt != null) continue;
+    for (const v of f.versions) {
+      const ring = v.geometry.coordinates[0];
+      const lat0 = ring[0][1], kx = KX(lat0);
+      const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+      const pad = FIRE_CLOSURE_BUFFER_M;
+      const box = [Math.min(...xs) - pad / kx, Math.min(...ys) - pad / KY, Math.max(...xs) + pad / kx, Math.max(...ys) + pad / KY];
+      const near = ([x, y]: number[]) => {
+        if (x < box[0] || x > box[2] || y < box[1] || y > box[3]) return false;
+        if (pointIn(v.geometry, [x, y])) return true;
+        for (let i = 1; i < ring.length; i++) {
+          const ax = (ring[i - 1][0] - x) * kx, ay = (ring[i - 1][1] - y) * KY, bx = (ring[i][0] - x) * kx, by = (ring[i][1] - y) * KY;
+          const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+          const t = L ? Math.min(1, Math.max(0, -(ax * dx + ay * dy) / L)) : 0;
+          if (Math.hypot(ax + t * dx, ay + t * dy) <= pad) return true;
+        }
+        return false;
+      };
+      for (const s of streets) {
+        const have = out.get(s.properties.id);
+        if (have && have.at <= v.at) continue;
+        const lines = s.geometry.type === 'LineString' ? [s.geometry.coordinates] : s.geometry.coordinates;
+        let hit = false;
+        for (const line of lines) {
+          for (let i = 0; i < line.length && !hit; i++) {
+            if (near(line[i])) { hit = true; break; }
+            if (i === 0) continue;
+            // Long segments: sampled every 40 m, so a road crossing the fire between two vertices is found.
+            const len = Math.hypot((line[i][0] - line[i - 1][0]) * kx, (line[i][1] - line[i - 1][1]) * KY);
+            for (let k = 1; k < Math.floor(len / 40) && !hit; k++) {
+              const t = (k * 40) / len;
+              if (near([line[i - 1][0] + t * (line[i][0] - line[i - 1][0]), line[i - 1][1] + t * (line[i][1] - line[i - 1][1])])) hit = true;
+            }
+          }
+          if (hit) break;
+        }
+        if (hit) out.set(s.properties.id, { at: v.at, fireId: f.id });
+      }
+    }
+  }
+  return out;
 }

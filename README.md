@@ -388,6 +388,21 @@ into the real scenario:
   label says "now seen by satellite 13:43"; otherwise "⚠ not seen by satellite at 13:43 — still burning?". It is
   never deleted for that; the operator decides.
 - Sizes are diameters: point (~60 m, one model cell), about 100 m, about 500 m.
+- **A drawn area is always a plain polygon:** corners tapped in an order whose lines would cross (a bow-tie) are put
+  in order around their middle, and the box says so. While a fire is being placed, two quick taps never zoom the map.
+- **An operator fire grows from the minute it is confirmed:** the forecast is computed at Confirm and "fire now" is
+  advanced along it every half hour, satellite or not. The part of the forecast grown from an operator fire is always
+  drawn as an area with its edge, however small (small parts that come from the satellites stay small marks); a point
+  for it hid the growth and drifted. Every part of "fire now" has a front band for its own size.
+- **Roads:** every street inside an operator-confirmed fire or within 150 m of it is closed from the minute the fire
+  is added ("inside or within 150 m of an operator-confirmed fire"), whatever the model says. Deleting the fire
+  takes those closures back.
+- **The fire model covers only part of the map** (28.02–28.21° E, 36.81–36.90° N: the ground the fire crossed; the
+  roads go on to Marmaris and Datça). A fire placed outside it is shown and closes its roads, but cannot be spread:
+  the box says so before Confirm, the model's area is outlined on the map while a fire is placed, and the fire's
+  label says "outside the fire model's area".
+- **On a phone** an operator fire is a small chip (flame, time, ⚠ when the latest pass did not see it or it is
+  outside the model's area); a tap opens its label, notes and ✕. "Update" sits beside the closed forecast button.
 - Why "the fire estimated now" and not the last satellite edge alone: when the last pass is hours old, starting from
   its edge at the current time would shrink the fire. The estimate is itself derived from that edge by the model.
 
@@ -558,6 +573,7 @@ default (adjustable in the Crews section, logged; applies to crews sent afterwar
   re-route or a reassign neither shows yet (card, map and Crews panel alike); forward again they return as they
   were. Checked by `tests/crews.test.ts` and a browser test that compares the rewound screen with a page opened at
   that time.
+- A vehicle just dispatched, still at its station, already faces the way its first street leads.
 - **Watching a vehicle drive:** playback also runs at 1, 5 and 15 min/s. While it runs the vehicle is placed on its
   route every frame, for the scenario time of that frame, and its icon turns the way it drives. **Follow** (in the
   Crews panel and on the card of a crew on the road) keeps the map on that vehicle and slows playback to 1 min/s;

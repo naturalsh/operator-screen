@@ -10,7 +10,7 @@ import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
 import { routeRisk, saferRoute, streetNamer } from './routeRisk';
 import { LatestRequest } from './latest';
 import { BrowserModel, browserRun } from './spread/browser';
-import { SOURCE_LABEL as FIRE_SOURCE_LABEL, SIZE_LABEL, centre, fireGeometry, fireKey, firesAt, pointIn, rewriteFires, translate, type FireSize, type OperatorFire } from './fires';
+import { SOURCE_LABEL as FIRE_SOURCE_LABEL, SIZE_LABEL, FIRE_CLOSURE_BUFFER_M, centre, fireClosures, fireGeometry, fireInModel, fireKey, firesAt, pointIn, rewriteFires, translate, untangle, type FireSize, type OperatorFire } from './fires';
 import { AddFireDialog } from './components/AddFireDialog';
 import { circle } from './reports';
 import {
@@ -87,6 +87,8 @@ export function App() {
   };
   const browserModel = useRef<BrowserModel | null>(null);
   const [modelState, setModelState] = useState<'off' | 'loading' | 'ready' | 'failed'>('off');
+  // The ground the fire model covers: a fire outside it is shown and closes its roads, but cannot be spread.
+  const [modelArea, setModelArea] = useState<GeoJSON.Polygon | null>(null);
   const [modelBusy, setModelBusy] = useState<{ done: number; total: number } | null>(null);
   const browserRequests = useRef(new LatestRequest());
   /** The slider is grabbed or released. Released during playback: redraw at the new time, then play on from there. */
@@ -356,9 +358,19 @@ export function App() {
   const streetsVersion = useMemo(() => {
     if (!data || !precomputed) return 0;
     const tz = data.entry.timezone ?? 'UTC';
-    applyForecastClosures(data.streets.features, forecastClosures(allLoads, precomputed.first), (x) => `${fmtTime(x, tz)} local`);
+    const closures = forecastClosures(allLoads, precomputed.first);
+    // Operator-confirmed fires close the streets inside and next to them from the moment they are added, whatever
+    // the model says (also outside the model's area).
+    for (const [id, c] of fireClosures(fires, data.streets.features)) {
+      const have = closures.get(id);
+      if (have && have.at <= c.at) continue;
+      const f = fires.find((x) => x.id === c.fireId)!;
+      closures.set(id, { at: c.at, runId: `operator-fire:${c.fireId}`, issuedAt: c.at, loadedAt: c.at,
+        reason: `inside or within ${FIRE_CLOSURE_BUFFER_M} m of an operator-confirmed fire (${FIRE_SOURCE_LABEL[f.source]}, added ${fmtTime(f.addedAt, tz)} local)` });
+    }
+    applyForecastClosures(data.streets.features, closures, (x) => `${fmtTime(x, tz)} local`);
     return ++closureVersion.current;
-  }, [data, precomputed, allLoads]);
+  }, [data, precomputed, allLoads, fires]);
   const inForce = useMemo(() => (precomputed ? forecastInForce(allLoads, precomputed.first, now) : null), [precomputed, allLoads, now]);
   // A pass reached whose browser update is still being computed (it will replace the forecast in force).
   const autoPending = autoPlan.find((p) => p.key && p.load.at <= now && !autoRuns.has(p.key) && (!inForce || p.load.at > inForce.at)) ?? null;
@@ -392,7 +404,12 @@ export function App() {
   // fire edge the satellites last saw (the latest observation-started forecast by now, without concept reports).
   const observedRun = useMemo(() => precomputed?.runs.filter((r) => r.trigger === 'observation' && r.issuedAt <= now).pop() ?? null,
     [precomputed, now]);
-  const nowcast = useMemo(() => nowcastAt(inForce?.run ?? null, now, observedRun), [inForce, now, observedRun]);
+  // Places of the operator-confirmed fires the forecast in force started from: its parts around them stay areas.
+  const nowcast = useMemo(() => {
+    const ids = (inForce?.run as { operatorFires?: string[] } | undefined)?.operatorFires ?? [];
+    const keep = fires.filter((f) => ids.includes(f.id)).flatMap((f) => f.versions.flatMap((v) => [centre(v.geometry), ...v.geometry.coordinates[0]]));
+    return nowcastAt(inForce?.run ?? null, now, observedRun, keep);
+  }, [inForce, now, observedRun, fires]);
   const streetById = useMemo(
     () => new Map<string, StreetFeature>((data?.streets.features ?? []).map((s) => [s.properties.id, s])), [data]);
   const timeZone = data?.entry.timezone ?? 'UTC';
@@ -663,7 +680,7 @@ export function App() {
     const m = new BrowserModel(`${import.meta.env.BASE_URL}scenarios/${folder}/`, data.streets.features);
     browserModel.current = m;
     setModelState('loading');
-    m.ready.then(() => setModelState('ready')).catch(() => setModelState('failed'));
+    m.ready.then(() => { setModelArea(m.area); setModelState('ready'); }).catch(() => setModelState('failed'));
   }, [data, mapIdle]);
   useEffect(() => () => { browserModel.current?.dispose(); browserModel.current = null; }, []);
   const activeFires = useMemo(() => firesAt(fires, now), [fires, now]);
@@ -960,7 +977,12 @@ export function App() {
       (window as unknown as { __nsOnSettled?: () => void }).__nsOnSettled?.();   // test hook: the map as settled
       setResumeWait(false);
     },
-    operatorFires: activeFires.map((f) => ({ id: f.id, geometry: f.geometry, label: fireLabel(f), sat: fireSat.get(f.id) ?? null })),
+    operatorFires: activeFires.map((f) => {
+      const where = fireInModel(f.geometry, modelArea);
+      return { id: f.id, geometry: f.geometry, label: fireLabel(f), sat: fireSat.get(f.id) ?? null, time: fmtTime(f.observedAt, timeZone).split(', ')[1],
+        outside: where === 'outside' ? 'outside the fire model\'s area: closes its roads, is not spread' : where === 'partly' ? 'partly outside the fire model\'s area: only the part inside is spread' : null };
+    }),
+    compactFires: phone, modelArea,
     drawing, drawingShape: drawing?.length ? fireGeometry(drawing, draftSize) : null,
     onDrawClick: (p: [number, number]) => {
       if (!drawing) return;
@@ -972,6 +994,8 @@ export function App() {
   };
   const addFireDialog = (compact: boolean) => drawing && (
     <AddFireDialog vertices={drawing} size={draftSize} onSize={pickSize} cleared={draftCleared} now={now} timeZone={timeZone} compact={compact}
+      reordered={draftSize === 'drawn' && untangle(drawing).reordered}
+      inModel={drawing.length ? fireInModel(fireGeometry(drawing, draftSize), modelArea) : 'unknown'}
       onUndo={() => { setDrawing((d) => (d ? d.slice(0, -1) : d)); setDraftCleared(0); }}
       onCancel={() => setDrawing(null)}
       onConfirm={(meta) => addFire(fireGeometry(drawing, meta.size), meta)} />

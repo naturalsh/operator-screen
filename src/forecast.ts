@@ -194,7 +194,11 @@ export function loadAt(loads: ForecastLoad[], load: ForecastLoad): ForecastLoad[
   return [...loads.filter((l) => l.at <= load.at), load];
 }
 
-export interface ForecastClosure { at: number; runId: string; issuedAt: number; loadedAt: number }
+export interface ForecastClosure {
+  at: number; runId: string; issuedAt: number; loadedAt: number;
+  /** Set for a closure that does not come from a forecast contour (an operator-confirmed fire on the street). */
+  reason?: string;
+}
 
 /**
  * When each street is closed by a forecast, from the forecasts in force over time: a forecast is in force
@@ -229,7 +233,7 @@ export function applyForecastClosures(streets: StreetFeature[], closures: Map<st
     p.status0 ??= p.status === 'blocked' ? (p.status_before ?? 'open') : p.status;
     const c = closures.get(p.id);
     p.tm = c ? c.at : NEVER;
-    p.model_reason = c ? `forecast issued ${fmt(c.issuedAt)}, loaded ${fmt(c.loadedAt)} (P ≥ 50 %, 150 m safety buffer), reaches this street` : undefined;
+    p.model_reason = c ? c.reason ?? `forecast issued ${fmt(c.issuedAt)}, loaded ${fmt(c.loadedAt)} (P ≥ 50 %, 150 m safety buffer), reaches this street` : undefined;
     p.model_forecast_issued_at = c ? new Date(c.issuedAt).toISOString() : undefined;
     const first = Math.min(p.tm, p.ts ?? NEVER);
     if (first < NEVER) {
@@ -279,6 +283,11 @@ export interface NowcastFeatureProps {
   /** Time the contour is for (epoch ms; for 'obs' the pass time), the forecast's issue time and its hours after it. */
   valid_t: number;
   issue_t: number;
+  /** For 'now' / 'nowop' (one feature per part of the fire): that part's area and the width of its front band. */
+  part_km2?: number;
+  band_m?: number;
+  /** The largest part of "fire now": the one that carries its label. */
+  main?: boolean;
   step: number;
   area_km2: number;
   run_id: string;
@@ -308,27 +317,56 @@ function polygonKm2(rings: Ring[]): number {
   return ring(rings[0]) - rings.slice(1).reduce((a, h) => a + ring(h), 0);
 }
 
-/** The main parts of a fire area, and the small separate parts (< SMALL_PART_KM2) as points. */
-export function splitParts(g: Geometry): { main: Geometry | null; spots: [number, number][] } {
+export const FRONT_WIDTH_M = 300;
+/** The band is at most this share of the fire's equivalent radius (a small fire gets a narrow band)... */
+export const FRONT_SHARE_OF_RADIUS = 0.2;
+/** ...and below this width only an edge line is drawn. */
+export const FRONT_MIN_M = 25;
+
+/** Width of the front band for a fire of `areaKm2`: 20 % of the equivalent radius, at most 300 m; 0 = edge only. */
+export function frontWidthM(areaKm2: number): number {
+  const w = Math.min(FRONT_WIDTH_M, FRONT_SHARE_OF_RADIUS * Math.sqrt((areaKm2 * 1e6) / Math.PI));
+  return w >= FRONT_MIN_M ? w : 0;
+}
+
+const inRing = (r: Ring, [x, y]: number[]) => {
+  let ins = false;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    const [xi, yi] = r[i], [xj, yj] = r[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) ins = !ins;
+  }
+  return ins;
+};
+
+/**
+ * The main parts of a fire area, and the small separate parts (< SMALL_PART_KM2): as points, except those that hold
+ * one of the `keep` points (operator-confirmed fires), which stay areas (`kept`) however small. A point for such a
+ * part hid its growth and wandered as the part grew.
+ */
+export function splitParts(g: Geometry, keep: number[][] = []): { main: Geometry | null; kept: Geometry | null; spots: [number, number][] } {
   const polys = (g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : []) as Ring[][];
-  if (!polys.length) return { main: null, spots: [] };
+  if (!polys.length) return { main: null, kept: null, spots: [] };
   const sized = polys.map((p) => ({ p, km2: polygonKm2(p) }));
   const largest = sized.reduce((a, b) => (b.km2 > a.km2 ? b : a));
   const main = sized.filter((x) => x.km2 >= SMALL_PART_KM2 || x === largest).map((x) => x.p);
-  const spots = sized.filter((x) => !main.includes(x.p)).map(({ p }) => {
+  const small = sized.filter((x) => !main.includes(x.p)).map((x) => x.p);
+  const kept = small.filter((p) => keep.some((k) => inRing(p[0], k)));
+  const spots = small.filter((p) => !kept.includes(p)).map((p) => {
     const r = p[0];
     return [r.reduce((a, c) => a + c[0], 0) / r.length, r.reduce((a, c) => a + c[1], 0) / r.length] as [number, number];
   });
-  return { main: main.length === 1 ? { type: 'Polygon', coordinates: main[0] } : { type: 'MultiPolygon', coordinates: main }, spots };
+  const geom = (ps: Ring[][]): Geometry | null => (!ps.length ? null : ps.length === 1 ? { type: 'Polygon', coordinates: ps[0] } : { type: 'MultiPolygon', coordinates: ps });
+  return { main: geom(main), kept: geom(kept), spots };
 }
 
 /**
  * "Fire now (model estimate)": the forecast in force advanced from its issue time to `now`; the look-ahead horizons
  * from there; and `observed`, the latest observation-started forecast by `now`, whose starting area is the fire edge
  * the satellites (VIIRS + Sentinel-2) have seen. Only forecasts issued by `now` are used, so nothing here comes from
- * later than the time shown.
+ * later than the time shown. `keep`: places of operator-confirmed fires; the parts of the forecast holding one are
+ * always drawn as areas.
  */
-export function nowcastAt(run: ForecastRun | null, now: number, observed?: ForecastRun | null): Nowcast | null {
+export function nowcastAt(run: ForecastRun | null, now: number, observed?: ForecastRun | null, keep: number[][] = []): Nowcast | null {
   if (!run || run.issuedAt > now || !run.steps.length) return null;
   const elapsedH = (now - run.issuedAt) / 3600000;
   const at = (h: number) => run.steps.find((s) => Math.abs(s.horizon - h) < 1e-6);
@@ -344,11 +382,20 @@ export function nowcastAt(run: ForecastRun | null, now: number, observed?: Forec
     const s = at(base.horizon + h);
     if (!s) { beyond.push(h); continue; }
     horizons.push(h);
-    const { main } = splitParts(s.geometry);
-    if (main) features.push({ type: 'Feature', geometry: main, properties: props(`h${h}`, h, s) });
+    // The look-ahead line: the main parts, and the small parts grown from operator-confirmed fires.
+    const { main, kept } = splitParts(s.geometry, keep);
+    const polys = [main, kept].flatMap((x) => (!x ? [] : x.type === 'Polygon' ? [x.coordinates] : (x as GeoJSON.MultiPolygon).coordinates));
+    if (polys.length) features.push({ type: 'Feature', geometry: polys.length === 1 ? { type: 'Polygon', coordinates: polys[0] } : { type: 'MultiPolygon', coordinates: polys }, properties: props(`h${h}`, h, s) });
   }
-  const { main, spots } = splitParts(base.geometry);
-  if (main) features.push({ type: 'Feature', geometry: main, properties: props('now', 0, base) });
+  const { main, kept, spots } = splitParts(base.geometry, keep);
+  // One feature per part, each with its own front band (20 % of that part's radius): a small fire beside a large one
+  // must not get the large one's 300 m band. The largest comes first and carries the "Fire now" label. Small parts
+  // grown from operator-confirmed fires are areas too (role "nowop"), with an edge line instead of a band.
+  const partsOf = (g: Geometry | null) => (!g ? [] : g.type === 'Polygon' ? [g.coordinates] : (g as GeoJSON.MultiPolygon).coordinates) as Ring[][];
+  partsOf(main).map((p) => ({ p, km2: polygonKm2(p) })).sort((a, b) => b.km2 - a.km2).forEach(({ p, km2 }, i) => features.push({ type: 'Feature',
+    geometry: { type: 'Polygon', coordinates: p }, properties: { ...props('now', 0, base), part_km2: km2, band_m: frontWidthM(km2), main: i === 0 } }));
+  for (const p of partsOf(kept)) features.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: p },
+    properties: { ...props('nowop', 0, base), part_km2: polygonKm2(p), band_m: 0 } });
   for (const c of spots) features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: props('spot', 0, base) });
   let seen: Nowcast['observed'] = null;
   if (observed && observed.issuedAt <= now && observed.lastObsAt != null && observed.steps[0]?.horizon === 0) {

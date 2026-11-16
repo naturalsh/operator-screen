@@ -10,7 +10,7 @@
  *   Runs are only dropped this way: an automatic update and an operator's run can be computed side by side.
  */
 import { ensemble, prepareGrid, type SpreadGrid, type SpreadModelFile } from './model';
-import { rasterize, smoothOutline, toCell, type GridGeo } from './geo';
+import { fromCell, rasterize, smoothOutline, toCell, type GridGeo } from './geo';
 import type { Geometry } from 'geojson';
 
 let grid: SpreadGrid | null = null;
@@ -59,7 +59,10 @@ self.onmessage = async (e: MessageEvent) => {
       const file = (await (await fetch(`${m.base}spread_model.json`)).json()) as SpreadModelFile;
       grid = prepareGrid(file, await loadGrid(m.base));
       geo = { width: grid.width, height: grid.height, transform: file.grid.transform, zone: file.grid.utm_zone };
-      postMessage({ type: 'ready', ms: Math.round(performance.now() - t) });
+      // The ground the model covers (its grid), for the screen to say when a fire is outside it.
+      const corner = (c: number, r: number) => fromCell(geo!, c, r).map((v) => Math.round(v * 1e5) / 1e5);
+      const area = [corner(0, 0), corner(geo.width, 0), corner(geo.width, geo.height), corner(0, geo.height), corner(0, 0)];
+      postMessage({ type: 'ready', ms: Math.round(performance.now() - t), area });
     } else if (m.type === 'streets' && grid && geo) {
       const buffer = grid.file.settings.safety_buffer_m;
       streetCells = (m.streets as [string, number[][]][]).map(([id, pts]) => [id, cellsNear(geo!, pts, buffer, grid!.res)] as [string, Int32Array])
