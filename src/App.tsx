@@ -3,7 +3,7 @@ import {
   URGENCY_LABEL, aheadContours, fileKind, fmtTime, loadIndex, loadScenario, modelLabel, streetLabel, streetsNear, visibleCallers,
 } from './data';
 import {
-  CREW_STATUS_LABEL, DEFAULT_ON_SCENE_MIN, candidatesFor, crewStateAt, makeCrews, missionTimes, reportMissionAt, rewriteFuture, withReturn,
+  CREW_STATUS_LABEL, DEFAULT_ON_SCENE_MIN, candidatesFor, crewStateAt, makeCrews, missionAsOf, missionTimes, reportMissionAt, rewriteFuture, withReturn,
   type Candidate, type Mission,
 } from './crews';
 import { SNAP_WARN_M, buildGraph, planLegs } from './routing';
@@ -429,8 +429,10 @@ export function App() {
       if (!m || !crew || cs.stage !== 'dispatched') continue;
       const state = crewStates.find((s) => s.crew.id === crew.id)!;
       const mine = state.mission?.id === m.id;
-      const times = missionTimes(m, streetById);
-      const last = m.legs[m.legs.length - 1];
+      // As it stood at the time shown: a re-route accepted later is not on the card yet.
+      const view = missionAsOf(m, now);
+      const times = missionTimes(view, streetById);
+      const last = view.legs[view.legs.length - 1];
       // A crew whose state no longer points at this mission has finished it.
       const status = mine ? state.status : 'available';
       let cutStreet: string | null = null;
@@ -455,7 +457,7 @@ export function App() {
       }
       out[reportId] = {
         crewName: crew.name, status, etaMin: mine ? state.etaMin : null,
-        km: m.legs.reduce((a, l) => a + l.km, 0), trackKm: m.legs.reduce((a, l) => a + l.trackKm, 0),
+        km: view.legs.reduce((a, l) => a + l.km, 0), trackKm: view.legs.reduce((a, l) => a + l.trackKm, 0),
         sentAt: m.createdAt, arrivedAt: times.arriveAt, leftAt: times.leaveAt,
         lastStretchBlocked: m.lastStretchBlocked, lastStretchM: m.lastStretchM, cutOff: mine && state.cutOff,
         holdFrom: times.holdFrom, cutStreet, alternative, risk, safer,
@@ -581,7 +583,8 @@ export function App() {
     const m = missions.find((x) => x.id === viewCases[c.id]?.missionId);
     const state = m && crewStates.find((s) => s.mission?.id === m.id);
     if (!m || !state || state.status !== 'en_route' || state.node == null) return;
-    const last = m.legs[m.legs.length - 1];
+    const legsNow = missionAsOf(m, now).legs;
+    const last = legsNow[legsNow.length - 1];
     const risk = routeRisk(last, safety.reach, now, safety.name);
     const alt = risk && saferRoute(graph, m.target, { id: state.crew.id, name: state.crew.name, node: state.node }, last, risk, safety.reach, now, safety.name, m.lastStretchM);
     if (!risk || !alt) return;

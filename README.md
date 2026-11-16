@@ -552,6 +552,12 @@ default (adjustable in the Crews section, logged; applies to crews sent afterwar
 - **Reassign**: a crew en route can be redirected to another waiting incident. The incident it leaves becomes
   **UNASSIGNED**, moves to the top of the list and shows a warning.
 - The **Crews** section lists each crew's status, position and incident; click (or tap) a crew to move the map to it.
+- **Both directions on the clock:** a route, its vehicle, the ETA and the crew's state are derived from the time shown
+  alone, like the fire layers. Moving the clock back before a dispatch removes its route line and vehicle and shows
+  the crew as available; back before a route cut the vehicle is driving its first route again; back before a
+  re-route or a reassign neither shows yet (card, map and Crews panel alike); forward again they return as they
+  were. Checked by `tests/crews.test.ts` and a browser test that compares the rewound screen with a page opened at
+  that time.
 - Every step (dispatch, reassign, the incident left unassigned, re-route, setting change) is in the decision log.
 - Crews and missions live in the page; reloading clears them. Moving the time slider back undoes nothing:
   positions and statuses are recomputed for the time shown.

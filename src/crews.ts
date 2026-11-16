@@ -61,6 +61,16 @@ export function reportMissionAt(reportId: string, missions: Mission[], now: numb
 }
 
 /**
+ * A mission as it stood at `now`: only the legs started by then (a re-route accepted later is not known yet), and the
+ * drive back, which is planned for the final leg, only once that leg has started. Everything shown for a time
+ * (status, position, route, ETA, card) is derived from this, so rewinding never shows a later decision.
+ */
+export function missionAsOf(m: Mission, now: number): Mission {
+  const legs = m.legs.filter((l, i) => i === 0 || l.startAt <= now);
+  return legs.length === m.legs.length ? m : { ...m, legs, back: null };
+}
+
+/**
  * Missions after a new decision at `now`: anything decided later on the timeline for the same crew or the same
  * report is dropped (the operator has rewound and decides again), and a cancellation that lay in that dropped
  * future is undone.
@@ -151,13 +161,17 @@ export function crewStateAt(crew: Crew, missions: Mission[], now: number, byId: 
   const hold = holdTime(leg, byId);
   const legEnd = leg.startAt + leg.minutes * 60000;
   const base = { crew, mission: m, cutOff: false };
-  if (!isLast || (hold != null && now >= hold)) {
-    // Stopped by a cut route (an earlier leg is always one that was cut).
-    const at = ((hold ?? legEnd) - leg.startAt) / 60000;
-    const times = missionTimes(m, byId);
+  // The mission as it stood at `now`: legs accepted later (a re-route after a cut) are not known yet.
+  const asOfNow = missionAsOf(m, now);
+  // An earlier leg was cut: the vehicle stopped when its street closed (or, if that closure is no longer on record,
+  // at the latest when the next leg started). Before that moment it is still driving this leg.
+  const stopAt = hold ?? (isLast ? null : Math.min(legEnd, m.legs[li + 1].startAt));
+  if (stopAt != null && now >= stopAt) {
+    const at = (stopAt - leg.startAt) / 60000;
+    const times = missionTimes(asOfNow, byId);
     return { ...base, status: 'holding', position: positionOnLeg(leg, at), times, etaMin: null, node: nodeOnLeg(leg, at) };
   }
-  const times = missionTimes(m, byId);
+  const times = missionTimes(asOfNow, byId);
   if (now < legEnd) {
     const at = (now - leg.startAt) / 60000;
     return { ...base, status: 'en_route', position: positionOnLeg(leg, at), times, etaMin: (legEnd - now) / 60000, node: nodeOnLeg(leg, at) };
