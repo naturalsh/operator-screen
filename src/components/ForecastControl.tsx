@@ -58,11 +58,19 @@ export function ForecastControl({ load, previous, updateTo, blockedNote, newRepo
   const six = (r?: ForecastRun | null) => r?.contours.find((c) => c.horizon === 6)?.areaKm2 ?? r?.contours[r.contours.length - 1]?.areaKm2;
   if (compact && !open) {
     return (
-      <button data-forecast-control="closed" data-forecast-run={run?.id ?? ''} data-forecast-issued={run?.issuedAt ?? ''} onClick={() => setOpen(true)}
-        className="absolute left-2 top-2 z-10 flex h-9 items-center gap-1.5 rounded-lg border border-ink-600 bg-ink-900/90 px-2.5 text-xs font-bold text-ink-100 shadow">
-        Forecast {load ? t(load.at) : '—'}
-        {load?.kind === 'auto' && <span className="rounded-full bg-ink-700 px-1.5 text-[10px] font-normal text-ink-200">auto</span>}
-      </button>
+      <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
+        <button data-forecast-control="closed" data-forecast-run={run?.id ?? ''} data-forecast-issued={run?.issuedAt ?? ''} onClick={() => setOpen(true)}
+          className="flex h-9 items-center gap-1.5 rounded-lg border border-ink-600 bg-ink-900/90 px-2.5 text-xs font-bold text-ink-100 shadow">
+          Forecast {load ? t(load.at) : '—'}
+          {load?.kind === 'auto' && <span className="rounded-full bg-ink-700 px-1.5 text-[10px] font-normal text-ink-200">auto</span>}
+        </button>
+        {/* Update forecast without opening the box (the box, opened, says what it does and what came of it). */}
+        <button data-update-forecast="compact" disabled={busy || !updateTo} onClick={onUpdate} aria-label="Update forecast"
+          title="Update forecast: computed now in this browser, with the current weather"
+          className="h-9 rounded-lg bg-sky-500 px-2.5 text-xs font-bold text-ink-950 shadow disabled:opacity-50">
+          {busy || modelBusy || autoUpdating ? 'Updating…' : 'Update'}
+        </button>
+      </div>
     );
   }
   const what = newReports > 0
