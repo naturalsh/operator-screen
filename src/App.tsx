@@ -440,7 +440,7 @@ export function App() {
       const at = reportMissionAt(id, missions, now);
       if (at.stage === 'dispatched') out[id] = { ...cs, stage: 'dispatched', missionId: at.mission!.id };
       else if (at.stage === 'unassigned') out[id] = { ...cs, stage: 'unassigned', missionId: undefined };
-      else if (cs.stage === 'dispatched' || cs.stage === 'unassigned') out[id] = { ...cs, stage: 'confirmed', missionId: undefined, unassignedNote: undefined };
+      else if (cs.stage === 'dispatched' || cs.stage === 'unassigned') out[id] = { ...cs, stage: 'taken', missionId: undefined, unassignedNote: undefined };
       else out[id] = cs;
     }
     return out;
@@ -458,7 +458,7 @@ export function App() {
   // Crews that could go to the selected report (only computed for the report the operator is looking at).
   const selectedStage = selected ? viewCases[selected.id]?.stage : undefined;
   const candidates = useMemo(() => {
-    if (!graph || !selected || scrubbing || !(selectedStage === 'confirmed' || selectedStage === 'unassigned')) return null;
+    if (!graph || !selected || scrubbing || !(selectedStage === 'taken' || selectedStage === 'unassigned')) return null;
     return candidatesFor(graph, [selected.place.lon, selected.place.lat], crewStates, now, undefined, safety);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph, selected, selectedStage, crewStates, now, streetsVersion, safety, scrubbing]);
@@ -514,7 +514,7 @@ export function App() {
     return out;
   }, [graph, viewCases, missions, crews, crewStates, streetById, now, safety, scrubbing]);
 
-  const awaiting = useMemo(() => callers.filter((c) => ['confirmed', 'unassigned'].includes(viewCases[c.id]?.stage ?? 'new'))
+  const awaiting = useMemo(() => callers.filter((c) => ['taken', 'unassigned'].includes(viewCases[c.id]?.stage ?? 'new'))
     .map((c) => ({ id: c.id, label: c.place.label ?? c.id })), [callers, viewCases]);
 
   const record = useCallback((c: { id: string; synthetic?: boolean }, action: Decision['action'], previous: string | null,
@@ -536,11 +536,14 @@ export function App() {
     patchCase(c.id, { stage: 'taken' });
     record(c, 'take', 'new', 'taken');
   };
-  const onConfirm = (c: CallerReport, urgency: Urgency) => {
-    patchCase(c.id, { stage: 'confirmed', urgency });
-    const suggested = c.synthetic ? 'synthetic scenario value' : 'agent suggestion';
-    record(c, 'confirm_urgency', `${URGENCY_LABEL[c.urgency]} (${suggested})`, URGENCY_LABEL[urgency],
-      urgency === c.urgency ? `${suggested} confirmed` : `${suggested} changed by the operator`);
+  /** Escalate: the dispatcher raises a call's urgency one step (it arrives reviewed by the call-taker and is
+   * otherwise read-only here). */
+  const onEscalate = (c: CallerReport) => {
+    const cur = viewCases[c.id]?.urgency ?? c.urgency;
+    const up: Urgency | null = cur === 'routine' ? 'urgent' : cur === 'urgent' ? 'life_threat' : null;
+    if (!up) return;
+    patchCase(c.id, { urgency: up });
+    record(c, 'escalate', URGENCY_LABEL[cur], URGENCY_LABEL[up], `escalated by the dispatcher (the call-taker set ${URGENCY_LABEL[c.urgency]})`);
   };
 
   /** Sends a crew to a report (by the safer route when asked). A crew that was on its way elsewhere leaves that
@@ -952,7 +955,7 @@ export function App() {
       synthetic={data.callersMeta.synthetic === true} selectedId={selected?.id ?? null}
       cases={viewCases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf} ahead={ahead} followId={follow} onFollow={followCrew} flashId={flashId}
       reachOf={safety ? (id) => safety.reach.get(id) : undefined}
-      canRoute={data.responders.length > 0} onSelect={setSelectedId} onTake={onTake} onConfirm={onConfirm}
+      canRoute={data.responders.length > 0} onSelect={setSelectedId} onTake={onTake} onEscalate={onEscalate}
       onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} onSaferRoute={onSaferRoute} />
   );
   const sidePanel = data && (

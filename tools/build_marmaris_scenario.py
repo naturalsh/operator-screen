@@ -782,6 +782,11 @@ def build_caller_reports(status_gdf: gpd.GeoDataFrame, t0: datetime, places: dic
                 "channel": ["voice", "voice", "whatsapp", "sms"][int(4 * _unit(key + "ch"))],
                 "summary": text.format(place=spoken, n=people),
                 "summary_en": text_en.format(place=spoken, n=people),
+                # The dispatcher screen receives calls already reviewed by the call-taker in the voice intake: the
+                # report reaches it when that review is done. Synthetic: one statement by the caller, no recording.
+                "reviewed_by": "call-taker (synthetic)",
+                "reviewed_at": _iso(reported.replace(second=0, microsecond=0)),
+                "transcript": text.format(place=spoken, n=people),
                 "confirmed_by_operator": _unit(key + "ok") < 0.4,
                 "synthetic": True,
                 "source": "nature-shield-operator synthetic sample",

@@ -44,6 +44,9 @@ function validateRecords(file, kind, records) {
     if (kind === 'caller' && props?.language !== 'en' && props?.synthetic && !props?.summary_en?.trim()) {
       report(file, id, ['synthetic report not in English without summary_en (the translation shown under the caller\'s words)']);
     }
+    if (kind === 'caller' && props?.synthetic && !(props?.reviewed_by && props?.reviewed_at)) {
+      report(file, id, ['synthetic report without reviewed_by / reviewed_at (the dispatcher screen shows who reviewed the call)']);
+    }
     if (ids.has(id)) report(file, id, ['duplicate id']);
     ids.add(id);
   }

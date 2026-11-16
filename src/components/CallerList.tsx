@@ -73,7 +73,8 @@ interface Props {
   canRoute: boolean;
   onSelect: (id: string | null) => void;
   onTake: (c: CallerReport) => void;
-  onConfirm: (c: CallerReport, urgency: Urgency) => void;
+  /** Raises the call's urgency one step (the only change to it a dispatcher makes). */
+  onEscalate: (c: CallerReport) => void;
   onDispatch: (c: CallerReport, crewId?: string, viaSafer?: boolean) => void;
   onReroute: (c: CallerReport) => void;
   /** En route crew: drive on by the safer route. */
@@ -267,28 +268,25 @@ function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign, 
 }
 
 function Actions(props: { c: CallerReport; cs: CaseState; selected: boolean } & Props) {
-  const { c, cs, onTake, onConfirm } = props;
-  const [choice, setChoice] = useState<Urgency>(cs.urgency ?? c.urgency);
+  const { c, cs, onTake, onEscalate } = props;
   const stop = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn(); };
   const crew = props.cardCrews[c.id];
+  const urgency = cs.urgency ?? c.urgency;
   return (
     <div className="mt-2" onClick={(e) => e.stopPropagation()}>
       {cs.stage === 'new' && (
         <button className={`${btn} bg-slate-200`} onClick={stop(() => onTake(c))}>Take</button>
       )}
-      {cs.stage === 'taken' && (
-        <div className="flex flex-wrap items-center gap-2">
-          <select aria-label="Urgency" value={choice} onChange={(e) => setChoice(e.target.value as Urgency)}
-            className="rounded bg-ink-700 px-1 py-1 text-xs text-ink-50">
-            {(Object.keys(URGENCY_LABEL) as Urgency[]).map((u) => <option key={u} value={u}>{URGENCY_LABEL[u]}</option>)}
-          </select>
-          <button className={`${btn} bg-emerald-300`} onClick={stop(() => onConfirm(c, choice))}>Confirm urgency</button>
-          {choice !== c.urgency && <span className="text-[11px] text-ink-400">{c.synthetic ? 'scenario set' : 'agent suggested'} {URGENCY_LABEL[c.urgency]}</span>}
-        </div>
-      )}
-      {(cs.stage === 'confirmed' || cs.stage === 'unassigned') && (
+      {/* Taken: straight to dispatch. The urgency came reviewed from the call-taker; the dispatcher can only raise it. */}
+      {(cs.stage === 'taken' || cs.stage === 'confirmed' || cs.stage === 'unassigned') && (
         <DispatchControls c={c} cs={cs} selected={props.selected} candidates={props.candidates} canRoute={props.canRoute}
           labelOf={props.labelOf} onDispatch={props.onDispatch} timeZone={props.timeZone} now={props.now} />
+      )}
+      {cs.stage !== 'new' && urgency !== 'life_threat' && (
+        <button data-escalate className="mt-1.5 rounded border border-rose-400 px-2 py-0.5 text-[11px] font-bold text-rose-200 hover:bg-rose-950"
+          title="Raise this call's urgency one step; written to the decision log" onClick={stop(() => onEscalate(c))}>
+          Escalate to {URGENCY_LABEL[urgency === 'routine' ? 'urgent' : 'life_threat']}
+        </button>
       )}
       {cs.stage === 'dispatched' && crew && (
         <CrewBox c={c} cs={cs} crew={crew} now={props.now} timeZone={props.timeZone} awaiting={props.awaiting}
@@ -322,6 +320,9 @@ export function CallerList(props: Props) {
         <h2 className="whitespace-nowrap text-xs font-bold uppercase tracking-wider text-ink-400">Caller reports · {callers.length}</h2>
         {synthetic && <span className="synthetic-tag whitespace-nowrap">SYNTHETIC DATA</span>}
       </div>
+      <p data-dispatcher-note className="border-b border-ink-800 px-3 py-1 text-[11px] leading-snug text-ink-400">
+        Dispatcher view. Calls arrive already reviewed by the call-taker in the voice intake tool.
+      </p>
       <div ref={list} data-report-list className="flex-1 overflow-y-auto">
         {callers.length === 0 && <p className="p-3 text-ink-400">No reports yet at this time.</p>}
         {callers.map((c) => {
@@ -350,10 +351,26 @@ export function CallerList(props: Props) {
               <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-ink-400">
                 <span>{fmtTime(Date.parse(c.reported_at), timeZone)}</span>
                 <span>{c.language.toUpperCase()}{c.channel ? ` · ${c.channel}` : ''}</span>
-                <span>{cs.urgency ? (cs.urgency === c.urgency ? 'urgency confirmed' : `urgency changed from ${URGENCY_LABEL[c.urgency]}`)
-                  : c.synthetic ? 'synthetic, generated from the fire scenario' : 'urgency suggested by the agent'}</span>
+                <span data-reviewed>{c.reviewed_by
+                  ? `Confirmed by ${c.reviewed_by}${c.reviewed_at ? ` · ${fmtTime(Date.parse(c.reviewed_at), timeZone).split(', ')[1]}` : ''}`
+                  : 'not reviewed by a call-taker'}</span>
+                {cs.urgency && cs.urgency !== c.urgency && <span data-escalated className="text-rose-200">escalated by the dispatcher from {URGENCY_LABEL[c.urgency]}</span>}
                 {c.synthetic && <span className="synthetic-tag">SYNTHETIC</span>}
               </div>
+              {/* The call as the voice intake recorded it: read-only here. */}
+              <details data-call-details className="mt-1 text-xs" onClick={(e) => e.stopPropagation()}>
+                <summary className="cursor-pointer select-none text-ink-400 hover:text-ink-200">Call details</summary>
+                <div className="mt-1 rounded border border-ink-700 bg-ink-900 p-2">
+                  <div className="text-[11px] uppercase tracking-wide text-ink-400">Transcript</div>
+                  {c.transcript
+                    ? <p data-transcript className="whitespace-pre-wrap text-ink-200" lang={c.language}>{c.transcript}</p>
+                    : <p className="text-ink-400">transcript not available</p>}
+                  <div className="mt-1.5 text-[11px] uppercase tracking-wide text-ink-400">Recording</div>
+                  {c.recording_url
+                    ? <audio data-recording controls preload="none" src={c.recording_url} className="mt-0.5 h-8 w-full" />
+                    : <p data-no-recording className="text-ink-400">recording not available{c.synthetic ? ' (synthetic)' : ''}</p>}
+                </div>
+              </details>
               <Actions {...props} c={c} cs={cs} selected={selected} />
               {selected && (
                 <div className="mt-2 rounded border border-ink-600 bg-ink-900 p-2 text-xs">

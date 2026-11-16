@@ -32,6 +32,12 @@ export interface CallerReport extends Provenance {
   channel?: string;
   summary: string;
   summary_en?: string;
+  /** Who reviewed the call in the voice intake tool before it reached this screen, and when. */
+  reviewed_by?: string;
+  reviewed_at?: string;
+  /** The call's transcript and a link to its recording, when the voice intake provides them. */
+  transcript?: string;
+  recording_url?: string;
   confirmed_by_operator: boolean;
 }
 
@@ -133,7 +139,7 @@ export interface Decision {
   scenario_time: string;
   operator: string;
   report_id: string;
-  action: 'take' | 'confirm_urgency' | 'dispatch' | 'dispatch_no_access' | 'dispatch_no_crew' | 'reroute' | 'reroute_no_access'
+  action: 'take' | 'escalate' | 'dispatch' | 'dispatch_no_access' | 'dispatch_no_crew' | 'reroute' | 'reroute_no_access'
     | 'reassign' | 'unassigned' | 'settings' | 'update_forecast' | 'confirm_report' | 'ask_confirmation'
     | 'add_fire' | 'move_fire' | 'delete_fire';
   previous: string | null;

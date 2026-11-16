@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nature-shield.example/schemas/caller_report.schema.json",
   "title": "CallerReport",
-  "description": "One report taken by the Voice intake tool. File layout: {\"metadata\": {...}, \"records\": [CallerReport, ...]}.",
+  "description": "One report taken by the Voice intake tool. File layout: {\"metadata\": {...}, \"records\": [CallerReport, ...]}. The operator screen is the dispatcher's view: calls arrive already reviewed by a call-taker (reviewed_by, reviewed_at).",
   "type": "object",
   "properties": {
     "id": {
@@ -80,6 +80,25 @@
     "summary_en": {
       "type": "string",
       "description": "English translation of `summary`, shown under it as \"Translation: ...\" when `language` is not en. Optional: the voice intake fills it; the synthetic data always has it."
+    },
+    "reviewed_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Who reviewed the call in the voice intake tool before it reached the dispatcher screen (a call-taker's name or id). The synthetic data has \"call-taker (synthetic)\"."
+    },
+    "reviewed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When that review was done (UTC). The dispatcher screen shows it as \"Confirmed by <reviewed_by> · HH:MM\"."
+    },
+    "transcript": {
+      "type": "string",
+      "description": "Optional transcript of the call, shown read-only under \"Call details\"."
+    },
+    "recording_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Optional link to the call's recording, played under \"Call details\"; without it the screen says \"recording not available\"."
     },
     "confirmed_by_operator": {
       "type": "boolean",

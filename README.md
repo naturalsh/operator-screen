@@ -564,8 +564,11 @@ default (adjustable in the Crews section, logged; applies to crews sent afterwar
 - A **vehicle icon** moves along the route with the time slider; the card and the icon count the ETA down.
 - If a street on the route becomes blocked while the crew is driving, the vehicle **stops where it is**, the card
   says which street cut the route and offers a **new route from the vehicle's position**.
-- **Reassign**: a crew en route can be redirected to another waiting incident. The incident it leaves becomes
-  **UNASSIGNED**, moves to the top of the list and shows a warning.
+- **Reassign**: a crew en route can be redirected to another call. "Redirect to" starts empty ("Choose a call…")
+  and lists only calls without a crew (taken or unassigned); the button works once a call is picked. A notice
+  then says "<crew> redirected to …; previous call is now UNASSIGNED", the new route is drawn, and the call left
+  behind becomes **UNASSIGNED**, moves to the top of the list and is marked. If there is no road from the crew to
+  the call picked, nothing is redirected and a notice says so.
 - The **Crews** section lists each crew's status, position and incident; click (or tap) a crew to move the map to it.
 - **Both directions on the clock:** a route, its vehicle, the ETA and the crew's state are derived from the time shown
   alone, like the fire layers. Moving the clock back before a dispatch removes its route line and vehicle and shows
@@ -629,16 +632,23 @@ Android 360 × 800: [map](docs/phone_android_360x800_1_map.png), [reports](docs/
 
 ## Operator actions and the decision log
 
-Each report card walks through three steps; nothing happens without a click.
+**Dispatcher view. Calls arrive already reviewed by the call-taker in the voice intake tool.** The screen does not
+review calls again: each card says "Confirmed by <call-taker> · HH:MM" (`reviewed_by`, `reviewed_at`), and its
+urgency is read-only. Nothing happens without a click:
 
-1. **Take**: the operator picks the report up.
-2. **Confirm urgency**: the agent's suggestion is preselected and can be changed before confirming.
-   The list re-sorts on the confirmed urgency; the report keeps the agent's original suggestion.
-3. **Dispatch**: the fastest crew is routed to the caller (see below).
+1. **Take**: the dispatcher picks the call up.
+2. **Dispatch**: the fastest crew is routed to the caller (see below).
+
+- **Escalate** raises a call's urgency one step when the dispatcher knows more (routine → urgent → life threat);
+  the card then says "escalated by the dispatcher from …" and the list re-sorts. There is no way to lower it here.
+- **Call details** (folded on every card, read-only): the transcript and the recording. With `recording_url` the
+  recording plays there; without it the card says "recording not available" ("(synthetic)" for the synthetic calls,
+  whose transcript is the one statement they consist of).
 
 The step reached is shown on the card and on the map marker (ring colour and label). Every click is written
 to the **Decision log** tab on the right: scenario time, wall-clock time, operator (name field in the header),
-the previous and the new value. **Download JSON** saves the log
+the previous and the new value. It holds the dispatcher's decisions only (take, dispatch, re-route, reassign,
+escalate, operator-confirmed fires, forecast updates, settings); the call-taker's review is not one of them. **Download JSON** saves the log
 (`{"record": "DecisionLog", "scenario": ..., "decisions": [...]}`); decisions on synthetic reports carry
 `"synthetic_report": true`. The log lives in the page: reloading or switching scenario clears it.
 
@@ -709,7 +719,7 @@ All three share the same provenance fields: `schema_version`, `source`, `source_
 
 | Record | Required fields | Optional |
 |---|---|---|
-| `CallerReport` | `id`, `reported_at`, `place` (`lon`, `lat`, `label`), `language` (`el`/`tr`/`en`/`fr`), `urgency` (`life_threat`/`urgent`/`routine`), `urgency_reasons[]`, `hazard`, `people_at_risk`, `summary`, `confirmed_by_operator` | `summary_en` (English translation, shown under the caller's words as "Translation: …" when `language` is not `en`; the synthetic data always has it), `channel` |
+| `CallerReport` | `id`, `reported_at`, `place` (`lon`, `lat`, `label`), `language` (`el`/`tr`/`en`/`fr`), `urgency` (`life_threat`/`urgent`/`routine`), `urgency_reasons[]`, `hazard`, `people_at_risk`, `summary`, `confirmed_by_operator` | `summary_en` (English translation, shown under the caller's words as "Translation: …" when `language` is not `en`; the synthetic data always has it), `reviewed_by` + `reviewed_at` (the call-taker who reviewed the call in the voice intake, and when: shown as "Confirmed by … · HH:MM"), `transcript`, `recording_url` (shown under "Call details"), `channel` |
 | `StreetAccess` | `id`, `osm_way_id`, `status` (`open`/`special_access`/`blocked`), `confirmed_by_operator`; with `basis: "imagery"` also `free_width_m` and `imagery_date` | `valid_at` + `status_before` (status that starts at a time), `basis` (`imagery`/`fire_model`/`satellite`/`fire_model_and_satellite`/`operator`), `reason`, per-source closure: `blocked_by`, `first_blocked_by`, `model_blocked_at`, `satellite_blocked_at`, `satellite_source`, `model_forecast_issued_at`, `model_reason`, `satellite_reason`; warning: `fire_nearby_at`, `fire_nearby_source`; `edge_id`, `name`, `highway`, `confidence`, `imagery_source`; for routing and labels: `u`, `v`, `length_m`, `near_place`, `label_point`, `near_fire_from` |
 | `FireFront` | `id`, `kind` (`forecast`/`observed`), `valid_at`; forecast: `horizon_hours`, `model_run_at`; observed: `observation_type`, `instrument` | forecast updates: `issued_at`, `forecast_set` (`initial`/`update`), `initialised_from`; `probability`, `area_km2`, `satellite`, `detections`, `frp_mw` |
 | `Responder` (optional file) | `id`, `name`, `kind` (`fire_station`/`gendarmerie`/`police`/`other`), `place` (`lon`, `lat`) | |

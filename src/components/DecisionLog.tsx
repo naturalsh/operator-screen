@@ -4,7 +4,7 @@ import { ReportQuote } from './ReportQuote';
 
 const ACTION_LABEL: Record<Decision['action'], string> = {
   take: 'Take',
-  confirm_urgency: 'Confirm urgency',
+  escalate: 'Escalate urgency',
   dispatch: 'Dispatch',
   dispatch_no_access: 'Dispatch: no road access',
   reroute: 'Re-route',
@@ -51,7 +51,7 @@ export function DecisionLog({ decisions, scenarioId, timeZone, labelOf, reportOf
       </div>
       <div className="flex-1 overflow-y-auto">
         {decisions.length === 0 && (
-          <p className="p-3 text-ink-400">No decisions yet. Take a report, confirm its urgency, then dispatch.</p>
+          <p className="p-3 text-ink-400">No decisions yet. Take a call, then dispatch a crew.</p>
         )}
         {[...decisions].reverse().map((d) => (
           <div key={d.seq} className="border-b border-ink-800 px-3 py-2" data-decision={d.action}>
