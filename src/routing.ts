@@ -359,6 +359,25 @@ export function positionOnLeg(leg: Leg, minutes: number): [number, number] {
   return [path[i - 1][0] + f * (path[i][0] - path[i - 1][0]), path[i - 1][1] + f * (path[i][1] - path[i - 1][1])];
 }
 
+/**
+ * Direction of travel on a leg `minutes` after its start, in degrees clockwise from north (the segment the vehicle
+ * is on; the last one with any length at the end of the leg). null for a leg without length.
+ */
+export function bearingOnLeg(leg: Leg, minutes: number): number | null {
+  const { path, cum } = leg;
+  if (path.length < 2) return null;
+  let i = 1;
+  while (i < cum.length - 1 && cum[i] < minutes) i++;
+  // The segment at i, or the nearest one with some length (stops and snapped ends repeat a point).
+  for (const k of [0, -1, 1, -2, 2, -3, 3]) {
+    const j = i + k;
+    if (j < 1 || j >= path.length) continue;
+    const dx = (path[j][0] - path[j - 1][0]) * Math.cos((path[j][1] * Math.PI) / 180), dy = path[j][1] - path[j - 1][1];
+    if (Math.hypot(dx, dy) > 1e-7) return ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
+  }
+  return null;
+}
+
 /** The last junction passed on a leg `minutes` after its start: where a vehicle re-routes from. */
 export function nodeOnLeg(leg: Leg, minutes: number): number {
   let i = 0;

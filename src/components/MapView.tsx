@@ -10,13 +10,26 @@ import {
 import { resolveBasemap } from '../basemap';
 import { CONCEPT_LABEL, STATEMENT_LABEL, circle, type ClusterState } from '../reports';
 import { CREW_STATUS_COLOUR, type CrewStatus } from '../crews';
+import { bearingOnLeg, positionOnLeg, type Leg } from '../routing';
 import { SourceQueue } from '../sourceQueue';
 import { centre } from '../fires';
 import { lookLabel, nowcastSource, type Nowcast } from '../forecast';
 import type { CallerReport, FireFront, ScenarioData, Stage, StreetAccess, Urgency } from '../types';
 
 /** A crew vehicle that is away from its station. */
-export interface Vehicle { id: string; name: string; status: CrewStatus; position: [number, number]; label: string }
+export interface Vehicle {
+  id: string; name: string; status: CrewStatus; position: [number, number]; label: string;
+  /** Direction of travel, degrees clockwise from north (null: unknown, the icon keeps its last direction). */
+  heading?: number | null;
+  /** While driving: the leg and the minute on it at which the vehicle stops; lets the map move it every frame. */
+  track?: { leg: Leg; stopMin: number } | null;
+}
+
+/** Icon rotation for a direction of travel: the truck is drawn facing east; heading west it is mirrored, not upside down. */
+export function vehicleTransform(heading: number): string {
+  const a = heading - 90;
+  return heading > 180 && heading < 360 ? `rotate(${a}deg) scaleY(-1)` : `rotate(${a}deg)`;
+}
 
 export type LayerKey = 'forecast' | 'initial' | 'observed' | 'streets' | 'nearby' | 'callers' | 'crews' | 'concept';
 
@@ -178,6 +191,11 @@ interface Props {
   onSettled?: () => void;
   /** Open a popup for a caller clicked on the map (off on phones: its card opens in the Reports panel instead). */
   callerPopup?: boolean;
+  /** Playback: while it runs, vehicles move along their legs every frame (`speed` in scenario hours per second). */
+  clock?: { playing: boolean; speed: number };
+  /** The vehicle the map follows (kept in the middle of the visible map); dragging the map ends it. */
+  followId?: string | null;
+  onFollowEnd?: () => void;
   /** Operator-confirmed fires on the map at the time shown (geometry and label). */
   /** `sat`: what the latest satellite pass since it was added says ("now seen by satellite 13:43", or a warning). */
   operatorFires?: { id: string; geometry: GeoJSON.Polygon; label: string; sat?: { text: string; seen: boolean } | null }[];
@@ -192,7 +210,7 @@ interface Props {
 }
 
 export function MapView({ data, now, layers, selectedId, nearIds, stages, routes, urgencyOf, onSelect, vehicles = [], focus = null, mode = 'simple',
-  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0, onSettled, callerPopup = true,
+  insetBottom = 0, insetRight = 0, fitFire = false, forecastRunId, streetsVersion = 0, fireVersion = 0, concept = [], nowcast = null, lookAhead = 1, onFirstIdle, settleKey = 0, onSettled, callerPopup = true, clock, followId = null, onFollowEnd,
   operatorFires = [], drawing = null, drawingShape = null, onDrawClick, onMoveFire, onDeleteFire }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -227,8 +245,12 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
   // The nowcast changes every 30 minutes of scenario time (or when another forecast is in force): reload it then.
   const latestSettled = useRef(onSettled);
   latestSettled.current = onSettled;
-  const handlers = useRef({ onDrawClick, onMoveFire, onDeleteFire, drawing, onSelect, callerPopup });
-  handlers.current = { onDrawClick, onMoveFire, onDeleteFire, drawing, onSelect, callerPopup };
+  const handlers = useRef({ onDrawClick, onMoveFire, onDeleteFire, drawing, onSelect, callerPopup, onFollowEnd });
+  handlers.current = { onDrawClick, onMoveFire, onDeleteFire, drawing, onSelect, callerPopup, onFollowEnd };
+  // The clock as the map last heard it (scenario time and when it arrived), to place vehicles between updates.
+  const clockRef = useRef({ now, stamp: 0, playing: false, speed: 1, followId: null as string | null, insetRight, insetBottom });
+  if (clockRef.current.now !== now || clockRef.current.playing !== !!clock?.playing) clockRef.current.stamp = performance.now();
+  Object.assign(clockRef.current, { now, playing: !!clock?.playing, speed: clock?.speed ?? 1, followId, insetRight, insetBottom });
   const nowcastKey = nowcast ? `${nowcast.run.id}|${nowcast.stepAt}|${nowcast.observed?.at}|${lookAhead}|${mode}` : '';
   const vehicleMarkers = useRef(new Map<string, maplibregl.Marker>());
 
@@ -403,15 +425,19 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         const el = document.createElement('div');
         el.className = 'ns-vehicle';
         el.dataset.vehicle = v.id;
-        el.innerHTML = '<svg viewBox="0 0 28 18" width="30" height="20" aria-hidden="true">'
+        el.innerHTML = '<svg viewBox="0 0 28 18" width="30" height="20" aria-hidden="true" class="ns-vehicle-icon">'
           + '<rect x="1" y="3" width="17" height="10" rx="1.5" class="ns-vehicle-body"/><path d="M18 6h5l4 4v3h-9z" class="ns-vehicle-body"/>'
           + '<circle cx="7" cy="14" r="3" fill="#07090d" stroke="#fff" stroke-width="1"/><circle cx="21" cy="14" r="3" fill="#07090d" stroke="#fff" stroke-width="1"/></svg>'
           + '<span class="ns-vehicle-label"></span>';
         marker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(v.position).addTo(map);
         vehicleMarkers.current.set(v.id, marker);
       }
-      marker.setLngLat(v.position);
       const el = marker.getElement();
+      // While playback runs, a driving vehicle is placed every frame (moveVehicles); here only when the clock rests.
+      if (!(clockRef.current.playing && v.track)) {
+        marker.setLngLat(v.position);
+        if (v.heading != null) el.querySelector<SVGElement>('.ns-vehicle-icon')!.style.transform = vehicleTransform(v.heading);
+      }
       el.dataset.status = v.status;
       el.style.setProperty('--vehicle', CREW_STATUS_COLOUR[v.status]);
       el.querySelector('.ns-vehicle-label')!.textContent = `${v.name} · ${v.label}`;
@@ -631,6 +657,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
         : p.basis === 'fire_model' ? '<span class="model-tag">MODEL OUTPUT</span>'
           : p.basis === 'satellite' ? '<span class="model-tag">SATELLITE</span>'
             : p.basis === 'fire_model_and_satellite' ? `<span class="model-tag">${modelLabel(latest.current.data.streetsMeta)}</span>` : '');
+      // Dragging the map by hand ends Follow (the map's own moves while following are not drags).
+      map.on('dragstart', () => { if (clockRef.current.followId) handlers.current.onFollowEnd?.(); });
       map.on('click', (e) => {
         // Drawing a fire: the click is a point of it, nothing else.
         if (handlers.current.drawing) { handlers.current.onDrawClick?.([e.lngLat.lng, e.lngLat.lat]); return; }
@@ -890,6 +918,59 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.key]);
+
+  // Follow starts close enough to see the vehicle drive.
+  useEffect(() => {
+    const map = mapRef.current;
+    const v = followId ? latest.current.vehicles.find((x) => x.id === followId) : null;
+    if (map && v && ready.current && map.getZoom() < 14) map.easeTo({ center: v.position, zoom: 14, duration: 600 });
+  }, [followId]);
+  /** The map kept on the followed vehicle: in the middle of the part not covered by the drawer or side panel. */
+  const followTo = (pos: [number, number]) => {
+    const map = mapRef.current;
+    if (!map || map.isZooming() || map.isRotating()) return;
+    const c = clockRef.current;
+    const p = map.project(pos);
+    const target = map.unproject([p.x + c.insetRight / 2, p.y + c.insetBottom / 2]);
+    const centre = map.getCenter();
+    if (Math.abs(target.lng - centre.lng) < 1e-7 && Math.abs(target.lat - centre.lat) < 1e-7) return;
+    map.jumpTo({ center: target });
+  };
+  // Vehicles between clock updates: while playback runs, every frame places each driving vehicle on its leg at the
+  // scenario time that frame stands for (the last time heard plus the playback speed times the wall time since),
+  // turns its icon the way it drives and, in Follow, keeps the map on it. The time is never run more than half a
+  // second of wall time ahead of the clock, so a stalled page does not send vehicles off on their own.
+  useEffect(() => {
+    if (!clock?.playing) {
+      // Clock at rest: the followed vehicle is centred where the clock puts it.
+      const v = followId ? vehicles.find((x) => x.id === followId) : null;
+      if (v && ready.current) followTo(v.position);
+      return;
+    }
+    let raf = 0;
+    const frame = () => {
+      const c = clockRef.current;
+      const t = c.now + c.speed * 3600000 * (Math.min(performance.now() - c.stamp, 500) / 1000);
+      for (const v of latest.current.vehicles) {
+        const marker = vehicleMarkers.current.get(v.id);
+        if (!marker) continue;
+        let pos = v.position;
+        if (v.track) {
+          const min = Math.min(Math.max((t - v.track.leg.startAt) / 60000, 0), v.track.stopMin);
+          pos = positionOnLeg(v.track.leg, min);
+          marker.setLngLat(pos);
+          const h = bearingOnLeg(v.track.leg, min);
+          if (h != null) marker.getElement().querySelector<SVGElement>('.ns-vehicle-icon')!.style.transform = vehicleTransform(h);
+        }
+        if (v.id === c.followId) followTo(pos);
+      }
+      (window as unknown as { __nsVehicleFrames?: number }).__nsVehicleFrames = ((window as unknown as { __nsVehicleFrames?: number }).__nsVehicleFrames ?? 0) + 1;
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clock?.playing, followId, followId && !clock?.playing ? vehicles.find((x) => x.id === followId)?.position.join(',') : '']);
 
   // "Packaged basemap": a map control in the bottom-right corner, so it stacks above the scale bar and the attribution
   // instead of being placed over them.

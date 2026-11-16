@@ -8,7 +8,7 @@
  * for a set time (default 45 minutes) and then drives back to its station.
  */
 import { NEVER } from './data';
-import { nodeOnLeg, planLegs, positionOnLeg, type Graph, type Leg, type Origin } from './routing';
+import { nodeOnLeg, planLegs, bearingOnLeg, positionOnLeg, type Graph, type Leg, type Origin } from './routing';
 import type { Responder, StreetFeature } from './types';
 import { routeRisk, saferRoute, type RouteRisk, type SaferRoute } from './routeRisk';
 
@@ -143,11 +143,16 @@ export interface CrewState {
   node: number | null;
   /** On scene with no road back to the station. */
   cutOff: boolean;
+  /** Direction of travel (degrees clockwise from north) where the vehicle is; null at the station. */
+  heading: number | null;
+  /** While driving: the leg and the minute on it at which the vehicle stops (its end, or where a closure holds it),
+   *  so the map can move the vehicle along it between clock updates. */
+  track: { leg: Leg; stopMin: number } | null;
 }
 
 /** Status and position of a crew at scenario time `now`. */
 export function crewStateAt(crew: Crew, missions: Mission[], now: number, byId: Map<string, StreetFeature>): CrewState {
-  const idle: CrewState = { crew, status: 'available', position: crew.home, mission: null, times: null, etaMin: null, node: null, cutOff: false };
+  const idle: CrewState = { crew, status: 'available', position: crew.home, mission: null, times: null, etaMin: null, node: null, cutOff: false, heading: null, track: null };
   // The crew's mission at `now`: the latest one created by then and not cancelled by then. By creation time,
   // not array order, so moving the clock back and forth always gives the same answer.
   const m = missions.filter((x) => x.crewId === crew.id && x.createdAt <= now && !(x.cancelledAt != null && x.cancelledAt <= now))
@@ -160,7 +165,7 @@ export function crewStateAt(crew: Crew, missions: Mission[], now: number, byId: 
   const isLast = li === m.legs.length - 1;
   const hold = holdTime(leg, byId);
   const legEnd = leg.startAt + leg.minutes * 60000;
-  const base = { crew, mission: m, cutOff: false };
+  const base = { crew, mission: m, cutOff: false, track: null, heading: null as number | null };
   // The mission as it stood at `now`: legs accepted later (a re-route after a cut) are not known yet.
   const asOfNow = missionAsOf(m, now);
   // An earlier leg was cut: the vehicle stopped when its street closed (or, if that closure is no longer on record,
@@ -169,22 +174,24 @@ export function crewStateAt(crew: Crew, missions: Mission[], now: number, byId: 
   if (stopAt != null && now >= stopAt) {
     const at = (stopAt - leg.startAt) / 60000;
     const times = missionTimes(asOfNow, byId);
-    return { ...base, status: 'holding', position: positionOnLeg(leg, at), times, etaMin: null, node: nodeOnLeg(leg, at) };
+    return { ...base, status: 'holding', position: positionOnLeg(leg, at), times, etaMin: null, node: nodeOnLeg(leg, at), heading: bearingOnLeg(leg, at) };
   }
   const times = missionTimes(asOfNow, byId);
   if (now < legEnd) {
     const at = (now - leg.startAt) / 60000;
-    return { ...base, status: 'en_route', position: positionOnLeg(leg, at), times, etaMin: (legEnd - now) / 60000, node: nodeOnLeg(leg, at) };
+    return { ...base, status: 'en_route', position: positionOnLeg(leg, at), times, etaMin: (legEnd - now) / 60000, node: nodeOnLeg(leg, at),
+      heading: bearingOnLeg(leg, at), track: { leg, stopMin: stopAt != null ? (stopAt - leg.startAt) / 60000 : leg.minutes } };
   }
   const scene = leg.path[leg.path.length - 1];
   const sceneNode = leg.nodes[leg.nodes.length - 1];
   if (times.leaveAt != null && now < times.leaveAt) {
-    return { ...base, status: 'on_scene', position: scene, times, etaMin: (times.leaveAt - now) / 60000, node: sceneNode };
+    return { ...base, status: 'on_scene', position: scene, times, etaMin: (times.leaveAt - now) / 60000, node: sceneNode, heading: bearingOnLeg(leg, leg.minutes) };
   }
-  if (!m.back) return { ...base, status: 'on_scene', position: scene, times, etaMin: null, node: sceneNode, cutOff: true };
+  if (!m.back) return { ...base, status: 'on_scene', position: scene, times, etaMin: null, node: sceneNode, cutOff: true, heading: bearingOnLeg(leg, leg.minutes) };
   if (times.backAt != null && now < times.backAt) {
     const at = (now - m.back.startAt) / 60000;
-    return { ...base, status: 'returning', position: positionOnLeg(m.back, at), times, etaMin: (times.backAt - now) / 60000, node: nodeOnLeg(m.back, at) };
+    return { ...base, status: 'returning', position: positionOnLeg(m.back, at), times, etaMin: (times.backAt - now) / 60000, node: nodeOnLeg(m.back, at),
+      heading: bearingOnLeg(m.back, at), track: { leg: m.back, stopMin: m.back.minutes } };
   }
   return idle;
 }

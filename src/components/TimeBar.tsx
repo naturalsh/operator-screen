@@ -10,6 +10,10 @@ export interface TimeMark {
   text: string;
 }
 
+/** Playback speeds in scenario hours per second of wall time. The slow ones are for watching a vehicle drive. */
+export const SPEED_1_MIN = 1 / 60;
+export const SPEEDS: [number, string][] = [[SPEED_1_MIN, '1 min/s'], [5 / 60, '5 min/s'], [0.25, '15 min/s'], [0.5, '30 min/s'], [1, '1 h/s'], [3, '3 h/s']];
+
 interface Props {
   start: number;
   end: number;
@@ -153,9 +157,7 @@ export function TimeBar({ start, end, now: applied, playing, speed, timeZone, ma
   );
   const speedSelect = (cls: string) => (
     <select value={speed} onChange={(e) => onSpeed(Number(e.target.value))} aria-label="Playback speed" className={cls}>
-      <option value={0.5}>30 min/s</option>
-      <option value={1}>1 h/s</option>
-      <option value={3}>3 h/s</option>
+      {SPEEDS.map(([v, label]) => <option key={label} value={v}>{label}</option>)}
     </select>
   );
   if (compact && thin) {

@@ -27,6 +27,7 @@ export interface CaseState {
 
 /** What a dispatched report's card shows about its crew at the current time. */
 export interface CardCrew {
+  crewId: string;
   crewName: string;
   status: CrewStatus;
   /** Minutes to arrival (en route), to leaving (on scene) or to the station (returning). */
@@ -77,6 +78,9 @@ interface Props {
   onReroute: (c: CallerReport) => void;
   /** En route crew: drive on by the safer route. */
   onSaferRoute?: (c: CallerReport) => void;
+  /** Follow: the map stays on that crew's vehicle (null: none). */
+  followId?: string | null;
+  onFollow?: (crewId: string | null) => void;
   onReassign: (from: CallerReport, toReportId: string) => void;
 }
 
@@ -172,9 +176,9 @@ function DispatchControls({ c, cs, selected, candidates, canRoute, labelOf, onDi
   );
 }
 
-function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign, onSaferRoute }: {
+function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign, onSaferRoute, followId, onFollow }: {
   c: CallerReport; cs: CaseState; crew: CardCrew; now: number;
-} & Pick<Props, 'timeZone' | 'awaiting' | 'onReroute' | 'onReassign' | 'onSaferRoute'>) {
+} & Pick<Props, 'timeZone' | 'awaiting' | 'onReroute' | 'onReassign' | 'onSaferRoute' | 'followId' | 'onFollow'>) {
   const targets = awaiting.filter((a) => a.id !== c.id);
   const [to, setTo] = useState('');
   const target = targets.find((a) => a.id === to) ?? targets[0];
@@ -191,6 +195,13 @@ function CrewBox({ c, cs, crew, now, timeZone, awaiting, onReroute, onReassign, 
           {crew.status === 'en_route' && crew.etaMin != null && <> · <b data-eta>ETA {mins(crew.etaMin)}</b></>}
           {' '}· {crew.km.toFixed(1)} km{crew.trackKm >= 0.5 ? ` (${crew.trackKm.toFixed(1)} km on forest tracks)` : ''}
         </span>
+        {onFollow && crew.status !== 'available' && (
+          <button data-follow={crew.crewId} aria-pressed={followId === crew.crewId} onClick={stop(() => onFollow(followId === crew.crewId ? null : crew.crewId))}
+            title="The map stays on this vehicle and playback slows to 1 min/s; click again to stop"
+            className={`ml-auto shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-bold ${followId === crew.crewId ? 'border-cyan-200 bg-cyan-300 text-ink-950' : 'border-cyan-500 text-cyan-100'}`}>
+            {followId === crew.crewId ? 'Following' : 'Follow'}
+          </button>
+        )}
       </div>
       <div className="mt-0.5 text-ink-400">
         {crew.status === 'en_route' && <>sent {fmtTime(crew.sentAt, timeZone)} · free-flow drive time, blocked streets avoided</>}
@@ -275,7 +286,7 @@ function Actions(props: { c: CallerReport; cs: CaseState; selected: boolean } & 
       )}
       {cs.stage === 'dispatched' && crew && (
         <CrewBox c={c} cs={cs} crew={crew} now={props.now} timeZone={props.timeZone} awaiting={props.awaiting}
-          onReroute={props.onReroute} onReassign={props.onReassign} onSaferRoute={props.onSaferRoute} />
+          onReroute={props.onReroute} onReassign={props.onReassign} onSaferRoute={props.onSaferRoute} followId={props.followId} onFollow={props.onFollow} />
       )}
     </div>
   );

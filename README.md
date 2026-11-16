@@ -558,6 +558,11 @@ default (adjustable in the Crews section, logged; applies to crews sent afterwar
   re-route or a reassign neither shows yet (card, map and Crews panel alike); forward again they return as they
   were. Checked by `tests/crews.test.ts` and a browser test that compares the rewound screen with a page opened at
   that time.
+- **Watching a vehicle drive:** playback also runs at 1, 5 and 15 min/s. While it runs the vehicle is placed on its
+  route every frame, for the scenario time of that frame, and its icon turns the way it drives. **Follow** (in the
+  Crews panel and on the card of a crew on the road) keeps the map on that vehicle and slows playback to 1 min/s;
+  pressing it again, or dragging the map, ends it and restores the speed from before. **Demo** opens the route-cut
+  scene paused at 1 min/s; when the operator dispatches its call, playback starts with Follow on that crew.
 - Every step (dispatch, reassign, the incident left unassigned, re-route, setting change) is in the decision log.
 - Crews and missions live in the page; reloading clears them. Moving the time slider back undoes nothing:
   positions and statuses are recomputed for the time shown.

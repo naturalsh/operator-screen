@@ -27,7 +27,7 @@ import { CallerList, NEAR_RADIUS_M, type CardCrew, type CaseState } from './comp
 import { DecisionLog } from './components/DecisionLog';
 import { MapView, type LayerKey, type MapMode, type Vehicle } from './components/MapView';
 import { SidePanel } from './components/SidePanel';
-import { TimeBar, type TimeMark } from './components/TimeBar';
+import { SPEED_1_MIN, TimeBar, type TimeMark } from './components/TimeBar';
 import { useMediaQuery } from './useMediaQuery';
 import { registerSW } from 'virtual:pwa-register';
 
@@ -108,6 +108,26 @@ export function App() {
   // "Update forecast" requests: a result that is not the latest (or comes back after the clock moved) is dropped.
   const forecastRequests = useRef(new LatestRequest());
   const [speed, setSpeed] = useState(1);
+  // Follow: the map stays on one crew's vehicle and playback runs at 1 min/s; leaving it restores the speed before.
+  const [follow, setFollow] = useState<string | null>(null);
+  const followRef = useRef<string | null>(null);
+  const speedRef = useRef(speed);
+  speedRef.current = speed;
+  const speedBeforeFollow = useRef<number | null>(null);
+  const followCrew = useCallback((crewId: string | null) => {
+    const cur = followRef.current;
+    if (crewId && !cur) {
+      if (speedBeforeFollow.current == null) speedBeforeFollow.current = speedRef.current;
+      setSpeed(SPEED_1_MIN);
+    }
+    if (!crewId && cur && speedBeforeFollow.current != null) { setSpeed(speedBeforeFollow.current); speedBeforeFollow.current = null; }
+    followRef.current = crewId;
+    setFollow(crewId);
+  }, []);
+  // A speed picked by hand stays: leaving Follow then no longer changes it.
+  const pickSpeed = useCallback((v: number) => { speedBeforeFollow.current = null; setSpeed(v); }, []);
+  // The rehearsed scene, armed by the Demo button: once its call is dispatched, the clock runs and Follow is on.
+  const demoArmed = useRef<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(params.get('call'));
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>({
     forecast: true, initial: false, observed: true, streets: true, nearby: false, callers: true, crews: true,
@@ -456,7 +476,7 @@ export function App() {
         alternative = alt ? { minutes: alt.leg.minutes, km: alt.leg.km } : null;
       }
       out[reportId] = {
-        crewName: crew.name, status, etaMin: mine ? state.etaMin : null,
+        crewId: crew.id, crewName: crew.name, status, etaMin: mine ? state.etaMin : null,
         km: view.legs.reduce((a, l) => a + l.km, 0), trackKm: view.legs.reduce((a, l) => a + l.trackKm, 0),
         sentAt: m.createdAt, arrivedAt: times.arriveAt, leftAt: times.leaveAt,
         lastStretchBlocked: m.lastStretchBlocked, lastStretchM: m.lastStretchM, cutOff: mine && state.cutOff,
@@ -517,6 +537,7 @@ export function App() {
     // Decisions later on the timeline for this crew or this report are replaced by this one; whatever the crew
     // was doing at `now` (driving elsewhere, or driving home) ends now.
     setMissions((all) => [...rewriteFuture(all, now, k.crew.id, c.id).map((m) => (old && m.id === old.id ? { ...m, cancelledAt: now } : m)), mission]);
+    if (demoArmed.current === c.id) { demoArmed.current = null; followCrew(k.crew.id); setPlaying(true); }
     const what = `${k.crew.name}, ETA ${mins(k.minutes)}, ${k.leg.km.toFixed(1)} km`;
     const blockedNote = [k.lastStretchBlocked ? `caller's street is blocked: crew stops ${Math.round(k.lastStretchM)} m away` : '',
       viaSafer ? `safer route, ${k0.safer!.extraMin >= 0.5 ? `+${mins(k0.safer!.extraMin)}` : 'no longer'}: avoids streets the forecast reaches within 2 h` : '',
@@ -873,8 +894,12 @@ export function App() {
     const leg = [...m.legs].reverse().find((l) => l.startAt <= now) ?? m.legs[0];
     return [{ reportId: m.reportId, edgeIds: leg.spans.map((x) => x.edgeId), cut: s.status === 'holding' }];
   }), [crewStates, now]);
+  // Follow ends by itself when its vehicle is gone (the crew is back, or the clock is before its dispatch).
+  useEffect(() => {
+    if (follow && crewStates.find((s) => s.crew.id === follow)?.status === 'available') followCrew(null);
+  }, [follow, crewStates, followCrew]);
   const vehicles: Vehicle[] = useMemo(() => crewStates.filter((s) => s.status !== 'available').map((s) => ({
-    id: s.crew.id, name: s.crew.name, status: s.status, position: s.position,
+    id: s.crew.id, name: s.crew.name, status: s.status, position: s.position, heading: s.heading, track: s.track,
     label: s.status === 'en_route' ? `ETA ${mins(s.etaMin ?? 0)}` : s.status === 'returning' ? `back in ${mins(s.etaMin ?? 0)}`
       : s.status === 'holding' ? 'route cut' : 'on scene',
   })), [crewStates]);
@@ -895,7 +920,7 @@ export function App() {
   const callerList = data && (
     <CallerList callers={callers} streets={data.streets.features} now={now} timeZone={timeZone}
       synthetic={data.callersMeta.synthetic === true} selectedId={selected?.id ?? null}
-      cases={viewCases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf} ahead={ahead}
+      cases={viewCases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf} ahead={ahead} followId={follow} onFollow={followCrew}
       reachOf={safety ? (id) => safety.reach.get(id) : undefined}
       canRoute={data.responders.length > 0} onSelect={setSelectedId} onTake={onTake} onConfirm={onConfirm}
       onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} onSaferRoute={onSaferRoute} />
@@ -915,7 +940,7 @@ export function App() {
       ) : null}
       onToggle={(k) => setLayers((l) => ({ ...l, [k]: !l[k] }))}
       crewStates={crewStates} labelOf={shortLabel} onSceneMin={onSceneMin} onSceneChange={changeOnScene}
-      onFocusCrew={(s) => setFocus({ lon: s.position[0], lat: s.position[1], key: Date.now() })} />
+      onFocusCrew={(s) => setFocus({ lon: s.position[0], lat: s.position[1], key: Date.now() })} followId={follow} onFollow={followCrew} />
   );
   const decisionLog = data && (
     <DecisionLog decisions={decisions} scenarioId={data.entry.id} timeZone={timeZone}
@@ -929,6 +954,7 @@ export function App() {
     // A caller picked on the map: its card is selected (the list scrolls to it); on a phone the Reports panel opens.
     onSelect: (id: string | null) => { setSelectedId(id); if (id && phone) setDrawer('reports'); },
     callerPopup: !phone,
+    clock: { playing: playing && !scrubbing && !resumeWait, speed }, followId: follow, onFollowEnd: () => followCrew(null),
     forecastRunId, streetsVersion, fireVersion, concept: clusterStates, nowcast, lookAhead, onFirstIdle: () => setMapIdle(true), settleKey,
     onSettled: () => {
       (window as unknown as { __nsOnSettled?: () => void }).__nsOnSettled?.();   // test hook: the map as settled
@@ -1008,6 +1034,14 @@ export function App() {
     setNow(t);
     // The scene starts with the automatic updates only (the operator's own loads are cleared).
     setLoads([]);
+    // Watched at 1 min/s with the map on the vehicle: both start when the operator dispatches the scene's call.
+    // The speed to go back to when Follow ends: the one from before the scene (or before a Follow still on).
+    const before = speedBeforeFollow.current ?? speedRef.current;
+    followRef.current = null;
+    setFollow(null);
+    speedBeforeFollow.current = before !== SPEED_1_MIN ? before : null;
+    setSpeed(SPEED_1_MIN);
+    demoArmed.current = demo.call ?? null;
     const c = data!.callers.find((x) => x.id === demo.call);
     if (c) { setSelectedId(c.id); setFocus({ lon: c.place.lon, lat: c.place.lat, key: Date.now() }); }
   };
@@ -1101,7 +1135,7 @@ export function App() {
               </div>
             </main>
             <TimeBar compact thin={landscape} start={start} end={end} now={now} playing={playing} speed={speed} timeZone={timeZone} marks={marks}
-              onSeek={setNow} onScrub={onScrub} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
+              onSeek={setNow} onScrub={onScrub} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={pickSpeed} />
           </>
         )}
       </div>
@@ -1204,7 +1238,7 @@ export function App() {
             </div>
           )}
           <TimeBar start={start} end={end} now={now} playing={playing} speed={speed} timeZone={timeZone} marks={marks}
-            onSeek={setNow} onScrub={onScrub} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={setSpeed} />
+            onSeek={setNow} onScrub={onScrub} onPlay={(p) => { if (p && now >= end) setNow(start); setPlaying(p); }} onSpeed={pickSpeed} />
         </>
       )}
     </div>

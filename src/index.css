@@ -69,9 +69,11 @@ body { background: #07090d; color: #f2f6fb; font-size: 14px; }
 
 /* Crew vehicles on the map. */
 .ns-vehicle { display: flex; flex-direction: column; align-items: center; pointer-events: none; --vehicle: #facc15; }
-.ns-vehicle svg { filter: drop-shadow(0 0 3px #000); }
+.ns-vehicle svg { filter: drop-shadow(0 0 3px #000); transform-origin: 50% 50%; }
 .ns-vehicle-body { fill: var(--vehicle); stroke: #07090d; stroke-width: 1; }
+/* The label hangs under the icon without taking part in the marker's size, so the icon's centre is the vehicle's place. */
 .ns-vehicle-label {
+  position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
   margin-top: 1px; padding: 0 5px; border-radius: 3px; background: rgba(7, 9, 13, 0.85); color: #f2f6fb;
   font: 600 11px/1.5 ui-sans-serif, system-ui, sans-serif; white-space: nowrap; border: 1px solid var(--vehicle);
 }

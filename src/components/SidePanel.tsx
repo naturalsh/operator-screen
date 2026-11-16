@@ -30,6 +30,8 @@ interface Props {
   onSceneMin: number;
   onSceneChange: (minutes: number) => void;
   onFocusCrew: (state: CrewState) => void;
+  followId?: string | null;
+  onFollow?: (crewId: string | null) => void;
   /** The forecast the operator loaded (forecast library); undefined: the latest update in the file. */
   forecastRunId?: string | null;
   /** CONCEPT DEMO panel (fire reports), shown under the layers when the concept layer is on. */
@@ -58,7 +60,7 @@ function Section({ title, kind, label, children }: { title: string; kind?: Kind;
   );
 }
 
-export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew, forecastRunId, conceptPanel, nowcast }: Props) {
+export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewStates, labelOf, onSceneMin, onSceneChange, onFocusCrew, followId, onFollow, forecastRunId, conceptPanel, nowcast }: Props) {
   const fire = data.fire.features.map((f) => f.properties);
   const cur = currentForecast(fire, now, forecastRunId);
   const hasUpdates = cur?.set === 'update';
@@ -123,16 +125,25 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
                     : s.status === 'on_scene' ? `${labelOf(m!.reportId)} · ${s.cutOff ? 'no road back' : `leaves in ${eta}`}`
                       : `→ ${s.crew.stationName} · back in ${eta}`;
               return (
-                <button key={s.crew.id} data-crew={s.crew.id} data-crew-status={s.status} onClick={() => onFocusCrew(s)}
-                  className="block w-full rounded px-1 py-1 text-left hover:bg-ink-800" title="Show on the map">
-                  <span className="flex items-center gap-2">
-                    <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CREW_STATUS_COLOUR[s.status] }} />
-                    <b>{s.crew.name}</b>
-                    <span className="ml-auto whitespace-nowrap text-xs" style={{ color: CREW_STATUS_COLOUR[s.status] }}>{CREW_STATUS_LABEL[s.status]}</span>
-                  </span>
-                  <span className="block pl-[18px] text-xs text-ink-400">{where}</span>
-                  <span className="block pl-[18px] font-mono text-[10px] text-ink-400">{s.position[1].toFixed(4)}° N, {s.position[0].toFixed(4)}° E</span>
-                </button>
+                <div key={s.crew.id} className="flex items-start gap-1">
+                  <button data-crew={s.crew.id} data-crew-status={s.status} onClick={() => onFocusCrew(s)}
+                    className="block min-w-0 flex-1 rounded px-1 py-1 text-left hover:bg-ink-800" title="Show on the map">
+                    <span className="flex items-center gap-2">
+                      <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CREW_STATUS_COLOUR[s.status] }} />
+                      <b>{s.crew.name}</b>
+                      <span className="ml-auto whitespace-nowrap text-xs" style={{ color: CREW_STATUS_COLOUR[s.status] }}>{CREW_STATUS_LABEL[s.status]}</span>
+                    </span>
+                    <span className="block pl-[18px] text-xs text-ink-400">{where}</span>
+                    <span className="block pl-[18px] font-mono text-[10px] text-ink-400">{s.position[1].toFixed(4)}° N, {s.position[0].toFixed(4)}° E</span>
+                  </button>
+                  {onFollow && s.status !== 'available' && (
+                    <button data-follow={s.crew.id} aria-pressed={followId === s.crew.id} onClick={() => onFollow(followId === s.crew.id ? null : s.crew.id)}
+                      title="The map stays on this vehicle and playback slows to 1 min/s; click again to stop"
+                      className={`mt-1 shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-bold ${followId === s.crew.id ? 'border-cyan-200 bg-cyan-300 text-ink-950' : 'border-cyan-600 text-cyan-100'}`}>
+                      {followId === s.crew.id ? 'Following' : 'Follow'}
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
