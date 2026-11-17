@@ -230,13 +230,17 @@ export function App() {
     const id = setTimeout(() => setFlashId(null), 8000);
     return () => clearTimeout(id);
   }, [flashId]);
-  /** Phone toast: placed above the map's bottom-right controls when they reach higher than its usual place. */
+  /** Phone toast: placed above the map's bottom-right controls when they reach higher than its usual place... */
   const placeToast = useCallback((el: HTMLDivElement | null) => {
     if (!el || !el.style.bottom) return;
     const box = el.parentElement?.getBoundingClientRect();
     const ctrl = el.parentElement?.querySelector('.maplibregl-ctrl-bottom-right')?.getBoundingClientRect();
-    if (!box || !ctrl || !ctrl.height) return;
-    el.style.bottom = `${Math.max(124, Math.ceil(box.bottom - ctrl.top + 8))}px`;
+    if (!box) return;
+    // ... and above the open drawer: over the cards it hid the very card it spoke about.
+    const drawer = document.querySelector('[data-drawer]:not([data-drawer="closed"])')?.getBoundingClientRect();
+    const overCtrl = ctrl && ctrl.height ? box.bottom - ctrl.top + 8 : 0;
+    const overDrawer = drawer && drawer.top > box.top && drawer.top < box.bottom && drawer.width > box.width * 0.8 ? box.bottom - drawer.top + 8 : 0;
+    el.style.bottom = `${Math.max(124, Math.ceil(overCtrl), Math.ceil(overDrawer))}px`;
   }, []);
   const loadSeq = useRef(0);
   const [forecastBusy, setForecastBusy] = useState(false);
@@ -1070,6 +1074,8 @@ export function App() {
     if (!demo) return;
     setPlaying(false);
     setTab('reports');
+    // On a phone the scene's call must be in front of the dispatcher too: the Reports panel opens on its card.
+    if (phone) setDrawer('reports');
     const t = Date.parse(demo.t);
     setNow(t);
     // The scene starts with the automatic updates only (the operator's own loads are cleared).

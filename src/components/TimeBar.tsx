@@ -110,8 +110,8 @@ function Marks({ start, end, marks, timeZone, height }: { start: number; end: nu
           className="pointer-events-none absolute bottom-full z-30 mb-1 rounded border border-ink-600 bg-ink-900 px-2 py-1 text-[11px] leading-snug text-ink-100 shadow-lg"
           style={{ width: Math.min(TIP_W, width), left: Math.min(Math.max(shown.x - TIP_W / 2, 0), Math.max(0, width - TIP_W)) }}>
           <div className="font-bold">{groupTitle(shown)}</div>
-          {shown.marks.map((m) => (
-            <div key={`${m.t}-${m.text}`}>
+          {shown.marks.map((m, i) => (
+            <div key={`${m.t}-${i}`}>
               <span style={{ color: KIND_COLOUR[m.kind] }}>■</span> {fmtTime(m.t, timeZone)} · {m.text}
             </div>
           ))}

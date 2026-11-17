@@ -171,7 +171,10 @@ export function SidePanel({ data, now, timeZone, layers, mode, onToggle, crewSta
         ) : <p className="mb-1 text-xs text-ink-400">No forecast issued yet.</p>}
         {nowcast ? (
           <div data-nowcast-list>
-            {[...nowcast.fc.features].filter(({ properties: f }) => f.role !== 'spot')
+            {/* One row per kind: "fire now" comes as one feature per part (and 'nowop' for parts grown from operator
+                fires), all carrying the same total area, so the first of each kind stands for all. */}
+            {[...nowcast.fc.features].filter(({ properties: f }) => f.role !== 'spot' && f.role !== 'nowop')
+              .filter((x, i, all) => all.findIndex((y) => y.properties.role === x.properties.role) === i)
               .sort((x, y) => (x.properties.role === 'obs' ? -1 : y.properties.role === 'obs' ? 1 : x.properties.h - y.properties.h))
               .map(({ properties: f }) => (
               <div key={f.role} className="flex items-center gap-2 py-0.5" data-nowcast-row={f.role}>
