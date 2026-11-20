@@ -10,6 +10,8 @@ interface Props {
   updateTo: ForecastRun | null;
   /** Why the button cannot load anything, e.g. after the end of the precomputed forecasts. */
   blockedNote: string | null;
+  /** Validation/service error from the live model; shown without replacing the current safe forecast. */
+  error?: string | null;
   /** CONCEPT DEMO: confirmed reports the forecast in force does not have yet. */
   newReports?: number;
   sourceKind: 'precomputed' | 'live';
@@ -51,7 +53,7 @@ export function lastUpdated(load: ForecastLoad, t: (x: number) => string): strin
  * The forecast in force and the operator's "Update forecast" button (map overlay, top left). The forecast updates
  * itself at every new satellite pass; the button re-runs it with the weather at the time shown.
  */
-export function ForecastControl({ load, previous, updateTo, blockedNote, newReports = 0, sourceKind, busy, timeZone, compact, nowcast, modelState = 'off', modelBusy, autoUpdating, onUpdate }: Props) {
+export function ForecastControl({ load, previous, updateTo, blockedNote, error, newReports = 0, sourceKind, busy, timeZone, compact, nowcast, modelState = 'off', modelBusy, autoUpdating, onUpdate }: Props) {
   const [open, setOpen] = useState(!compact);
   const run = load?.run;
   const t = (x: number) => fmtTime(x, timeZone);
@@ -105,6 +107,11 @@ export function ForecastControl({ load, previous, updateTo, blockedNote, newRepo
             </div>
           )}
           {run.sourceNote && <div className="mt-1 text-amber-300">{run.sourceNote}</div>}
+          <div data-forecast-confidence className="mt-1 text-ink-300">
+            Prediction confidence: {run.confidence == null
+              ? `not available (${run.confidenceReason ?? 'the model supplied no uncertainty estimate'})`
+              : `${Math.round(run.confidence * 100)}% ensemble agreement`}
+          </div>
           {nowcast && (
             <div data-observed className="mt-1.5 flex gap-1.5 px-1.5">
               <span className="mt-1.5 h-0.5 w-3 shrink-0 bg-white" />
@@ -141,6 +148,7 @@ export function ForecastControl({ load, previous, updateTo, blockedNote, newRepo
           <div data-model-busy className="mt-1 text-orange-200">Computing in this browser… {modelBusy.done}/{modelBusy.total} runs</div>
         )}
         {modelState === 'failed' && <div className="mt-1 text-amber-300">The browser model could not load: precomputed forecasts only.</div>}
+        {error && <div role="alert" data-forecast-error className="mt-1 rounded bg-rose-950/70 px-1.5 py-1 text-rose-200">{error}</div>}
         <div className="mt-1 text-ink-400" data-auto-note>
           Updates automatically at each new VIIRS or Sentinel-2 pass{load?.kind === 'auto' ? ` (last: ${autoLabel(load.run).replace('new ', '')}, ${t(load.at)})` : ''}.
         </div>

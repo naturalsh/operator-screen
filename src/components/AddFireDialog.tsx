@@ -49,8 +49,8 @@ export function AddFireDialog({ vertices, size, onSize, cleared = 0, reordered =
         </p>
       )}
       {(inModel === 'outside' || inModel === 'partly') && (
-        <p data-af-outside={inModel} className="mb-2 rounded bg-amber-950/60 px-1.5 py-1 text-amber-200">
-          {inModel === 'outside' ? 'Outside the fire model\'s area (dashed line on the map): the fire is shown and closes the roads in and next to it, but it cannot be spread.'
+        <p role={inModel === 'outside' ? 'alert' : undefined} data-af-outside={inModel} className="mb-2 rounded bg-amber-950/60 px-1.5 py-1 text-amber-200">
+          {inModel === 'outside' ? 'Outside the fire model\'s area (dashed line on the map): simulation cannot start. Place the ignition inside the model grid.'
             : 'Partly outside the fire model\'s area (dashed line on the map): only the part inside is spread.'}
         </p>
       )}
@@ -89,7 +89,7 @@ export function AddFireDialog({ vertices, size, onSize, cleared = 0, reordered =
           className={`rounded bg-ink-800 px-1.5 py-1 text-ink-50 ${compact ? 'col-span-3' : ''}`} />
       </div>
       <div className="mt-2.5 flex items-center gap-2">
-        <button data-af-confirm disabled={area ? n < MIN_DRAWN_POINTS : !n} onClick={() => onConfirm({ source, size, observedAt: now - ago * 60000, note: note.trim() })}
+        <button data-af-confirm disabled={(area ? n < MIN_DRAWN_POINTS : !n) || inModel === 'outside'} onClick={() => onConfirm({ source, size, observedAt: now - ago * 60000, note: note.trim() })}
           className="rounded bg-orange-400 px-3 py-1.5 font-bold text-ink-950 disabled:opacity-40">Confirm</button>
         {n > 0 && <button data-af-undo onClick={onUndo} className="rounded border border-ink-600 px-2 py-1.5 text-ink-200">{area ? 'Undo corner' : 'Remove point'}</button>}
         <button data-af-cancel onClick={onCancel} className="ml-auto rounded border border-ink-600 px-2 py-1.5 text-ink-200">Cancel</button>

@@ -1,61 +1,54 @@
-# Forecast API (for a live model server, not set up yet)
+# Ufuk wildfire model integration
 
-The screen gets every forecast through one interface, `ForecastSource` in `src/forecast.ts`:
+The operator screen's **Update forecast** trigger uses the private
+`naturalsh/wildfire_model` FastAPI service when the page is opened with
+`?forecast_api=http://localhost:8011`. The integrated and tested model revision is
+`d624a57241c018c64d81832b3f643f4517928c23` (`main`, 19 November 2026).
 
-- `PrecomputedForecasts` (used now): reads `public/scenarios/<id>/forecast_library.json`, written by
-  `tools/build_forecast_library.py`. One forecast at ignition, at every new VIIRS or Sentinel-2 burned-area
-  observation, and every 30 minutes in between. Works on the static site and offline.
-- `LiveForecasts`: asks a model server first and falls back to the precomputed forecast when the server does not
-  answer within 3 s or answers with something else. The screen then shows "live model did not answer;
-  precomputed". It is only used when the page is opened with `?forecast_api=<server url>`, e.g.
-  `http://localhost:5173/?forecast_api=http://localhost:8000`.
+Start the model beside this repository:
 
-The forecast panel shows **PRECOMPUTED** or **LIVE MODEL**, so the audience always knows which one is on screen.
+```sh
+cd ../wildfire_model
+uvicorn wildfire.api:app --port 8011
 
-## Request
-
-`POST {forecast_api}/forecast`, `Content-Type: application/json`:
-
-```json
-{ "scenario": "marmaris_2022", "at": 1655897400000, "kind": "update" }
+cd ../natural-shield-operator
+npm run dev
+# open http://localhost:5173/?forecast_api=http://localhost:8011
 ```
 
-| Field | Meaning |
-|---|---|
-| `scenario` | Scenario id from `public/scenarios/index.json`. |
-| `at` | Scenario time of the request, epoch milliseconds (UTC). |
-| `kind` | `update`: start from every VIIRS / Sentinel-2 observation acquired by `at`. `rerun`: no new observation; start from the fire the forecast in force estimates for `at`, with the weather from then on. |
+## Contract adapter
 
-## Response
+`LiveForecasts` in `src/forecast.ts` adapts the current operator contract to Ufuk's
+`POST /wildfire/forecast` contract:
 
-One record of `schemas/forecast_library.schema.json` (the same shape as a library entry), with
-`trigger: "live"` and street **ids** (not indexes) in `reach`:
+- The current fire estimate is GeoJSON EPSG:4326. Coordinates remain `[longitude, latitude]`.
+  Ufuk's `FireObservation` accepts one outer perimeter; a MultiPolygon is represented by the
+  convex outer ring containing all current parts.
+- The scenario's hourly weather becomes `WeatherStep`: wind remains km/h and meteorological
+  `wind_from_deg`; relative humidity and Celsius temperature become dead-fuel moisture percent.
+- Forecast horizons are 0.5-hour steps through 12 hours. The request omits `r0_scale`, so the
+  service's tested default `0.4` is exercised. The service still accepts an explicit scale.
+- Real street LineString/MultiLineString geometries and stable street ids are sent in `roads`.
+  Returned positive `road_risks[].first_horizon_h` values become the site's reach times. A null
+  road-risk result is rejected as missing data; missing data is never treated as zero risk.
+- `area_ha` is divided by 100 for the site's km² fields. Zone GeoJSON is passed to MapLibre.
+  Ensemble `confidence` is displayed directly; null is shown as “not available”, never derived
+  from fire area.
+- `issued_at`, `observed_at`, `valid_at` and horizon hours are checked for consistency before a
+  response reaches the map.
 
-```json
-{
-  "id": "marmaris_2022-live-20220622T1140Z",
-  "issued_at": "2022-06-22T11:40:00Z",
-  "trigger": "live",
-  "initialised_from": "VIIRS perimeter",
-  "last_observation_at": "2022-06-22T11:33:00Z",
-  "last_observation_label": "VIIRS S-NPP",
-  "start_area_km2": 31.2,
-  "contours": [{ "horizon_hours": 0, "valid_at": "2022-06-22T11:40:00Z", "area_km2": 31.2, "geometry": { "type": "Polygon", "coordinates": [] } },
-               { "horizon_hours": 1, "valid_at": "2022-06-22T12:40:00Z", "area_km2": 33.0, "shown": true, "geometry": { "type": "Polygon", "coordinates": [] } }],
-  "reach": [["marmaris_2022-street-1518696480-123-456", 2.0]]
-}
+A configured live flow never substitutes the browser or precomputed model. Service/network errors
+and 422 responses (including an ignition outside the configured landscape grid) are shown in the
+forecast panel.
+
+## Checks
+
+```sh
+npm test
+WILDFIRE_API=http://127.0.0.1:8011 npx tsx tests/ufukE2E.test.ts
 ```
 
-Rules the server must keep (the screen rejects an answer issued after `at`):
-
-- Use only observations acquired by `at` (the same "no hindsight" rule as `tools/test_no_hindsight.py`).
-- `reach`: hours after `issued_at` at which the P ≥ 50 % contour reaches each street, using the fire repo's
-  `evaluate_road_closures` with the 150 m safety buffer, every 30 minutes to 12 h. The screen computes forecast
-  closures and the route warnings from it.
-- `contours`: horizon 0 (the area the forecast started from), then the P ≥ 50 % contour every 30 minutes to 12 h,
-  GeoJSON in EPSG:4326; `shown: true` on +30 min, +1, +2, +3 and +6 h.
-
-A server can be a thin FastAPI wrapper around `forecast_runner(...)["run"](issued)` and `reach_hours(...)` in
-`tools/build_marmaris_scenario.py` / `tools/build_forecast_library.py`. One forecast takes about 0.5 s on a
-laptop. Allow the screen's origin in CORS. The server also needs the confirmed fire reports (see the concept demo)
-when it runs; the request will carry them as `reports` once that exists.
+The first command includes the deterministic contract regression. The optional second command
+runs the site's real adapter against a running Ufuk service, verifies map contours, positive
+near-road risks and confidence, then verifies that an outside ignition returns a visible
+validation error.

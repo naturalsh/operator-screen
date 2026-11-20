@@ -5,8 +5,8 @@
  * in between the operator can re-run it with the current weather. Where a forecast comes from is a `ForecastSource`:
  * - `PrecomputedForecasts`: the scenario's forecast library (tools/build_forecast_library.py), one forecast
  *   at ignition, at every new VIIRS / Sentinel-2 observation and every 30 minutes; works on a static site.
- * - `LiveForecasts`: a model server (FastAPI on localhost, docs/forecast_api.md). Not set up yet; used only
- *   with `?forecast_api=<url>`, and it falls back to the precomputed forecast when the server does not answer.
+ * - `LiveForecasts`: Ufuk's wildfire_model FastAPI service (docs/forecast_api.md), selected with
+ *   `?forecast_api=<url>`; it falls back to the precomputed forecast only for transport/service failures.
  */
 import type { Geometry } from 'geojson';
 import type { ConceptReports, FireFront, ForecastLibrary, LibraryForecast, StreetFeature } from './types';
@@ -24,7 +24,10 @@ export interface ForecastRun {
   lastObsAt: number | null;
   lastObsLabel: string | null;
   startAreaKm2: number;
-  contours: { horizon: number; validAt: number; areaKm2: number }[];
+  contours: { horizon: number; validAt: number; areaKm2: number; confidence: number | null }[];
+  /** +6 h ensemble agreement when present; null is deliberately different from a zero score. */
+  confidence: number | null;
+  confidenceReason?: string;
   /** Street id -> time (epoch ms) at which the P >= 50 % contour reaches it, to the half hour, within 12 h. */
   reach: Map<string, number>;
   /** precomputed: the library; live: a model server; browser: the in-browser model (src/spread). */
@@ -48,6 +51,8 @@ export interface ForecastRequest {
   kind: 'update' | 'rerun';
   /** CONCEPT DEMO: report clusters the operator confirmed (a live server gets their discs). */
   reports?: string[];
+  /** Fire estimate at `at`, in GeoJSON EPSG:4326. Required by Ufuk's live model adapter. */
+  perimeter?: Geometry;
 }
 
 export interface ForecastSource {
@@ -77,10 +82,13 @@ export function toRun(f: LibraryForecast, streetIds: (i: number | string) => str
     id: f.id, issuedAt, trigger: f.trigger, from: f.initialised_from,
     lastObsAt: f.last_observation_at ? Date.parse(f.last_observation_at) : null,
     lastObsLabel: f.last_observation_label ?? null, startAreaKm2: f.start_area_km2,
-    contours: shown.map((c) => ({ horizon: c.horizon_hours, validAt: Date.parse(c.valid_at), areaKm2: c.area_km2 })),
+    contours: shown.map((c) => ({ horizon: c.horizon_hours, validAt: Date.parse(c.valid_at), areaKm2: c.area_km2,
+      confidence: c.confidence ?? null })),
     steps: f.contours.map((c) => ({ horizon: c.horizon_hours, validAt: Date.parse(c.valid_at), areaKm2: c.area_km2, geometry: c.geometry as Geometry }))
       .sort((a, b) => a.horizon - b.horizon),
     reach: new Map(f.reach.map(([i, h]) => [streetIds(i), issuedAt + h * 3600000])),
+    confidence: (f.contours.find((c) => c.horizon_hours === 6) ?? f.contours[f.contours.length - 1])?.confidence ?? null,
+    confidenceReason: f.contours.some((c) => c.confidence != null) ? undefined : 'ensemble uncertainty is unavailable',
     source, features, reports: (f as { reports?: string[] }).reports ?? [],
   };
 }
@@ -127,27 +135,130 @@ export class PrecomputedForecasts implements ForecastSource {
   }
 }
 
+interface UfukModelFile {
+  weather: { time: string[]; wind_speed_10m: number[]; wind_direction_10m: number[];
+    temperature_2m: number[]; relative_humidity_2m: number[] };
+}
+
+interface UfukForecastResponse {
+  id: string; fire_id: string; issued_at: string; observed_at: string; model: string; members: number;
+  perimeter: Geometry; perimeter_area_ha: number; warnings: string[];
+  zones: { horizon_h: number; valid_at: string; area_ha: number; confidence: number | null;
+    confidence_label: 'high' | 'medium' | 'low' | null; geometry: Geometry; envelope: Geometry }[];
+  road_risks: { edge_id: string; risk: number; first_horizon_h: number; confidence: number | null }[] | null;
+}
+
+export class ModelValidationError extends Error {}
+
+const outerPoints = (g: Geometry): number[][] => g.type === 'Polygon' ? g.coordinates[0]
+  : g.type === 'MultiPolygon' ? g.coordinates.flatMap((p) => p[0]) : [];
+
+/** Convex outer ring accepted by FireObservation (the model contract has one perimeter, not a MultiPolygon). */
+export function modelPerimeter(g: Geometry): number[][] {
+  const pts = outerPoints(g).filter((p) => p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+  if (pts.length < 3) throw new ModelValidationError('the fire estimate has no valid polygon perimeter');
+  const unique = [...new Map(pts.map((p) => [`${p[0]},${p[1]}`, [p[0], p[1]]])).values()]
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (unique.length < 3) throw new ModelValidationError('the fire estimate perimeter needs at least three coordinates');
+  const cross = (o: number[], a: number[], b: number[]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: number[][] = [], upper: number[][] = [];
+  for (const p of unique) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p); }
+  for (const p of [...unique].reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p); }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
+const equilibriumMoisturePct = (rh: number, tc: number) => {
+  const H = Math.min(Math.max(rh, 1), 100), tf = tc * 1.8 + 32;
+  return Math.min(60, Math.max(0.1, H < 10 ? 0.03229 + 0.281073 * H - 0.000578 * H * tf
+    : H < 50 ? 2.22749 + 0.160107 * H - 0.014784 * tf
+      : 21.0606 + 0.005565 * H * H - 0.00035 * H * tf - 0.483199 * H));
+};
+
+function validWgs84(g: Geometry): boolean {
+  const walk = (x: unknown): boolean => Array.isArray(x) && (typeof x[0] === 'number'
+    ? x.length >= 2 && Number.isFinite(x[0]) && Number.isFinite(x[1]) && x[0] >= -180 && x[0] <= 180 && x[1] >= -90 && x[1] <= 90
+    : x.every(walk));
+  return (g.type === 'Polygon' || g.type === 'MultiPolygon') && walk(g.coordinates);
+}
+
 /**
- * A live model server. POST `${url}/forecast` with the ForecastRequest; the answer is one library entry
- * with street ids instead of indexes in `reach` (docs/forecast_api.md). Anything else, or no answer within
- * `timeoutMs`, falls back to the precomputed forecast, and the result says so.
+ * Adapter for Ufuk's POST `/wildfire/forecast`: current perimeter, hourly weather and real road geometries in;
+ * SpreadForecast zones/confidence/road_risks out as the site's existing ForecastRun/map contract. Service and
+ * validation errors are shown to the operator; a configured live flow never substitutes another model.
  */
 export class LiveForecasts implements ForecastSource {
   readonly kind = 'live' as const;
-  constructor(readonly url: string, readonly fallback: PrecomputedForecasts, readonly timeoutMs = 3000) {}
+  private modelFile?: Promise<UfukModelFile>;
+  constructor(readonly url: string, readonly streets: StreetFeature[],
+    readonly modelFileUrl: string, readonly timeoutMs = 120000) {}
+  private weather(at: number): Promise<{ start_h: number; wind_speed_kmh: number; wind_from_deg: number; fuel_moisture_pct: number }[]> {
+    this.modelFile ??= fetch(this.modelFileUrl).then(async (r) => {
+      if (!r.ok) throw new Error(`model weather HTTP ${r.status}`);
+      return await r.json() as UfukModelFile;
+    });
+    return this.modelFile.then((file) => {
+      const w = file.weather, times = w.time.map(Date.parse);
+      let start = times.findIndex((t) => t >= at - 30 * 60000);
+      if (start < 0) start = times.length - 1;
+      const count = Math.min(13, times.length - start);
+      if (count < 1) throw new Error('model weather has no step for the requested time');
+      return Array.from({ length: count }, (_, k) => ({
+        start_h: k, wind_speed_kmh: w.wind_speed_10m[start + k], wind_from_deg: w.wind_direction_10m[start + k],
+        fuel_moisture_pct: equilibriumMoisturePct(w.relative_humidity_2m[start + k], w.temperature_2m[start + k]),
+      }));
+    });
+  }
   async run(req: ForecastRequest, signal?: AbortSignal): Promise<ForecastRun | null> {
     try {
-      const res = await fetch(`${this.url.replace(/\/$/, '')}/forecast`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req),
+      if (!req.perimeter) throw new ModelValidationError('the live model needs the current fire perimeter');
+      const perimeter = modelPerimeter(req.perimeter);
+      const weather = await this.weather(req.at);
+      const body = {
+        observation: { id: `${req.scenario}-${req.at}`, name: req.scenario, observed_at: new Date(req.at).toISOString(),
+          perimeter: perimeter.map(([lon, lat]) => ({ lon, lat })), weather, source: 'operator-screen' },
+        horizons_h: Array.from({ length: 24 }, (_, i) => (i + 1) / 2), members: 32, seed: 42,
+        issued_at: new Date(req.at).toISOString(),
+        roads: this.streets.map((s) => ({ edge_id: s.properties.id, geometry: s.geometry })),
+        // r0_scale intentionally omitted: Ufuk's service default (0.4) is the tested default.
+      };
+      const res = await fetch(`${this.url.replace(/\/$/, '')}/wildfire/forecast`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         signal: withTimeout(signal, this.timeoutMs),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const f = (await res.json()) as LibraryForecast;
-      if (Date.parse(f.issued_at) > req.at) throw new Error('forecast issued after the request time');
-      return toRun(f, (id) => String(id), 'live');
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({})) as { detail?: unknown };
+        if (res.status === 422) throw new ModelValidationError(typeof detail.detail === 'string' ? detail.detail : 'invalid wildfire model request');
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const out = (await res.json()) as UfukForecastResponse;
+      if (Date.parse(out.issued_at) > req.at + 1000) throw new Error('forecast issued after the request time');
+      if (!out.zones.length || out.road_risks == null) throw new Error('model response is missing zones or evaluated road risks');
+      for (const z of out.zones) {
+        if (!(z.horizon_h > 0) || Math.abs(Date.parse(z.valid_at) - (req.at + z.horizon_h * 3600000)) > 1000)
+          throw new Error('model response uses inconsistent time units');
+        if (!validWgs84(z.geometry)) throw new Error('model response geometry is not GeoJSON lon/lat');
+        if (z.confidence != null && (!(z.confidence >= 0) || z.confidence > 1)) throw new Error('invalid model confidence');
+      }
+      const risk = out.road_risks.map((r) => {
+        if (!(r.risk > 0) || r.risk > 1 || !(r.first_horizon_h > 0)) throw new Error('invalid road risk');
+        return [r.edge_id, r.first_horizon_h] as [string, number];
+      });
+      const iso = (t: number) => new Date(t).toISOString();
+      const f: LibraryForecast = {
+        id: out.id, issued_at: out.issued_at, trigger: 'live', initialised_from: `Ufuk wildfire_model ${out.model}`,
+        last_observation_at: out.observed_at, last_observation_label: 'operator screen fire estimate',
+        start_area_km2: out.perimeter_area_ha / 100,
+        contours: [{ horizon_hours: 0, valid_at: iso(req.at), area_km2: out.perimeter_area_ha / 100, geometry: out.perimeter },
+          ...out.zones.map((z) => ({ horizon_hours: z.horizon_h, valid_at: z.valid_at, area_km2: z.area_ha / 100,
+            shown: [0.5, 1, 2, 3, 6].includes(z.horizon_h), geometry: z.geometry,
+            confidence: z.confidence, confidence_label: z.confidence_label }))],
+        reach: risk,
+      };
+      const run = toRun(f, (id) => String(id), 'live');
+      return out.warnings.length ? { ...run, sourceNote: out.warnings.join('; ') } : run;
     } catch (e) {
-      const r = await this.fallback.run(req);
-      return r && { ...r, sourceNote: `live model did not answer (${e instanceof Error ? e.message : e}); precomputed` };
+      if (e instanceof ModelValidationError) throw e;
+      throw new Error(`Ufuk wildfire model did not answer: ${e instanceof Error ? e.message : e}`);
     }
   }
 }
