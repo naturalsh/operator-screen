@@ -27,7 +27,7 @@ assert.ok([...run!.reach.values()].every((t) => t > at), 'road risk becomes a po
 
 const outside = { type: 'Polygon' as const, coordinates: [[[29, 38], [29.01, 38], [29.01, 38.01], [29, 38.01], [29, 38]]] };
 await assert.rejects(() => source.run({ scenario: 'outside', at, kind: 'rerun', perimeter: outside }),
-  (e) => e instanceof ModelValidationError && /outside landscape/.test(e.message));
+  (e) => e instanceof ModelValidationError && /not inside the landscape grid/.test(e.message));
 
 console.log(`Ufuk E2E: ${run!.features.length} map contours, ${run!.reach.size} positive road risks, confidence ${run!.confidence ?? 'unavailable'}; outside ignition rejected`);
 // Node's fetch dispatcher can retain an idle keep-alive socket after the assertions have finished.

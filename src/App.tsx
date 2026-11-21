@@ -14,7 +14,7 @@ import { SOURCE_LABEL as FIRE_SOURCE_LABEL, SIZE_LABEL, FIRE_CLOSURE_BUFFER_M, c
 import { AddFireDialog } from './components/AddFireDialog';
 import { circle } from './reports';
 import {
-  LiveForecasts, PrecomputedForecasts, applyForecastClosures, autoLabel, autoLoads, forecastClosures, forecastInForce, loadAt,
+  LiveForecasts, PrecomputedForecasts, applyForecastClosures, applyForecastRoadRisks, autoLabel, autoLoads, forecastClosures, forecastInForce, loadAt,
   NOWCAST_HORIZONS, lookLabel, nowcastAt, type ForecastLoad, type ForecastRun, type ForecastSource,
 } from './forecast';
 import { ForecastControl } from './components/ForecastControl';
@@ -370,6 +370,7 @@ export function App() {
 
   // Forecast closures follow the forecasts in force over time; written into the street records, which routing and
   // the map read. `streetsVersion` changes whenever they do.
+  const inForce = useMemo(() => (precomputed ? forecastInForce(allLoads, precomputed.first, now) : null), [precomputed, allLoads, now]);
   const closureVersion = useRef(0);
   const streetsVersion = useMemo(() => {
     if (!data || !precomputed) return 0;
@@ -385,9 +386,9 @@ export function App() {
         reason: `inside or within ${FIRE_CLOSURE_BUFFER_M} m of an operator-confirmed fire (${FIRE_SOURCE_LABEL[f.source]}, added ${fmtTime(f.addedAt, tz)} local)` });
     }
     applyForecastClosures(data.streets.features, closures, (x) => `${fmtTime(x, tz)} local`);
+    applyForecastRoadRisks(data.streets.features, inForce?.run ?? null);
     return ++closureVersion.current;
-  }, [data, precomputed, allLoads, fires]);
-  const inForce = useMemo(() => (precomputed ? forecastInForce(allLoads, precomputed.first, now) : null), [precomputed, allLoads, now]);
+  }, [data, precomputed, allLoads, fires, inForce]);
   // A pass reached whose browser update is still being computed (it will replace the forecast in force).
   const autoPending = autoPlan.find((p) => p.key && p.load.at <= now && !autoRuns.has(p.key) && (!inForce || p.load.at > inForce.at)) ?? null;
   // Test hook: the forecast in force (areas per valid time), for comparing forecasts across operator actions.

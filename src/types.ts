@@ -79,6 +79,11 @@ export interface StreetAccess extends Provenance {
   /** Which forecast closed the street, and why each source closed it (shown only once that source has). */
   model_forecast_issued_at?: string;
   model_reason?: string;
+  /** Current live-model road risk. A safety_buffer relationship is a warning, never a closure by itself. */
+  model_risk?: number;
+  model_risk_at?: number;
+  model_risk_relationship?: 'intersects' | 'safety_buffer';
+  model_risk_action?: 'close' | 'restrict' | 'monitor';
   satellite_reason?: string;
   /** Added on load: valid_at as epoch ms (0 = always) and the status before it; closure times per source
    * and the fire-nearby time as epoch ms (NEVER when absent). */

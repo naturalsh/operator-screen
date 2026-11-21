@@ -109,7 +109,7 @@ export function ForecastControl({ load, previous, updateTo, blockedNote, error, 
           {run.sourceNote && <div className="mt-1 text-amber-300">{run.sourceNote}</div>}
           <div data-forecast-confidence className="mt-1 text-ink-300">
             Prediction confidence: {run.confidence == null
-              ? `not available (${run.confidenceReason ?? 'the model supplied no uncertainty estimate'})`
+              ? `Hesaplanamadı (${run.confidenceReason ?? 'the model supplied no uncertainty estimate'})`
               : `${Math.round(run.confidence * 100)}% ensemble agreement`}
           </div>
           {nowcast && (

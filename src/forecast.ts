@@ -30,6 +30,10 @@ export interface ForecastRun {
   confidenceReason?: string;
   /** Street id -> time (epoch ms) at which the P >= 50 % contour reaches it, to the half hour, within 12 h. */
   reach: Map<string, number>;
+  /** Live model road risks; buffered proximity is distinct from a contour intersection. */
+  roadRisks?: Map<string, ForecastRoadRisk>;
+  /** Roads whose model output explicitly recommends closure; absent for legacy/precomputed runs. */
+  closeReach?: Map<string, number>;
   /** precomputed: the library; live: a model server; browser: the in-browser model (src/spread). */
   source: 'precomputed' | 'live' | 'browser';
   /** E.g. why the live model was not used. */
@@ -40,6 +44,14 @@ export interface ForecastRun {
   steps: { horizon: number; validAt: number; areaKm2: number; geometry: Geometry }[];
   /** CONCEPT DEMO: confirmed report clusters the forecast was started with (empty: none). */
   reports: string[];
+}
+
+export interface ForecastRoadRisk {
+  at: number;
+  risk: number;
+  confidence: number | null;
+  relationship: 'intersects' | 'safety_buffer';
+  action: 'close' | 'restrict' | 'monitor';
 }
 
 /** What the operator asks for: the newest forecast that can be issued at `at`. */
@@ -145,7 +157,8 @@ interface UfukForecastResponse {
   perimeter: Geometry; perimeter_area_ha: number; warnings: string[];
   zones: { horizon_h: number; valid_at: string; area_ha: number; confidence: number | null;
     confidence_label: 'high' | 'medium' | 'low' | null; geometry: Geometry; envelope: Geometry }[];
-  road_risks: { edge_id: string; risk: number; first_horizon_h: number; confidence: number | null }[] | null;
+  road_risks: { edge_id: string; risk: number; first_horizon_h: number; confidence: number | null;
+    relationship: 'intersects' | 'safety_buffer'; recommended_action: 'close' | 'restrict' | 'monitor' }[] | null;
 }
 
 export class ModelValidationError extends Error {}
@@ -255,7 +268,14 @@ export class LiveForecasts implements ForecastSource {
         reach: risk,
       };
       const run = toRun(f, (id) => String(id), 'live');
-      return out.warnings.length ? { ...run, sourceNote: out.warnings.join('; ') } : run;
+      const roadRisks = new Map(out.road_risks.map((r) => [r.edge_id, {
+        at: req.at + r.first_horizon_h * 3600000, risk: r.risk, confidence: r.confidence,
+        relationship: r.relationship, action: r.recommended_action,
+      }]));
+      const closeReach = new Map([...roadRisks].filter(([, r]) => r.relationship === 'intersects' && r.action === 'close')
+        .map(([id, r]) => [id, r.at]));
+      const live = { ...run, roadRisks, closeReach };
+      return out.warnings.length ? { ...live, sourceNote: out.warnings.join('; ') } : live;
     } catch (e) {
       if (e instanceof ModelValidationError) throw e;
       throw new Error(`Ufuk wildfire model did not answer: ${e instanceof Error ? e.message : e}`);
@@ -323,7 +343,7 @@ export function forecastClosures(loads: ForecastLoad[], ignition: ForecastRun | 
   const out = new Map<string, ForecastClosure>();
   seq.forEach((l, i) => {
     const until = seq[i + 1]?.at ?? Infinity;
-    for (const [id, reachAt] of l.run.reach) {
+    for (const [id, reachAt] of l.run.closeReach ?? l.run.reach) {
       const at = Math.max(reachAt, l.at);
       if (at >= until) continue;
       const old = out.get(id);
@@ -331,6 +351,23 @@ export function forecastClosures(loads: ForecastLoad[], ignition: ForecastRun | 
     }
   });
   return out;
+}
+
+/** Put the currently in-force model risk on roads without turning buffered proximity into a closure. */
+export function applyForecastRoadRisks(streets: StreetFeature[], run: ForecastRun | null): void {
+  for (const f of streets) {
+    const p = f.properties;
+    p.model_risk = undefined;
+    p.model_risk_at = undefined;
+    p.model_risk_relationship = undefined;
+    p.model_risk_action = undefined;
+    const risk = run?.roadRisks?.get(p.id);
+    if (!risk) continue;
+    p.model_risk = risk.risk;
+    p.model_risk_at = risk.at;
+    p.model_risk_relationship = risk.relationship;
+    p.model_risk_action = risk.action;
+  }
 }
 
 /**

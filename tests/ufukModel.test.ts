@@ -1,6 +1,6 @@
-/** Ufuk wildfire_model d624a57 contract -> existing operator ForecastRun/map contract. */
+/** Ufuk wildfire_model 75600a6 contract -> existing operator ForecastRun/map contract. */
 import assert from 'node:assert/strict';
-import { LiveForecasts, ModelValidationError, modelPerimeter } from '../src/forecast';
+import { LiveForecasts, ModelValidationError, applyForecastRoadRisks, modelPerimeter } from '../src/forecast';
 import type { StreetFeature } from '../src/types';
 
 const square = { type: 'Polygon' as const, coordinates: [[[28.04, 36.85], [28.06, 36.85], [28.06, 36.87], [28.04, 36.87], [28.04, 36.85]]] };
@@ -17,7 +17,10 @@ const response = {
     { horizon_h: 0.5, valid_at: '2022-06-22T12:30:00Z', area_ha: 130, confidence: 0.7, confidence_label: 'medium', geometry: square, envelope: square },
     { horizon_h: 6, valid_at: '2022-06-22T18:00:00Z', area_ha: 300, confidence: 0.55, confidence_label: 'low', geometry: square, envelope: square },
   ],
-  road_risks: [{ edge_id: 'near', risk: 1, first_horizon_h: 0.5, confidence: 0.7 }],
+  road_risks: [
+    { edge_id: 'near', risk: 1, first_horizon_h: 0.5, confidence: 0.7, relationship: 'intersects', recommended_action: 'close' },
+    { edge_id: 'buffer', risk: 1, first_horizon_h: 0.5, confidence: 0.7, relationship: 'safety_buffer', recommended_action: 'monitor' },
+  ],
 };
 
 const originalFetch = globalThis.fetch;
@@ -34,11 +37,19 @@ try {
     calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     return new Response(JSON.stringify(url.endsWith('spread_model.json') ? weather : response), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }) as typeof fetch;
-  const source = new LiveForecasts('http://localhost:8011', [street('near', 36.851), street('far', 37)], '/spread_model.json');
+  const streets = [street('near', 36.851), street('buffer', 36.852), street('far', 37)];
+  const source = new LiveForecasts('http://localhost:8011', streets, '/spread_model.json');
   const run = await source.run({ scenario: 'marmaris_2022', at: Date.parse('2022-06-22T12:00:00Z'), kind: 'rerun', perimeter: square });
   assert.ok(run && run.source === 'live');
   assert.equal(run!.reach.get('near'), Date.parse('2022-06-22T12:30:00Z'));
+  assert.equal(run!.reach.get('buffer'), Date.parse('2022-06-22T12:30:00Z'));
+  assert.equal(run!.closeReach?.has('near'), true, 'an intersecting road with a close recommendation can close');
+  assert.equal(run!.closeReach?.has('buffer'), false, 'a 150 m buffer-only road is risk, not a closure');
+  assert.equal(run!.roadRisks?.get('buffer')?.relationship, 'safety_buffer');
   assert.equal(run!.reach.has('far'), false, 'an evaluated far road stays absent; missing model data is not converted to zero risk');
+  applyForecastRoadRisks(streets, run!);
+  assert.equal(streets[1].properties.model_risk_relationship, 'safety_buffer');
+  assert.equal(streets[1].properties.model_risk_action, 'monitor');
   assert.equal(run!.confidence, 0.55);
   assert.equal(run!.features.find((f) => f.properties.horizon_hours === 6)?.geometry.type, 'Polygon');
   const sent = calls.find((c) => c.url.endsWith('/wildfire/forecast'))!.body as any;
@@ -48,12 +59,22 @@ try {
   assert.equal(sent.roads[0].geometry.type, 'LineString');
   assert.deepEqual(sent.horizons_h.slice(0, 3), [0.5, 1, 1.5]);
 
+  const unavailableConfidence = { ...response,
+    zones: response.zones.map((z) => ({ ...z, confidence: null, confidence_label: null })),
+    road_risks: response.road_risks.map((r) => ({ ...r, confidence: null })) };
+  globalThis.fetch = (async (input: string | URL | Request) => new Response(JSON.stringify(
+    String(input).endsWith('spread_model.json') ? weather : unavailableConfidence), { status: 200 })) as typeof fetch;
+  const noConfidence = await new LiveForecasts('http://localhost:8011', streets, '/spread_model.json')
+    .run({ scenario: 'marmaris_2022', at: Date.parse('2022-06-22T12:00:00Z'), kind: 'rerun', perimeter: square });
+  assert.equal(noConfidence!.confidence, null, 'unavailable model confidence remains null for the dashboard');
+  assert.match(noConfidence!.confidenceReason ?? '', /unavailable/);
+
   globalThis.fetch = (async (input: string | URL | Request) => String(input).endsWith('spread_model.json')
     ? new Response(JSON.stringify(weather), { status: 200 })
-    : new Response(JSON.stringify({ detail: "ignition coordinate is outside landscape 'marmaris'" }), { status: 422 })) as typeof fetch;
+    : new Response(JSON.stringify({ detail: "fire perimeter is not inside the landscape grid (Marmaris)" }), { status: 422 })) as typeof fetch;
   const invalid = new LiveForecasts('http://localhost:8011', [street('near', 36.851)], '/spread_model.json');
   await assert.rejects(() => invalid.run({ scenario: 'x', at: Date.parse('2022-06-22T12:00:00Z'), kind: 'rerun', perimeter: square }),
-    (e) => e instanceof ModelValidationError && /outside landscape/.test(e.message));
+    (e) => e instanceof ModelValidationError && /not inside the landscape grid/.test(e.message));
 
   globalThis.fetch = (async (input: string | URL | Request) => String(input).endsWith('spread_model.json')
     ? new Response(JSON.stringify(weather), { status: 200 })
