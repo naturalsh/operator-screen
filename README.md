@@ -272,8 +272,8 @@ started from, and "Fire now (estimated)".
   so `tools/build_forecast_library.py` computes in advance every forecast that can be asked for, at ignition, at
   every new pass and every 30 minutes until the end of the scenario (127 forecasts, `forecast_library.json`,
   11 MB, 2 MB as served compressed). Each holds its contours every 30 minutes to 12 h and the area it started
-  from. **LIVE MODEL** is for a model server on the demo laptop (`?forecast_api=http://localhost:8000`); not set up
-  yet, see [docs/forecast_api.md](docs/forecast_api.md). If that server does not answer within 3 s the
+  from. **LIVE MODEL** uses Ufuk's `naturalsh/wildfire_model` service on the demo laptop
+  (`?forecast_api=http://localhost:8011`), see [docs/forecast_api.md](docs/forecast_api.md). If that server does not answer the
   precomputed forecast is used and the box says so.
 - **Forecast closures:** forecast closures (orange dashed) come from the forecasts in force over time. A forecast
   is in force from its load until the next one (automatic or by the operator); a street its contour reaches in

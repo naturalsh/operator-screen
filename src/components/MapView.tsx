@@ -83,6 +83,8 @@ function bandWidth(): ExpressionSpecification {
 }
 /** Streets closed by the forecast only: orange, dashed; observed closures are solid red. */
 export const FORECAST_CLOSURE_COLOUR = '#fb923c';
+/** Positive live-model road risk that is not yet an explicit closure. */
+export const MODEL_ROAD_RISK_COLOUR = '#facc15';
 
 /** Radius around the selected caller and the active routes in which "fire nearby" is drawn. */
 const NEARBY_RADIUS_M = 1000;
@@ -92,7 +94,7 @@ const LAYER_GROUPS: Record<LayerKey, string[]> = {
     'lookahead-line', 'observed-line'],
   initial: ['initial-pending', 'initial-reached', 'initial-label'],
   observed: ['hotspots-old', 'hotspots', 'burned-area', 'flame-front'],
-  streets: ['streets-near', 'streets', 'streets-forecast'],
+  streets: ['streets-near', 'streets', 'streets-model-risk', 'streets-forecast'],
   nearby: ['streets-nearby'],
   callers: ['callers-shadow', 'callers-selected', 'callers', 'callers-label'],
   crews: ['routes-casing', 'routes', 'routes-cut', 'responders', 'responders-label'],
@@ -363,6 +365,8 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       // Closed by the forecast only (no satellite detection yet): a forecast closure, orange dashed in both modes.
       const forecastOnlyExpr: ExpressionSpecification = ['all', ['<=', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t]];
       map.setFilter('streets-forecast', forecastOnlyExpr);
+      map.setFilter('streets-model-risk', ['all', ['>', ['coalesce', ['get', 'model_risk'], 0], 0],
+        ['>', ['coalesce', ['get', 'tm'], 9e15], t], ['>', ['coalesce', ['get', 'ts'], 9e15], t]]);
       map.setFilter('streets', ['!', forecastOnlyExpr]);
       // Fire nearby: a coarse pixel covers the street and neither source has closed it yet.
       map.setFilter('streets-nearby', ['all', ['<=', ['coalesce', ['get', 'tn'], 9e15], t],
@@ -526,6 +530,11 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             14, ['match', ['get', 'highway'], 'track', 2.2, 4.5]],
         } });
 
+      // Model road risk/proximity. A 150 m buffer-only result is deliberately not a closure.
+      map.addLayer({ id: 'streets-model-risk', type: 'line', source: 'streets',
+        paint: { 'line-color': MODEL_ROAD_RISK_COLOUR, 'line-dasharray': [0.8, 1.6], 'line-opacity': 0.95,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.4, 14, 3.2] } });
+
       // Forecast closures: the forecast in force reaches the street but no satellite has seen fire there yet.
       map.addLayer({ id: 'streets-forecast', type: 'line', source: 'streets',
         paint: { 'line-color': FORECAST_CLOSURE_COLOUR, 'line-dasharray': [1.6, 1.4],
@@ -651,7 +660,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
       }
 
       // One click handler, most specific feature first: caller, response point, street, fire front.
-      const CLICKABLE = ['callers', 'report-points', 'cluster-fill', 'responders', 'streets', 'streets-forecast', 'flame-front', 'hotspots',
+      const CLICKABLE = ['callers', 'report-points', 'cluster-fill', 'responders', 'streets', 'streets-model-risk', 'streets-forecast', 'flame-front', 'hotspots',
         'observed-line', 'lookahead-line', 'front-band', 'nowcast-op-edge', 'nowcast-spots', 'nowcast-fill', 'forecast-zone-lines', 'forecast-zone-dotted',
         'initial-reached', 'initial-pending', 'burned-area', 'hotspots-old'];
       const muted = (text: string) => `<div class="ns-muted">${text}</div>`;
@@ -701,7 +710,7 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
           html = `<b>${r.name}</b><div>${r.kind.replace('_', ' ')} · response point</div>`
             + muted(`Location: ${r.source} (${r.place.lat.toFixed(4)}° N, ${r.place.lon.toFixed(4)}° E)`)
             + muted('Crew availability here is an assumption of the demo.');
-        } else if (hit.layer.id === 'streets' || hit.layer.id === 'streets-forecast') {
+        } else if (hit.layer.id === 'streets' || hit.layer.id === 'streets-model-risk' || hit.layer.id === 'streets-forecast') {
           // Rendered features carry nested values (label_point) as JSON text, so read the street from the data.
           const p = d.streets.features.find((f) => f.properties.id === hit.properties.id)?.properties
             ?? (hit.properties as StreetAccess);
@@ -715,6 +724,11 @@ export function MapView({ data, now, layers, selectedId, nearIds, stages, routes
             + (closure ? ` since ${fmtTime(closure.since, tz)} — ${closureSource(p, closure)}`
               : (p.t ?? 0) > 0 && (p.t ?? 0) <= t && p.status !== p.before ? ` since ${fmtTime(p.t!, tz)}` : '') + '</div>'
             + (closure?.by === 'both' ? muted(`model from ${fmtTime(p.tm!, tz)} · satellite from ${fmtTime(p.ts!, tz)}`) : '')
+            + (p.model_risk != null && !closure
+              ? `<div style="color:${MODEL_ROAD_RISK_COLOUR}">⚠ ${p.model_risk_relationship === 'safety_buffer'
+                ? 'Yangına yakın / risk altında: yalnızca 150 m emniyet tamponu içinde; kapanma önerisi değildir.'
+                : `Risk altında: model konturu yola ulaşıyor${p.model_risk_action === 'restrict' ? '; kısıtlama önerisi' : p.model_risk_action === 'close' ? '; kapanma önerisi' : ''}.`}</div>`
+              : '')
             + (() => {
               // Not closed yet: only what the forecast in force says, never what will happen.
               if (closure) return '';
@@ -1102,6 +1116,7 @@ function Legend({ mode, nearby, nowcast, timeZone }: { mode: MapMode; nearby: bo
           {row(<LineKey colour={STATUS_COLOUR.open} />, 'Open road')}
           {row(<LineKey colour={STATUS_COLOUR.blocked} />, 'Closed: fire seen by satellite')}
           {row(<LineKey colour={FORECAST_CLOSURE_COLOUR} dashed />, 'Forecast closure (not seen yet)')}
+          {row(<LineKey colour={MODEL_ROAD_RISK_COLOUR} dashed />, 'Yangına yakın / risk altında (model, 150 m)')}
           {!simple && nearby && row(<LineKey colour="#fbbf24" halo />, 'Fire nearby (satellite, 1 km pixel)')}
           {row(<LineKey colour="#22d3ee" casing="#083344" />, 'Crew route')}
           {row(<LineKey colour="#fbbf24" dashed casing="#083344" />, 'Route cut')}

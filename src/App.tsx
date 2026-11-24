@@ -14,7 +14,7 @@ import { SOURCE_LABEL as FIRE_SOURCE_LABEL, SIZE_LABEL, FIRE_CLOSURE_BUFFER_M, c
 import { AddFireDialog } from './components/AddFireDialog';
 import { circle } from './reports';
 import {
-  LiveForecasts, PrecomputedForecasts, applyForecastClosures, autoLabel, autoLoads, forecastClosures, forecastInForce, loadAt,
+  LiveForecasts, PrecomputedForecasts, applyForecastClosures, applyForecastRoadRisks, autoLabel, autoLoads, forecastClosures, forecastInForce, loadAt,
   NOWCAST_HORIZONS, lookLabel, nowcastAt, type ForecastLoad, type ForecastRun, type ForecastSource,
 } from './forecast';
 import { ForecastControl } from './components/ForecastControl';
@@ -54,7 +54,7 @@ async function reloadToNewVersion(): Promise<void> {
  */
 const params = new URLSearchParams(location.search);
 const wantDemo = params.get('demo') === '1';
-/** `?forecast_api=http://localhost:8000` asks a live model server first (docs/forecast_api.md). */
+/** `?forecast_api=http://localhost:8011` uses Ufuk's live wildfire_model service (docs/forecast_api.md). */
 const forecastApi = params.get('forecast_api');
 
 const mins = (m: number) => `${Math.max(1, Math.ceil(m))} min`;
@@ -244,6 +244,7 @@ export function App() {
   }, []);
   const loadSeq = useRef(0);
   const [forecastBusy, setForecastBusy] = useState(false);
+  const [forecastError, setForecastError] = useState<string | null>(null);
   const [fireVersion, setFireVersion] = useState(0);
   // CONCEPT DEMO: report clusters the operator confirmed, and when (scenario time).
   const [confirmations, setConfirmations] = useState<Map<string, number>>(new Map());
@@ -315,8 +316,12 @@ export function App() {
   }, [playing, speed, end, scrubbing, resumeWait]);
 
   const graph = useMemo(() => (data ? buildGraph(data.streets.features) : null), [data]);
-  const source: ForecastSource | null = useMemo(
-    () => (precomputed && forecastApi ? new LiveForecasts(forecastApi, precomputed) : precomputed), [precomputed]);
+  const source: ForecastSource | null = useMemo(() => {
+    if (!precomputed || !forecastApi || !data) return precomputed;
+    const folder = data.entry.files.fire_front.split('/').slice(0, -1).join('/');
+    return new LiveForecasts(forecastApi, data.streets.features,
+      `${import.meta.env.BASE_URL}scenarios/${folder}/spread_model.json`);
+  }, [precomputed, data]);
   // Every load: the automatic ones at each new pass (with the concept reports confirmed by then) and the operator's.
   // With operator-confirmed fires on the map at a pass, its automatic update is computed in the browser (the new
   // satellite edge plus the operator fires, each burning from when it was seen): the precomputed one would drop them.
@@ -365,6 +370,7 @@ export function App() {
 
   // Forecast closures follow the forecasts in force over time; written into the street records, which routing and
   // the map read. `streetsVersion` changes whenever they do.
+  const inForce = useMemo(() => (precomputed ? forecastInForce(allLoads, precomputed.first, now) : null), [precomputed, allLoads, now]);
   const closureVersion = useRef(0);
   const streetsVersion = useMemo(() => {
     if (!data || !precomputed) return 0;
@@ -380,9 +386,9 @@ export function App() {
         reason: `inside or within ${FIRE_CLOSURE_BUFFER_M} m of an operator-confirmed fire (${FIRE_SOURCE_LABEL[f.source]}, added ${fmtTime(f.addedAt, tz)} local)` });
     }
     applyForecastClosures(data.streets.features, closures, (x) => `${fmtTime(x, tz)} local`);
+    applyForecastRoadRisks(data.streets.features, inForce?.run ?? null);
     return ++closureVersion.current;
-  }, [data, precomputed, allLoads, fires]);
-  const inForce = useMemo(() => (precomputed ? forecastInForce(allLoads, precomputed.first, now) : null), [precomputed, allLoads, now]);
+  }, [data, precomputed, allLoads, fires, inForce]);
   // A pass reached whose browser update is still being computed (it will replace the forecast in force).
   const autoPending = autoPlan.find((p) => p.key && p.load.at <= now && !autoRuns.has(p.key) && (!inForce || p.load.at > inForce.at)) ?? null;
   // Test hook: the forecast in force (areas per valid time), for comparing forecasts across operator actions.
@@ -833,9 +839,10 @@ export function App() {
   const describeRun = (r: { issuedAt: number; from: string }) => `issued ${fmtTime(r.issuedAt, timeZone)} from ${r.from.replace(' (no new pass)', '')}`;
   const onUpdateForecast = async () => {
     if (!source || !data || !inForce || !precomputed) return;
-    // The browser model first (it can use the operator-confirmed fires); the precomputed library when it is not
-    // available. CONCEPT DEMO reports keep using their precomputed forecasts.
-    if (!forecastOptions.newReports && modelState === 'ready') {
+    setForecastError(null);
+    // A configured Ufuk service is the update trigger's primary model. The legacy packaged browser calculation is
+    // retained only for offline/precomputed operation and operator-fire edits.
+    if (source.kind !== 'live' && !forecastOptions.newReports && modelState === 'ready') {
       setForecastBusy(true);
       try { if (await runBrowser(now, activeFires, 'Update forecast (re-run with current weather)')) return; } finally { setForecastBusy(false); }
     }
@@ -844,7 +851,8 @@ export function App() {
     const kind = forecastOptions.newReports ? 'update' : 'rerun';
     const job = forecastRequests.current.begin();
     try {
-      const run = await source.run({ scenario: data.entry.id, at, kind, reports: conceptOn ? confirmedNow : [] }, job.signal);
+      const perimeter = [...inForce.run.steps].reverse().find((s) => s.validAt <= at)?.geometry ?? inForce.run.steps[0]?.geometry;
+      const run = await source.run({ scenario: data.entry.id, at, kind, reports: conceptOn ? confirmedNow : [], perimeter }, job.signal);
       // Stale: a newer request was made meanwhile, or this one was cancelled.
       if (!run || !forecastRequests.current.isLatest(job.id) || job.signal.aborted) return;
       if (!data.fire.features.some((f) => f.properties.run_id === run.id)) {
@@ -867,6 +875,8 @@ export function App() {
           label, run.source === 'live' ? 'live model' : 'precomputed', run.sourceNote,
           six(run) != null && six(inForce.run) != null ? `+6 h ${six(run)!.toFixed(1)} km² (was ${six(inForce.run)!.toFixed(1)})` : '',
         ].filter(Boolean).join('; '));
+    } catch (e) {
+      setForecastError(e instanceof Error ? e.message : String(e));
     } finally {
       setForecastBusy(false);
     }
@@ -1049,6 +1059,7 @@ export function App() {
     <>
       <ForecastControl load={inForce} previous={previousLoad} updateTo={forecastOptions.updateTo}
         blockedNote={forecastOptions.blockedNote} sourceKind={source?.kind ?? 'precomputed'}
+        error={forecastError}
         newReports={forecastOptions.newReports} nowcast={nowcast} modelState={modelState} modelBusy={modelBusy}
       autoUpdating={autoPending ? `${autoPending.load.run.lastObsLabel ?? 'satellite'} ${fmtTime(autoPending.load.at, timeZone).split(', ')[1]} + ${autoPending.fs.length} operator-confirmed fire${autoPending.fs.length > 1 ? 's' : ''}` : null}
         busy={forecastBusy || !!modelBusy} timeZone={timeZone} compact={compact} onUpdate={onUpdateForecast} />
