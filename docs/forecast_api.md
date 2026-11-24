@@ -3,16 +3,19 @@
 The operator screen's **Update forecast** trigger uses the private
 `naturalsh/wildfire_model` FastAPI service when the page is opened with
 `?forecast_api=http://localhost:8011`. The integrated and tested model revision is
-`75600a6ef49b70e7671e101dc49938c6f699ca24` (`main`, 20 November 2026), plus the
-dashboard API contract on `feature/ufuk-main-operator-api`.
+`fa77f03ec58c78b652dd546e6e72de221c06f5a9` (`main`, 22 November 2026), model
+`rothermel-ellipse-mtt-ensemble/1.2`, which includes the dashboard API contract (`roads`,
+`road_risks`, `issued_at`, nullable confidence).
 
-Start the model beside this repository:
+Start the model beside this repository. The service needs the real Marmaris landscape; build it
+once as described in the wildfire_model README (`demo-data/marmaris_2022_real.npz`, not committed):
 
 ```sh
 cd ../wildfire_model
-uvicorn wildfire.api:app --port 8011
+WILDFIRE_LANDSCAPE="$PWD/demo-data/marmaris_2022_real.npz" uvicorn wildfire.api:app --port 8011
+curl http://localhost:8011/health   # {"ok":true,"landscape":"Marmaris, June 2022",...}
 
-cd ../natural-shield-operator
+cd ../operator-screen
 npm run dev
 # open http://localhost:5173/?forecast_api=http://localhost:8011
 ```

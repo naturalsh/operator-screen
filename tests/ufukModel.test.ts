@@ -1,4 +1,4 @@
-/** Ufuk wildfire_model 75600a6 contract -> existing operator ForecastRun/map contract. */
+/** Ufuk wildfire_model fa77f03 (model 1.2) contract -> existing operator ForecastRun/map contract. */
 import assert from 'node:assert/strict';
 import { LiveForecasts, ModelValidationError, applyForecastRoadRisks, modelPerimeter } from '../src/forecast';
 import type { StreetFeature } from '../src/types';
@@ -12,7 +12,7 @@ const weather = { weather: { time: ['2022-06-22T12:00:00Z', '2022-06-22T13:00:00
 
 const response = {
   id: 'wf-live', fire_id: 'marmaris', issued_at: '2022-06-22T12:00:00Z', observed_at: '2022-06-22T12:00:00Z',
-  model: 'rothermel-ellipse-mtt-ensemble/1.0', members: 32, perimeter: square, perimeter_area_ha: 100, warnings: [],
+  model: 'rothermel-ellipse-mtt-ensemble/1.2', members: 32, perimeter: square, perimeter_area_ha: 100, warnings: [],
   zones: [
     { horizon_h: 0.5, valid_at: '2022-06-22T12:30:00Z', area_ha: 130, confidence: 0.7, confidence_label: 'medium', geometry: square, envelope: square },
     { horizon_h: 6, valid_at: '2022-06-22T18:00:00Z', area_ha: 300, confidence: 0.55, confidence_label: 'low', geometry: square, envelope: square },
