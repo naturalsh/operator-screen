@@ -2,8 +2,10 @@ import { ReportQuote } from './ReportQuote';
 import { useEffect, useRef, useState } from 'react';
 import {
   STAGE_COLOUR, STAGE_LABEL, STATUS_COLOUR, URGENCY_COLOUR, URGENCY_LABEL,
-  aheadContours, closureAt, closureSource, fireNearby, fmtAge, fmtTime, forecastReach, statusAt, streetLabel, streetsNear,
+  URGENCY_ORDER, aheadContours, closureAt, closureSource, fireNearby, fmtAge, fmtTime, forecastReach, statusAt, streetLabel,
+  streetsNear,
 } from '../data';
+import type { CallerFireRisk } from '../forecast';
 import { CREW_STATUS_COLOUR, CREW_STATUS_LABEL, type Candidate, type CrewStatus } from '../crews';
 import type { RouteRisk } from '../routeRisk';
 import type { CallerReport, Stage, StreetFeature, Urgency } from '../types';
@@ -70,6 +72,10 @@ interface Props {
   ahead: ReturnType<typeof aheadContours>;
   /** When the forecast in force reaches a street (150 m buffer, to the half hour); preferred over `ahead`. */
   reachOf?: (streetId: string) => number | undefined;
+  /** Live model only: what the forecast in force says about this caller (undefined: not checked by it). */
+  fireRiskOf?: (reportId: string) => CallerFireRisk | undefined;
+  /** When that forecast was issued: its suggestions are as of then. */
+  fireRiskIssuedAt?: number;
   canRoute: boolean;
   onSelect: (id: string | null) => void;
   onTake: (c: CallerReport) => void;
@@ -89,6 +95,43 @@ interface Props {
 
 const btn = 'rounded px-2.5 py-1 text-xs font-bold text-ink-950 hover:brightness-110';
 const mins = (m: number) => `${Math.max(1, Math.ceil(m))} min`;
+const hoursMins = (m: number) => (m < 60 ? mins(m) : `${Math.floor(m / 60)} h${Math.round(m % 60) ? ` ${Math.round(m % 60)} min` : ''}`);
+
+const RISK_STYLE: Record<CallerFireRisk['action'], { label: string; cls: string }> = {
+  rescue: { label: 'Rescue', cls: 'border-rose-500 bg-rose-950/60 text-rose-100' },
+  evacuate: { label: 'Evacuate', cls: 'border-amber-500 bg-amber-950/50 text-amber-100' },
+  monitor: { label: 'Monitor', cls: 'border-ink-600 bg-ink-900 text-ink-200' },
+  none: { label: 'Fire report', cls: 'border-amber-500 bg-amber-950/50 text-amber-100' },
+};
+
+/**
+ * Ufuk's model on this caller (live forecast in force only). The time left is counted from the clock shown, so it
+ * stays true as time passes; the suggestion and its reasons are as of the forecast's issue time, and say so.
+ */
+export function fireRiskText(r: CallerFireRisk, urgency: Urgency, now: number, timeZone: string): { label: string; text: string } | null {
+  if (r.action === 'none' && !r.fireOutsideForecast) return null;
+  const there = r.status === 'inside_fire' || (r.worstAt != null && r.worstAt <= now);
+  const when = r.status === 'inside_fire' ? 'inside the fire area'
+    : there ? 'fire may be here already (worst case)'
+    : r.worstAt != null ? `worst case: fire may reach here by ${fmtTime(r.worstAt, timeZone)} (in ~${hoursMins((r.worstAt - now) / 60000)})`
+    : r.status === 'near' ? 'within 1 km of where the worst case reaches'
+    : 'reports a wildfire outside the forecast: spot fire or new fire?';
+  const raise = r.escalateTo && URGENCY_ORDER[r.escalateTo] < URGENCY_ORDER[urgency]
+    ? ` · model suggests ${URGENCY_LABEL[r.escalateTo]}` : '';
+  return { label: RISK_STYLE[r.action].label, text: when + raise };
+}
+
+function FireRiskLine(props: { r: CallerFireRisk; urgency: Urgency; now: number; timeZone: string; issuedAt?: number }) {
+  const shown = fireRiskText(props.r, props.urgency, props.now, props.timeZone);
+  if (!shown) return null;
+  const asOf = props.issuedAt != null ? ` (forecast of ${fmtTime(props.issuedAt, props.timeZone)})` : '';
+  return (
+    <p data-fire-risk={props.r.action} className={`mt-1 rounded border px-2 py-0.5 text-xs ${RISK_STYLE[props.r.action].cls}`}
+      title={`Fire model${asOf}, its times in UTC: ${props.r.reasons.join(' ')} A suggestion: the dispatcher decides.`}>
+      <b>🔥 {shown.label}</b> · {shown.text}
+    </p>
+  );
+}
 
 /** "Route may be cut by fire in ~12 min" with where and why, for a route the forecast in force reaches. */
 function RiskNote({ risk, timeZone }: { risk: RouteRisk; timeZone: string }) {
@@ -357,6 +400,10 @@ export function CallerList(props: Props) {
                 {cs.urgency && cs.urgency !== c.urgency && <span data-escalated className="text-rose-200">escalated by the dispatcher from {URGENCY_LABEL[c.urgency]}</span>}
                 {c.synthetic && <span className="synthetic-tag">SYNTHETIC</span>}
               </div>
+              {(() => {
+                const risk = props.fireRiskOf?.(c.id);
+                return risk ? <FireRiskLine r={risk} urgency={urgency} now={now} timeZone={timeZone} issuedAt={props.fireRiskIssuedAt} /> : null;
+              })()}
               {/* The call as the voice intake recorded it: read-only here. */}
               <details data-call-details className="mt-1 text-xs" onClick={(e) => e.stopPropagation()}>
                 <summary className="cursor-pointer select-none text-ink-400 hover:text-ink-200">Call details</summary>

@@ -9,7 +9,7 @@
  *   `?forecast_api=<url>`; it falls back to the precomputed forecast only for transport/service failures.
  */
 import type { Geometry } from 'geojson';
-import type { ConceptReports, FireFront, ForecastLibrary, LibraryForecast, StreetFeature } from './types';
+import type { CallerReport, ConceptReports, FireFront, ForecastLibrary, LibraryForecast, StreetFeature } from './types';
 import { NEVER } from './data';
 import { withTimeout } from './latest';
 
@@ -34,6 +34,8 @@ export interface ForecastRun {
   roadRisks?: Map<string, ForecastRoadRisk>;
   /** Roads whose model output explicitly recommends closure; absent for legacy/precomputed runs. */
   closeReach?: Map<string, number>;
+  /** Live model: each caller known when the forecast was made, checked against it; absent when not evaluated. */
+  callerRisks?: Map<string, CallerFireRisk>;
   /** precomputed: the library; live: a model server; browser: the in-browser model (src/spread). */
   source: 'precomputed' | 'live' | 'browser';
   /** E.g. why the live model was not used. */
@@ -44,6 +46,43 @@ export interface ForecastRun {
   steps: { horizon: number; validAt: number; areaKm2: number; geometry: Geometry }[];
   /** CONCEPT DEMO: confirmed report clusters the forecast was started with (empty: none). */
   reports: string[];
+}
+
+/**
+ * Ufuk's model on one caller (its CallerExposure): whether and when the fire may reach the place, and a suggestion
+ * made when the forecast was issued. An operator decides; the screen never changes an urgency from it.
+ */
+export interface CallerFireRisk {
+  status: 'inside_fire' | 'in_path' | 'worst_case' | 'near' | 'clear' | 'unplaced';
+  /** Epoch ms when half of the runs or more (reachAt) / one in ten (worstAt) reach the place; null when they do not,
+   *  or when the place is inside the fire already. */
+  reachAt: number | null;
+  worstAt: number | null;
+  action: 'rescue' | 'evacuate' | 'monitor' | 'none';
+  escalateTo: 'life_threat' | 'urgent' | null;
+  /** The caller reports a wildfire where the forecast does not reach: a spot fire or a new fire? */
+  fireOutsideForecast: boolean;
+  reasons: string[];
+}
+
+const CALLER_STATUS = new Set(['inside_fire', 'in_path', 'worst_case', 'near', 'clear', 'unplaced']);
+const CALLER_ACTION = new Set(['rescue', 'evacuate', 'monitor', 'none']);
+
+/** The model's caller_exposures as the screen holds them; an entry that does not read is left out, never guessed. */
+export function callerRisks(exposures: UfukForecastResponse['caller_exposures']): Map<string, CallerFireRisk> | undefined {
+  if (!Array.isArray(exposures)) return undefined;
+  const time = (v: unknown) => (typeof v === 'string' && Number.isFinite(Date.parse(v)) ? Date.parse(v) : null);
+  const out = new Map<string, CallerFireRisk>();
+  for (const e of exposures) {
+    if (!e || typeof e.id !== 'string' || !CALLER_STATUS.has(e.status) || !CALLER_ACTION.has(e.suggested_action)) continue;
+    out.set(e.id, {
+      status: e.status, reachAt: time(e.reached_at), worstAt: time(e.worst_case_at), action: e.suggested_action,
+      escalateTo: e.escalate_to === 'life_threat' || e.escalate_to === 'urgent' ? e.escalate_to : null,
+      fireOutsideForecast: e.fire_outside_forecast === true,
+      reasons: Array.isArray(e.reasons) ? e.reasons.filter((r): r is string => typeof r === 'string') : [],
+    });
+  }
+  return out;
 }
 
 export interface ForecastRoadRisk {
@@ -159,6 +198,10 @@ interface UfukForecastResponse {
     confidence_label: 'high' | 'medium' | 'low' | null; geometry: Geometry; envelope: Geometry }[];
   road_risks: { edge_id: string; risk: number; first_horizon_h: number; confidence: number | null;
     relationship: 'intersects' | 'safety_buffer'; recommended_action: 'close' | 'restrict' | 'monitor' }[] | null;
+  /** Present when callers were sent (a service before callers support leaves it out). */
+  caller_exposures?: { id: string; status: CallerFireRisk['status']; reached_at: string | null; worst_case_at: string | null;
+    suggested_action: CallerFireRisk['action']; escalate_to: CallerFireRisk['escalateTo']; fire_outside_forecast: boolean;
+    reasons: string[] }[] | null;
 }
 
 export class ModelValidationError extends Error {}
@@ -202,8 +245,9 @@ function validWgs84(g: Geometry): boolean {
 export class LiveForecasts implements ForecastSource {
   readonly kind = 'live' as const;
   private modelFile?: Promise<UfukModelFile>;
+  /** `callers`: the scenario's caller reports; those reported by the request time are checked against the forecast. */
   constructor(readonly url: string, readonly streets: StreetFeature[],
-    readonly modelFileUrl: string, readonly timeoutMs = 120000) {}
+    readonly modelFileUrl: string, readonly timeoutMs = 120000, readonly callers: CallerReport[] = []) {}
   private weather(at: number): Promise<{ start_h: number; wind_speed_kmh: number; wind_from_deg: number; fuel_moisture_pct: number }[]> {
     this.modelFile ??= fetch(this.modelFileUrl).then(async (r) => {
       if (!r.ok) throw new Error(`model weather HTTP ${r.status}`);
@@ -232,6 +276,10 @@ export class LiveForecasts implements ForecastSource {
         horizons_h: Array.from({ length: 24 }, (_, i) => (i + 1) / 2), members: 32, seed: 42,
         issued_at: new Date(req.at).toISOString(),
         roads: this.streets.map((s) => ({ edge_id: s.properties.id, geometry: s.geometry })),
+        // Only callers known at the request time, and only what the check needs: never their words or names.
+        callers: this.callers.filter((c) => Date.parse(c.reported_at) <= req.at).map((c) => ({
+          id: c.id, reported_at: c.reported_at, place: { lon: c.place.lon, lat: c.place.lat },
+          urgency: c.urgency, people_at_risk: c.people_at_risk, hazard: c.hazard })),
         // r0_scale intentionally omitted: Ufuk's service default (0.4) is the tested default.
       };
       const res = await fetch(`${this.url.replace(/\/$/, '')}/wildfire/forecast`, {
@@ -274,7 +322,8 @@ export class LiveForecasts implements ForecastSource {
       }]));
       const closeReach = new Map([...roadRisks].filter(([, r]) => r.relationship === 'intersects' && r.action === 'close')
         .map(([id, r]) => [id, r.at]));
-      const live = { ...run, roadRisks, closeReach };
+      const risks = callerRisks(out.caller_exposures);
+      const live = { ...run, roadRisks, closeReach, ...(risks ? { callerRisks: risks } : {}) };
       return out.warnings.length ? { ...live, sourceNote: out.warnings.join('; ') } : live;
     } catch (e) {
       if (e instanceof ModelValidationError) throw e;
