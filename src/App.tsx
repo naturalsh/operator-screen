@@ -320,7 +320,7 @@ export function App() {
     if (!precomputed || !forecastApi || !data) return precomputed;
     const folder = data.entry.files.fire_front.split('/').slice(0, -1).join('/');
     return new LiveForecasts(forecastApi, data.streets.features,
-      `${import.meta.env.BASE_URL}scenarios/${folder}/spread_model.json`);
+      `${import.meta.env.BASE_URL}scenarios/${folder}/spread_model.json`, undefined, data.callers);
   }, [precomputed, data]);
   // Every load: the automatic ones at each new pass (with the concept reports confirmed by then) and the operator's.
   // With operator-confirmed fires on the map at a pass, its automatic update is computed in the browser (the new
@@ -969,6 +969,8 @@ export function App() {
       synthetic={data.callersMeta.synthetic === true} selectedId={selected?.id ?? null}
       cases={viewCases} cardCrews={cardCrews} candidates={candidates} awaiting={awaiting} labelOf={labelOf} ahead={ahead} followId={follow} onFollow={followCrew} flashId={flashId}
       reachOf={safety ? (id) => safety.reach.get(id) : undefined}
+      fireRiskOf={inForce?.run.callerRisks ? (id) => inForce.run.callerRisks!.get(id) : undefined}
+      fireRiskIssuedAt={inForce?.run.issuedAt}
       canRoute={data.responders.length > 0} onSelect={setSelectedId} onTake={onTake} onEscalate={onEscalate}
       onDispatch={onDispatch} onReroute={onReroute} onReassign={onReassign} onSaferRoute={onSaferRoute} />
   );
